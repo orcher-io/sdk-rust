@@ -11,8 +11,8 @@
 <br />
 
 <div>
-  <a href="https://crates.io/crates/orcher"><img src="https://img.shields.io/crates/v/orcher?style=flat-square&labelColor=0a0a0a&color=04B385&logo=rust&logoColor=white" alt="crates.io"></a>
-  <a href="https://docs.rs/orcher"><img src="https://img.shields.io/docsrs/orcher?style=flat-square&labelColor=0a0a0a&color=38BDF0&logo=docsdotrs&logoColor=white" alt="docs.rs"></a>
+  <a href="https://crates.io/crates/orcher-sdk"><img src="https://img.shields.io/crates/v/orcher-sdk?style=flat-square&labelColor=0a0a0a&color=04B385&logo=rust&logoColor=white" alt="crates.io"></a>
+  <a href="https://docs.rs/orcher-sdk"><img src="https://img.shields.io/docsrs/orcher-sdk?style=flat-square&labelColor=0a0a0a&color=38BDF0&logo=docsdotrs&logoColor=white" alt="docs.rs"></a>
   <a href="https://github.com/orcher-io/sdk-rust/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/orcher-io/sdk-rust/ci.yml?branch=main&style=flat-square&labelColor=0a0a0a&color=04B385&logo=github&logoColor=white&label=CI" alt="CI"></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-Apache_2.0-38BDF0?style=flat-square&labelColor=0a0a0a" alt="Apache 2.0"></a>
 </div>
@@ -37,7 +37,7 @@ Write `async fn`s; ORCHER journals each step and resumes interrupted runs where 
 
 ```toml
 [dependencies]
-orcher = "0.5"
+orcher-sdk = "0.5"
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }
 ```
@@ -55,7 +55,7 @@ Define a task and a workflow that calls it. The worker finds every `#[workflow]`
 and `#[task]` in the binary, registers them with the engine and runs them:
 
 ```rust
-use orcher::prelude::*;
+use orcher_sdk::prelude::*;
 
 #[derive(Serialize, Deserialize)]
 struct Order {
@@ -89,8 +89,8 @@ async fn main() -> Result<()> {
 Start it from any process and wait for the result:
 
 ```rust
-use orcher::client::StartWorkflowOptions;
-use orcher::prelude::*;
+use orcher_sdk::client::StartWorkflowOptions;
+use orcher_sdk::prelude::*;
 
 let client = Client::connect("http://localhost:50051").await?;
 let order = Order {
@@ -191,7 +191,7 @@ never to retry on the task. A `TaskError::non_retryable` failure is never
 retried, whatever the policy allows:
 
 ```rust
-use orcher::error::TaskError;
+use orcher_sdk::error::TaskError;
 
 #[task(retry = 5, non_retryable_errors = ["CardDeclined"])]
 async fn charge(_ctx: TaskContext, order_id: String) -> Result<String> {
@@ -232,7 +232,7 @@ async fn invoice(ctx: WorkflowContext, customer: String) -> Result<String> {
 <br />
 
 ```rust
-use orcher::testing::TestEnv;
+use orcher_sdk::testing::TestEnv;
 
 #[tokio::test]
 async fn doubles() -> Result<()> {
@@ -253,10 +253,10 @@ async fn doubles() -> Result<()> {
 
 | Crate | What it is |
 |-------|------------|
-| [`orcher`](https://crates.io/crates/orcher) | The SDK: workflows, tasks, actors, the worker and the client |
-| [`orcher-macros`](https://crates.io/crates/orcher-macros) | `#[workflow]`, `#[task]`, `#[actor]` and `#[derive(Payload)]`, re-exported by `orcher` |
+| [`orcher-sdk`](https://crates.io/crates/orcher-sdk) | The SDK: workflows, tasks, actors, the worker and the client |
+| [`orcher-sdk-macros`](https://crates.io/crates/orcher-sdk-macros) | `#[workflow]`, `#[task]`, `#[actor]` and `#[derive(Payload)]`, re-exported by `orcher-sdk` |
 
-Depend on `orcher` alone; the code the macros generate needs nothing else.
+Depend on `orcher-sdk` alone; the code the macros generate needs nothing else.
 
 | Feature | Default | What it enables |
 |---------|:-------:|-----------------|

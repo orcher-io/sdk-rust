@@ -26,9 +26,9 @@ use std::time::Duration;
 
 use anyhow::{bail, ensure, Context};
 use clap::Parser;
-use orcher::client::{ClientConfig, StartWorkflowOptions};
-use orcher::error::ClientError;
-use orcher::prelude::*;
+use orcher_sdk::client::{ClientConfig, StartWorkflowOptions};
+use orcher_sdk::error::ClientError;
+use orcher_sdk::prelude::*;
 
 #[derive(serde::Serialize, serde::Deserialize)]
 struct Note {
@@ -84,20 +84,20 @@ async fn client(args: &Args, key: &str, organization_id: Option<&str>) -> anyhow
 }
 
 /// The HTTP-equivalent status the SDK reports for a gRPC failure.
-fn status_of(err: &orcher::Error) -> Option<u16> {
+fn status_of(err: &orcher_sdk::Error) -> Option<u16> {
     match err {
-        orcher::Error::Client(ClientError::ServerError { status, .. }) => Some(*status),
+        orcher_sdk::Error::Client(ClientError::ServerError { status, .. }) => Some(*status),
         _ => None,
     }
 }
 
 /// Refused as though the workflow did not exist. Forbidden would confirm the id
 /// is real, which turns a guess into an enumeration.
-fn is_not_found(err: &orcher::Error) -> bool {
-    status_of(err) == Some(404) || err.code() == orcher::ErrorCode::WorkflowNotFound
+fn is_not_found(err: &orcher_sdk::Error) -> bool {
+    status_of(err) == Some(404) || err.code() == orcher_sdk::ErrorCode::WorkflowNotFound
 }
 
-fn is_permission_denied(err: &orcher::Error) -> bool {
+fn is_permission_denied(err: &orcher_sdk::Error) -> bool {
     status_of(err) == Some(403)
 }
 

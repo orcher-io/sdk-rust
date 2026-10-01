@@ -12,8 +12,8 @@ use std::time::{Duration, Instant};
 
 use anyhow::Context;
 use clap::Parser;
-use orcher::client::{ClientConfig, StartWorkflowOptions};
-use orcher::prelude::*;
+use orcher_sdk::client::{ClientConfig, StartWorkflowOptions};
+use orcher_sdk::prelude::*;
 
 /// Answers the `phase` query, then waits for a `go` event and returns its payload.
 #[workflow(name = "handle_ops_wait")]

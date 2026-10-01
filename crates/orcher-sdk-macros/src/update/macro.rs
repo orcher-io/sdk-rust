@@ -1,0 +1,438 @@
+//! Implementation of the `#[update]` attribute macro.
+//!
+//! An update is a request the caller waits on. It is dispatched through the `UpdateWorkflow`
+//! RPC, runs inside the workflow's execution context, can read and modify workflow state, and
+//! returns a result. The result is journaled so that replay reproduces it.
+
+use crate::common::attrs::{validate_update_attrs, UpdateAttrs};
+use crate::common::codegen::extract_fn_info;
+use crate::common::integration::{
+    extract_sdk_input_type, extract_sdk_output_type, uses_sdk_workflow_context,
+};
+use darling::FromMeta;
+use proc_macro::TokenStream;
+use proc_macro2::TokenStream as TokenStream2;
+use quote::quote;
+use syn::{parse_macro_input, ItemFn, Meta};
+
+/// Entry point for `#[update]`: parses the attribute arguments and expands the handler.
+pub fn update_impl(attr: TokenStream, item: TokenStream) -> TokenStream {
+    let item_fn = parse_macro_input!(item as ItemFn);
+
+    let attrs = if attr.is_empty() {
+        UpdateAttrs::default()
+    } else {
+        let attr2: proc_macro2::TokenStream = attr.clone().into();
+
+        // Wrap the arguments as `update(...)` so darling can parse them as a list.
+        let wrapped_tokens = quote::quote! { update(#attr2) };
+
+        match syn::parse2::<Meta>(wrapped_tokens) {
+            Ok(meta) => match UpdateAttrs::from_meta(&meta) {
+                Ok(attrs) => attrs,
+                Err(e) => {
+                    return syn::Error::new(
+                        proc_macro2::Span::call_site(),
+                        format!("Failed to parse update attributes: {}", e),
+                    )
+                    .to_compile_error()
+                    .into();
+                }
+            },
+            Err(e) => return e.to_compile_error().into(),
+        }
+    };
+
+    match update_impl_inner(attrs, item_fn) {
+        Ok(tokens) => tokens.into(),
+        Err(err) => err.to_compile_error().into(),
+    }
+}
+
+fn update_impl_inner(attrs: UpdateAttrs, item_fn: ItemFn) -> Result<TokenStream2, syn::Error> {
+    let fn_info = extract_fn_info(&item_fn);
+
+    validate_update_attrs(&attrs).map_err(|e| {
+        syn::Error::new(
+            proc_macro2::Span::call_site(),
+            format!("Invalid update handler configuration: {}", e),
+        )
+    })?;
+
+    let fn_name = &fn_info.name;
+    let fn_inputs = &fn_info.inputs;
+    let fn_output = &fn_info.output;
+    let fn_body = &item_fn.block;
+    let fn_vis = &item_fn.vis;
+    let fn_attrs = &item_fn.attrs;
+
+    if !fn_info.is_async {
+        return Err(syn::Error::new_spanned(
+            &item_fn.sig,
+            "Update handler functions must be async",
+        ));
+    }
+
+    if matches!(fn_output, syn::ReturnType::Default) {
+        return Err(syn::Error::new_spanned(
+            &item_fn.sig,
+            "Update handler functions must have a return type",
+        ));
+    }
+
+    if !uses_sdk_workflow_context(&fn_info) {
+        return Err(syn::Error::new_spanned(
+            &item_fn.sig,
+            "Update handler functions must use WorkflowContext as the first parameter",
+        ));
+    }
+
+    let update_name = attrs
+        .name
+        .as_ref()
+        .map(|n| n.to_string())
+        .unwrap_or_else(|| fn_name.to_string());
+
+    let description = attrs
+        .description
+        .as_ref()
+        .map(|d| quote! { Some(#d.to_string()) })
+        .unwrap_or_else(|| quote! { None });
+
+    let timeout_seconds = attrs
+        .timeout
+        .map(|t| quote! { Some(#t) })
+        .unwrap_or_else(|| quote! { None });
+
+    let namespace = attrs
+        .namespace
+        .as_ref()
+        .map(|ns| quote! { Some(#ns.to_string()) })
+        .unwrap_or_else(|| quote! { None });
+
+    let version = attrs
+        .version
+        .as_ref()
+        .map(|v| quote! { Some(#v.to_string()) })
+        .unwrap_or_else(|| quote! { None });
+
+    let wrapper_name = syn::Ident::new(
+        &format!("{}Update", capitalize_first(&fn_name.to_string())),
+        fn_name.span(),
+    );
+
+    // The user's function is renamed to `<name>_impl` so that `<name>` can be the
+    // update reference constant.
+    let fn_name_impl = syn::Ident::new(&format!("{}_impl", fn_name), fn_name.span());
+
+    let handler_wrapper_name = syn::Ident::new(&format!("{}_handler", fn_name), fn_name.span());
+
+    let input_type = extract_sdk_input_type(&fn_info);
+    let output_type = extract_sdk_output_type(fn_output);
+
+    let wrapper_fn = generate_update_handler_wrapper(
+        &fn_info,
+        &fn_name_impl,
+        &handler_wrapper_name,
+        input_type,
+        output_type,
+    );
+
+    let registration = generate_update_registration(fn_name, &update_name, &handler_wrapper_name);
+
+    let update_name_str = update_name.clone();
+    let update_ref_name = syn::Ident::new(&format!("{}_update_ref", fn_name), fn_name.span());
+    let update_reference_struct = quote! {
+        /// Type-safe reference to the update handler.
+        ///
+        /// Generated by `#[update]` so that callers name the handler through a checked
+        /// item instead of a string: pass `update_name()` to `WorkflowHandle::update`.
+        #[automatically_derived]
+        #[derive(Debug, Clone, Copy)]
+        #[allow(non_camel_case_types)]
+        pub struct #update_ref_name;
+
+        impl ::orcher_sdk::workflow::update::UpdateReference for #update_ref_name {
+            fn update_name(&self) -> &'static str {
+                #update_name_str
+            }
+        }
+
+        /// Reference constant with the same name as the update handler function.
+        #[allow(non_upper_case_globals)]
+        pub const #fn_name: #update_ref_name = #update_ref_name;
+    };
+
+    let expanded = quote! {
+        #(#fn_attrs)*
+        #fn_vis async fn #fn_name_impl(#fn_inputs) #fn_output {
+            #fn_body
+        }
+
+        #wrapper_fn
+
+        #[automatically_derived]
+        #[doc = concat!("Update handler wrapper for `", stringify!(#fn_name), "`")]
+        #[allow(non_camel_case_types)]
+        pub struct #wrapper_name;
+
+        #[automatically_derived]
+        impl #wrapper_name {
+            /// Returns the update handler name (the function name unless `name` was set).
+            pub fn name() -> &'static str {
+                #update_name_str
+            }
+
+            /// Returns the update handler description, if one was configured.
+            pub fn description() -> Option<String> {
+                #description
+            }
+
+            /// Returns the update handler timeout in seconds, if one was configured.
+            pub fn timeout_seconds() -> Option<u64> {
+                #timeout_seconds
+            }
+
+            /// Returns the namespace, if one was configured.
+            pub fn namespace() -> Option<String> {
+                #namespace
+            }
+
+            /// Returns the update handler version, if one was configured.
+            pub fn version() -> Option<String> {
+                #version
+            }
+        }
+
+        #update_reference_struct
+
+        #registration
+    };
+
+    Ok(expanded)
+}
+
+/// Generates the payload-level handler for an update.
+///
+/// The handler deserializes the input payload, calls the user's function with the
+/// `WorkflowContext`, and serializes the result.
+fn generate_update_handler_wrapper(
+    fn_info: &crate::common::codegen::FnInfo,
+    fn_name: &syn::Ident,
+    wrapper_name: &syn::Ident,
+    input_type: Option<&syn::Type>,
+    output_type: Option<&syn::Type>,
+) -> TokenStream2 {
+    let ctx_param = if !fn_info.inputs.is_empty() {
+        if let syn::FnArg::Typed(pat_type) = &fn_info.inputs[0] {
+            if let syn::Pat::Ident(pat_ident) = pat_type.pat.as_ref() {
+                Some(&pat_ident.ident)
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    if let (Some(input_ty), Some(output_ty), Some(ctx_name)) = (input_type, output_type, ctx_param)
+    {
+        quote! {
+            async fn #wrapper_name(
+                #ctx_name: orcher_sdk::WorkflowContext,
+                input_payload: orcher_sdk::Payload,
+            ) -> orcher_sdk::Result<orcher_sdk::Payload> {
+                use orcher_sdk::prelude::*;
+                use orcher_sdk::payload::{from_payload, to_payload};
+
+                let input: #input_ty = from_payload(&input_payload)?;
+
+                let result: #output_ty = #fn_name(#ctx_name, input).await?;
+
+                let output_payload = to_payload(&result)?;
+                Ok(output_payload)
+            }
+        }
+    } else if let Some(ctx_name) = ctx_param {
+        // The handler takes only the context; the input payload is ignored.
+        quote! {
+            async fn #wrapper_name(
+                #ctx_name: orcher_sdk::WorkflowContext,
+                _input_payload: orcher_sdk::Payload,
+            ) -> orcher_sdk::Result<orcher_sdk::Payload> {
+                use orcher_sdk::prelude::*;
+                use orcher_sdk::payload::to_payload;
+
+                let result = #fn_name(#ctx_name).await?;
+
+                let output_payload = to_payload(&result)?;
+                Ok(output_payload)
+            }
+        }
+    } else {
+        // The first parameter is not a simple identifier, so no handler can be generated.
+        // The returned error surfaces at run time.
+        quote! {
+            async fn #wrapper_name(
+                ctx: orcher_sdk::WorkflowContext,
+                _input_payload: orcher_sdk::Payload,
+            ) -> orcher_sdk::Result<orcher_sdk::Payload> {
+                Err(orcher_sdk::Error::Other("Update handler wrapper generation failed".to_string()))
+            }
+        }
+    }
+}
+
+/// Generates the `inventory` registration for an update handler.
+///
+/// The emitted registration function inserts the handler into the worker registry. Only a
+/// function pointer is submitted to `inventory`, because `inventory::submit!` needs a
+/// const-constructible value and the handler closure is not one.
+fn generate_update_registration(
+    fn_name: &syn::Ident,
+    update_name: &str,
+    handler_wrapper_name: &syn::Ident,
+) -> TokenStream2 {
+    let register_fn_name = syn::Ident::new(
+        &format!("__orcher_register_update_{}", fn_name),
+        fn_name.span(),
+    );
+
+    quote! {
+        // Builds the handler at run time and inserts it into the worker registry.
+        #[doc(hidden)]
+        fn #register_fn_name(registry: &mut orcher_sdk::worker::Registry) {
+            use orcher_sdk::worker::registration::*;
+
+            let handler: orcher_sdk::worker::registration::UpdateHandlerFn = std::sync::Arc::new(|ctx, input| {
+                Box::pin(async move {
+                    #handler_wrapper_name(ctx, input).await
+                }) as orcher_sdk::worker::registration::BoxFuture<'static, std::result::Result<orcher_sdk::Payload, orcher_sdk::Error>>
+            });
+
+            let update_handler = orcher_sdk::worker::registry::UpdateHandler {
+                name: #update_name.to_string(),
+                handler: Some(handler),
+            };
+
+            registry.updates.insert(#update_name.to_string(), update_handler);
+        }
+
+        // Submit only the function pointer: `inventory::submit!` requires a const value.
+        ::orcher_sdk::__private::inventory::submit! {
+            orcher_sdk::worker::registration::UpdateRegistration::new(#register_fn_name)
+        }
+    }
+}
+
+/// Uppercases the first character of `s`.
+fn capitalize_first(s: &str) -> String {
+    let mut chars = s.chars();
+    match chars.next() {
+        None => String::new(),
+        Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use darling::FromMeta;
+    use syn::parse_quote;
+
+    #[test]
+    fn test_update_impl_basic() {
+        let attrs = UpdateAttrs::default();
+        let item: ItemFn = parse_quote! {
+            async fn change_address(ctx: WorkflowContext, addr: Address) -> Result<AddrResult> {
+                Ok(AddrResult { accepted: true })
+            }
+        };
+
+        let result = update_impl_inner(attrs, item);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_update_impl_with_name() {
+        let meta: Meta = parse_quote!(update(name = "change_shipping_address"));
+        let attrs = UpdateAttrs::from_meta(&meta).unwrap();
+        let item: ItemFn = parse_quote! {
+            async fn change_addr(ctx: WorkflowContext, addr: Address) -> Result<AddrResult> {
+                Ok(AddrResult { accepted: true })
+            }
+        };
+
+        let result = update_impl_inner(attrs, item);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_update_impl_non_async_fails() {
+        let attrs = UpdateAttrs::default();
+        let item: ItemFn = parse_quote! {
+            fn change_address(ctx: WorkflowContext, addr: Address) -> Result<AddrResult> {
+                Ok(AddrResult { accepted: true })
+            }
+        };
+
+        let result = update_impl_inner(attrs, item);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("must be async"));
+    }
+
+    #[test]
+    fn test_update_impl_no_return_fails() {
+        let attrs = UpdateAttrs::default();
+        let item: ItemFn = parse_quote! {
+            async fn change_address(ctx: WorkflowContext, addr: Address) {
+                // no return
+            }
+        };
+
+        let result = update_impl_inner(attrs, item);
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("must have a return type"));
+    }
+
+    #[test]
+    fn test_update_impl_no_workflow_context_fails() {
+        let attrs = UpdateAttrs::default();
+        let item: ItemFn = parse_quote! {
+            async fn change_address(addr: Address) -> Result<AddrResult> {
+                Ok(AddrResult { accepted: true })
+            }
+        };
+
+        let result = update_impl_inner(attrs, item);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("WorkflowContext"));
+    }
+
+    #[test]
+    fn test_update_impl_with_description() {
+        let meta: Meta = parse_quote!(update(name = "cancel", description = "Cancel the order"));
+        let attrs = UpdateAttrs::from_meta(&meta).unwrap();
+        assert_eq!(attrs.description, Some("Cancel the order".to_string()));
+    }
+
+    #[test]
+    fn test_update_impl_with_timeout() {
+        let meta: Meta = parse_quote!(update(name = "cancel", timeout = 30));
+        let attrs = UpdateAttrs::from_meta(&meta).unwrap();
+        assert_eq!(attrs.timeout, Some(30));
+    }
+
+    #[test]
+    fn test_capitalize_first() {
+        assert_eq!(capitalize_first("hello"), "Hello");
+        assert_eq!(capitalize_first("world"), "World");
+        assert_eq!(capitalize_first(""), "");
+        assert_eq!(capitalize_first("a"), "A");
+    }
+}

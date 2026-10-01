@@ -5,8 +5,8 @@ name: Release
 # the release, and the publish job below sends that version to crates.io.
 #
 # The version lives in `[workspace.package].version` in the root Cargo.toml,
-# which both crates inherit, and in the version `orcher` requires of
-# `orcher-macros` under `[workspace.dependencies]`; release-please bumps both
+# which both crates inherit, and in the version `orcher-sdk` requires of
+# `orcher-sdk-macros` under `[workspace.dependencies]`; release-please bumps both
 # (see release-please-config.json). Before 1.0, features and fixes bump the
 # patch and a breaking change bumps the minor.
 #
@@ -67,14 +67,14 @@ jobs:
       - uses: rust-lang/crates-io-auth-action@v1
         if: env.HAS_TOKEN != 'true'
         id: auth
-      # orcher depends on orcher-macros, so the macros go first; cargo waits
+      # orcher-sdk depends on orcher-sdk-macros, so the macros go first; cargo waits
       # for each upload to reach the index before moving on. Versions already on
       # crates.io are skipped, so a publish that failed halfway can be retried.
       # (`cargo publish --workspace` would refuse the whole run instead.)
-      - name: Publish orcher-macros, then orcher
+      - name: Publish orcher-sdk-macros, then orcher-sdk
         run: |
           set -euo pipefail
-          for crate in orcher-macros orcher; do
+          for crate in orcher-sdk-macros orcher-sdk; do
             version=$(cargo metadata --no-deps --format-version 1 |
               jq -r --arg name "$crate" '.packages[] | select(.name == $name) | .version')
             if curl -fsS "https://index.crates.io/${crate:0:2}/${crate:2:2}/$crate" 2>/dev/null |
@@ -95,7 +95,7 @@ jobs:
         if: github.event_name == 'workflow_dispatch'
         run: |
           version=$(cargo metadata --no-deps --format-version 1 |
-            jq -r '.packages[] | select(.name == "orcher") | .version')
+            jq -r '.packages[] | select(.name == "orcher-sdk") | .version')
           gh release view "v$version" >/dev/null 2>&1 ||
             gh release create "v$version" --target "$GITHUB_SHA" --title "v$version" --notes "First public release."
         env:

@@ -17,8 +17,8 @@ use std::time::Duration;
 
 use anyhow::{anyhow, Context, Result};
 use clap::Parser;
-use orcher::client::{ClientConfig, StartWorkflowOptions, WorkflowIdReusePolicy};
-use orcher::prelude::*;
+use orcher_sdk::client::{ClientConfig, StartWorkflowOptions, WorkflowIdReusePolicy};
+use orcher_sdk::prelude::*;
 use serde::Deserialize;
 use serde_json::Value;
 
@@ -320,7 +320,7 @@ async fn main() -> Result<()> {
 /// Each call is a plain client operation whose failure every SDK is expected to
 /// report identically. Only operations that need no worker are used, so the
 /// assertion is about the client's error contract and nothing else.
-async fn perform_client_call(client: &Client, call: &str) -> Result<(), orcher::Error> {
+async fn perform_client_call(client: &Client, call: &str) -> Result<(), orcher_sdk::Error> {
     match call {
         "status_of_missing_workflow" => {
             // A fresh id per run, as in the other scenarios.
@@ -720,7 +720,7 @@ async fn run_workflow_id_reuse_scenario(
         client.start_workflow_with_options(workflow, scenario.input.clone(), options)
     };
     // A refused start must carry the code, and name the run in the way.
-    let refused = |outcome: orcher::Result<orcher::client::WorkflowHandle>,
+    let refused = |outcome: orcher_sdk::Result<orcher_sdk::client::WorkflowHandle>,
                    in_the_way: &str,
                    when: &str|
      -> Result<()> {
@@ -737,10 +737,12 @@ async fn run_workflow_id_reuse_scenario(
                     ));
                 }
                 match e {
-                    orcher::Error::Client(orcher::error::ClientError::WorkflowAlreadyExists {
-                        run_id: Some(ref run_id),
-                        ..
-                    }) if run_id == in_the_way => Ok(()),
+                    orcher_sdk::Error::Client(
+                        orcher_sdk::error::ClientError::WorkflowAlreadyExists {
+                            run_id: Some(ref run_id),
+                            ..
+                        },
+                    ) if run_id == in_the_way => Ok(()),
                     other => Err(anyhow!(
                         "{when}: the refusal does not name run {in_the_way}: {other:?}"
                     )),
@@ -749,7 +751,7 @@ async fn run_workflow_id_reuse_scenario(
         }
     };
     let completes =
-        |result: std::result::Result<Value, orcher::Error>, which: &str| -> Result<()> {
+        |result: std::result::Result<Value, orcher_sdk::Error>, which: &str| -> Result<()> {
             let result = result.map_err(|e| anyhow!("the {which} run did not complete: {e}"))?;
             if json_matches(&expect.result, &result) {
                 Ok(())
