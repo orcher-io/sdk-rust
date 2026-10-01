@@ -701,12 +701,24 @@ impl ExecutionRuntime {
                     );
                 }
                 RequestJob::ChildWorkflowFailed(job) => {
-                    let error_bytes = serde_json::to_vec(&serde_json::json!({
-                        "__orcher_child_failed__": true,
-                        "message": job.failure.message
-                    }))
-                    .unwrap_or_default();
-                    ctx.inject_step_result(format!("child:{}", job.workflow_id), error_bytes);
+                    inject_child_failure(ctx, &job.workflow_id, &job.failure.message);
+                }
+                // A child that did not complete failed as far as its parent is
+                // concerned: `result()` raises `ChildWorkflowFailed` with the reason.
+                // Without these the parent would wait on the child forever.
+                RequestJob::ChildWorkflowCanceled(job) => {
+                    inject_child_failure(ctx, &job.workflow_id, "child workflow was canceled");
+                }
+                RequestJob::ChildWorkflowTerminated(job) => {
+                    let message = if job.reason.is_empty() {
+                        "child workflow was terminated".to_string()
+                    } else {
+                        format!("child workflow was terminated: {}", job.reason)
+                    };
+                    inject_child_failure(ctx, &job.workflow_id, &message);
+                }
+                RequestJob::ChildWorkflowTimedOut(job) => {
+                    inject_child_failure(ctx, &job.workflow_id, "child workflow timed out");
                 }
                 RequestJob::FireTimer(job) => {
                     // A durable timer fired. Mark it, keyed by the user-facing timer id,
@@ -955,6 +967,15 @@ impl ExecutionRuntime {
                 },
             )),
 
+            // The engine identifies the child by the id its parent gave it; the run id
+            // is left empty because the child's run changes when it is retried.
+            WorkflowCommand::CancelChildWorkflow(cancel) => Ok(BridgeCommand::CancelChildWorkflow(
+                orcher_sdk_core::bridge::CancelChildWorkflowCommand {
+                    workflow_id: cancel.workflow_id,
+                    run_id: String::new(),
+                },
+            )),
+
             WorkflowCommand::WaitForEvent(cmd) => {
                 Ok(BridgeCommand::WaitForEvent(WaitForEventCommand {
                     step_id: format!("event_{}_{}", cmd.event_name, cmd.sequence),
@@ -1011,6 +1032,15 @@ impl JournalTimes {
                 Some(Attributes::ChildWorkflowExecutionFailed(a)) => {
                     format!("child:{}", a.workflow_id)
                 }
+                Some(Attributes::ChildWorkflowExecutionCanceled(a)) => {
+                    format!("child:{}", a.workflow_id)
+                }
+                Some(Attributes::ChildWorkflowExecutionTerminated(a)) => {
+                    format!("child:{}", a.workflow_id)
+                }
+                Some(Attributes::ChildWorkflowExecutionTimedOut(a)) => {
+                    format!("child:{}", a.workflow_id)
+                }
                 Some(Attributes::EventReceived(a)) => {
                     times
                         .events
@@ -1027,6 +1057,17 @@ impl JournalTimes {
     }
 }
 
+/// Records that a child ended without a result, so `result()` raises
+/// `ChildWorkflowFailed` with `message` on replay.
+fn inject_child_failure(ctx: &WorkflowContext, workflow_id: &str, message: &str) {
+    let error_bytes = serde_json::to_vec(&serde_json::json!({
+        "__orcher_child_failed__": true,
+        "message": message
+    }))
+    .unwrap_or_default();
+    ctx.inject_step_result(format!("child:{workflow_id}"), error_bytes);
+}
+
 /// The key a job's result is held under in the workflow context.
 fn result_key(job: &RequestJob) -> Option<String> {
     match job {
@@ -1034,6 +1075,9 @@ fn result_key(job: &RequestJob) -> Option<String> {
         RequestJob::CompleteStep(job) => Some(job.step_name.clone()),
         RequestJob::ChildWorkflowCompleted(job) => Some(format!("child:{}", job.workflow_id)),
         RequestJob::ChildWorkflowFailed(job) => Some(format!("child:{}", job.workflow_id)),
+        RequestJob::ChildWorkflowCanceled(job) => Some(format!("child:{}", job.workflow_id)),
+        RequestJob::ChildWorkflowTerminated(job) => Some(format!("child:{}", job.workflow_id)),
+        RequestJob::ChildWorkflowTimedOut(job) => Some(format!("child:{}", job.workflow_id)),
         RequestJob::FireTimer(job) => Some(format!("timer:{}", job.timer_id)),
         _ => None,
     }
