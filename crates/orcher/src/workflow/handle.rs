@@ -1,15 +1,15 @@
 //! Handle a parent workflow uses to wait on a child workflow it started.
 
 use crate::error::{Error, Result};
-use crate::workflow::context::ContextState;
+use crate::workflow::command::{CancelChildWorkflowCommand, SendEventCommand, WorkflowCommand};
+use crate::workflow::WorkflowContext;
 use serde::{de::DeserializeOwned, Serialize};
-use std::sync::{Arc, Mutex};
 
 /// Handle to a child workflow started without waiting for its result.
 ///
-/// Use [`ChildWorkflowHandle::result`] to wait for the child. Sending events,
-/// querying and canceling through the handle are not supported: those methods
-/// always return an error.
+/// Use [`ChildWorkflowHandle::result`] to wait for the child,
+/// [`send_event`](Self::send_event) to send it an event, and
+/// [`cancel`](Self::cancel) to cancel it.
 ///
 /// ## Example
 ///
@@ -44,10 +44,10 @@ pub struct ChildWorkflowHandle {
 
     workflow_type: String,
 
-    /// The parent's context state. The runtime injects the child's completion
-    /// into `pending_task_results` under `child:{workflow_id}`, the same entry
-    /// the execute path reads, so the handle keeps no result state of its own.
-    ctx_state: Arc<Mutex<ContextState>>,
+    /// The parent's context. The runtime injects the child's completion into
+    /// `pending_task_results` under `child:{workflow_id}`, the same entry the
+    /// execute path reads, so the handle keeps no result state of its own.
+    ctx: WorkflowContext,
 }
 
 impl std::fmt::Debug for ChildWorkflowHandle {
@@ -66,13 +66,13 @@ impl ChildWorkflowHandle {
         workflow_id: String,
         run_id: String,
         workflow_type: String,
-        ctx_state: Arc<Mutex<ContextState>>,
+        ctx: WorkflowContext,
     ) -> Self {
         Self {
             workflow_id,
             run_id,
             workflow_type,
-            ctx_state,
+            ctx,
         }
     }
 
@@ -134,7 +134,7 @@ impl ChildWorkflowHandle {
         // result bytes on success, or a `{"__orcher_child_failed__":true,
         // "message":...}` sentinel on failure. The execute path reads the same entry.
         let cached = {
-            let state = self.ctx_state.lock().unwrap();
+            let state = self.ctx.state.lock().unwrap();
             let key = format!("child:{}", self.workflow_id);
             let cached = state.pending_task_results.get(&key).cloned();
             if cached.is_some() {
@@ -180,14 +180,16 @@ impl ChildWorkflowHandle {
         })
     }
 
-    /// Sends an event to the child workflow.
+    /// Sends an event to the child workflow, which receives it with
+    /// [`WorkflowContext::wait_for_event`].
     ///
-    /// Not supported: the event is not delivered, and the call only logs it.
+    /// The send is journaled as a step: it reaches the engine with the commands
+    /// of the run that makes it, and a replay of the parent does not send it
+    /// again.
     ///
     /// # Errors
     ///
-    /// Always returns an error: a serialization error if `arg` cannot be
-    /// serialized, otherwise a state error.
+    /// Returns a serialization error if `arg` cannot be serialized.
     ///
     /// # Example
     ///
@@ -209,73 +211,29 @@ impl ChildWorkflowHandle {
     /// # }
     /// ```
     pub async fn send_event<E: Serialize>(&self, event_name: &str, arg: E) -> Result<()> {
-        let _payload = serde_json::to_vec(&arg).map_err(|e| {
+        let data = serde_json::to_vec(&arg).map_err(|e| {
             Error::Serialization(format!("Failed to serialize event payload: {}", e))
         })?;
-
-        tracing::info!(
-            workflow_id = %self.workflow_id,
-            event_name = %event_name,
-            "Sending event to child workflow"
-        );
-
-        Err(Error::Workflow(crate::error::WorkflowError::StateError(
-            format!(
-                "Sending events to child workflow {} requires execution context - will be implemented with executor integration",
-                self.workflow_id
-            )
-        )))
-    }
-
-    /// Queries the child workflow's state.
-    ///
-    /// Not supported: the query is not sent, and the call only logs it.
-    ///
-    /// # Errors
-    ///
-    /// Always returns an error: a serialization error if `arg` cannot be
-    /// serialized, otherwise a state error.
-    ///
-    /// # Example
-    ///
-    /// ```rust,no_run
-    /// # use orcher::prelude::*;
-    /// # async fn example(child: ChildWorkflowHandle) -> Result<()> {
-    /// let status: String = child.query("get_status", ()).await?;
-    /// println!("Child workflow status: {}", status);
-    /// # Ok(())
-    /// # }
-    /// ```
-    pub async fn query<Q: Serialize, R: DeserializeOwned>(
-        &self,
-        query_name: &str,
-        arg: Q,
-    ) -> Result<R> {
-        let _arg_bytes = serde_json::to_vec(&arg).map_err(|e| {
-            Error::Serialization(format!("Failed to serialize query argument: {}", e))
-        })?;
-
-        tracing::info!(
-            workflow_id = %self.workflow_id,
-            query_name = %query_name,
-            "Querying child workflow"
-        );
-
-        Err(Error::Workflow(crate::error::WorkflowError::StateError(
-            format!(
-                "Querying child workflow {} - will be fully implemented in Task 3.2",
-                self.workflow_id
-            ),
-        )))
+        let command = WorkflowCommand::SendEvent(SendEventCommand {
+            sequence: self.ctx.next_sequence(),
+            workflow_id: self.workflow_id.clone(),
+            event_name: event_name.to_string(),
+            data,
+        });
+        self.emit_once(
+            &format!("send_event:{}:{}", self.workflow_id, event_name),
+            command,
+        )
+        .await
     }
 
     /// Requests cancellation of the child workflow.
     ///
-    /// Not supported: no cancellation is sent, and the call only logs it.
-    ///
-    /// # Errors
-    ///
-    /// Always returns a state error.
+    /// The child is canceled the way a client cancels a workflow, and
+    /// [`result`](Self::result) then fails with `ChildWorkflowFailed`. Like
+    /// [`send_event`](Self::send_event), the request is journaled as a step and
+    /// not repeated on replay; canceling a child that has already finished does
+    /// nothing.
     ///
     /// # Example
     ///
@@ -287,17 +245,28 @@ impl ChildWorkflowHandle {
     /// # }
     /// ```
     pub async fn cancel(&self) -> Result<()> {
-        tracing::info!(
-            workflow_id = %self.workflow_id,
-            "Canceling child workflow"
-        );
+        let command = WorkflowCommand::CancelChildWorkflow(CancelChildWorkflowCommand {
+            sequence: self.ctx.next_sequence(),
+            workflow_id: self.workflow_id.clone(),
+        });
+        self.emit_once(&format!("cancel_child:{}", self.workflow_id), command)
+            .await
+    }
 
-        Err(Error::Workflow(crate::error::WorkflowError::StateError(
-            format!(
-                "Canceling child workflow {} - will be implemented with executor integration",
-                self.workflow_id
-            ),
-        )))
+    /// Emits `command` once across replays.
+    ///
+    /// The engine keeps no record a worker could read for these commands, so
+    /// the emission runs as an inline step: the first run adds the command and
+    /// journals the step, and a replay returns the journaled step without
+    /// adding it again.
+    async fn emit_once(&self, step_name: &str, command: WorkflowCommand) -> Result<()> {
+        let ctx = self.ctx.clone();
+        self.ctx
+            .execute(step_name, move || async move {
+                ctx.add_command(command);
+                Ok(())
+            })
+            .await
     }
 }
 
@@ -322,7 +291,7 @@ mod tests {
             child_id.to_string(),
             "run-456".to_string(),
             "OrderWorkflow".to_string(),
-            Arc::clone(&ctx.state),
+            ctx.clone(),
         );
         (ctx, handle)
     }
@@ -423,30 +392,75 @@ mod tests {
         assert_eq!(result, order_result);
     }
 
-    #[tokio::test]
-    async fn test_child_workflow_send_event() {
-        let (_ctx, handle) = make_handle("child-wf-123");
+    /// Runs `op` on a fresh parent, then again on a replay that has the first
+    /// run's journaled steps, and returns the commands each run emitted.
+    async fn first_run_and_replay<F, Fut>(op: F) -> (Vec<WorkflowCommand>, Vec<WorkflowCommand>)
+    where
+        F: Fn(ChildWorkflowHandle) -> Fut,
+        Fut: std::future::Future<Output = Result<()>>,
+    {
+        let (ctx, handle) = make_handle("child-wf-123");
+        op(handle).await.unwrap();
+        let first = ctx.commands_for_test();
 
-        // Not supported, so always an error.
-        let result = handle.send_event("approve", true).await;
-        assert!(result.is_err());
+        let journaled = crate::workflow::closure_commands::extract_closure_commands(&ctx).unwrap();
+        assert_eq!(journaled.len(), 1, "the command is journaled as one step");
+
+        let (replay, handle) = make_handle("child-wf-123");
+        replay.set_replaying_for_test(true);
+        for step in journaled {
+            replay.inject_step_result(step.step_name, step.result);
+        }
+        op(handle).await.unwrap();
+        (first, replay.commands_for_test())
     }
 
     #[tokio::test]
-    async fn test_child_workflow_query() {
-        let (_ctx, handle) = make_handle("child-wf-123");
+    async fn test_child_workflow_send_event_is_sent_once() {
+        let (first, replay) =
+            first_run_and_replay(|handle| async move { handle.send_event("approve", true).await })
+                .await;
 
-        // Not supported, so always an error.
-        let result: Result<String> = handle.query("get_status", ()).await;
-        assert!(result.is_err());
+        let sent: Vec<_> = first
+            .iter()
+            .filter_map(|c| match c {
+                WorkflowCommand::SendEvent(e) => Some(e),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(sent.len(), 1);
+        assert_eq!(sent[0].workflow_id, "child-wf-123");
+        assert_eq!(sent[0].event_name, "approve");
+        assert_eq!(sent[0].data, b"true");
+
+        assert!(
+            !replay
+                .iter()
+                .any(|c| matches!(c, WorkflowCommand::SendEvent(_))),
+            "a replay must not send the event again"
+        );
     }
 
     #[tokio::test]
-    async fn test_child_workflow_cancel() {
-        let (_ctx, handle) = make_handle("child-wf-123");
+    async fn test_child_workflow_cancel_is_requested_once() {
+        let (first, replay) =
+            first_run_and_replay(|handle| async move { handle.cancel().await }).await;
 
-        // Not supported, so always an error.
-        let result = handle.cancel().await;
-        assert!(result.is_err());
+        let canceled: Vec<_> = first
+            .iter()
+            .filter_map(|c| match c {
+                WorkflowCommand::CancelChildWorkflow(c) => Some(c),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(canceled.len(), 1);
+        assert_eq!(canceled[0].workflow_id, "child-wf-123");
+
+        assert!(
+            !replay
+                .iter()
+                .any(|c| matches!(c, WorkflowCommand::CancelChildWorkflow(_))),
+            "a replay must not request cancellation again"
+        );
     }
 }

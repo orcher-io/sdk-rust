@@ -79,7 +79,7 @@ pub use traits::Workflow;
 
 // Command types are public so test harnesses can inspect what a workflow emitted.
 pub use command::{
-    CancelTimerCommand, CompleteWorkflowCommand, FailWorkflowCommand,
+    CancelChildWorkflowCommand, CancelTimerCommand, CompleteWorkflowCommand, FailWorkflowCommand,
     OrphanPolicy as CommandOrphanPolicy, RecordStepResultCommand, RestartFreshCommand,
     ScheduleTaskCommand, SendEventCommand, StartChildWorkflowCommand, StartTimerCommand,
     TaskRetryPolicy, WaitForEventCommand, WorkflowCommand,

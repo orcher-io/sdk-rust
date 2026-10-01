@@ -56,6 +56,12 @@ pub enum CommandDetails {
         event_name: String,
     },
 
+    /// Cancellation of a child workflow was requested.
+    CancelChildWorkflow {
+        /// The child's workflow id.
+        workflow_id: String,
+    },
+
     /// The workflow began waiting for an event.
     WaitForEvent {
         /// The event's name.
@@ -114,6 +120,12 @@ impl CommandInfo {
                 CommandDetails::SendEvent {
                     workflow_id: cmd.workflow_id.clone(),
                     event_name: cmd.event_name.clone(),
+                },
+            ),
+            WorkflowCommand::CancelChildWorkflow(cmd) => (
+                "CancelChildWorkflow".to_string(),
+                CommandDetails::CancelChildWorkflow {
+                    workflow_id: cmd.workflow_id.clone(),
                 },
             ),
             WorkflowCommand::WaitForEvent(cmd) => (
@@ -185,6 +197,9 @@ impl CommandInfo {
                 event_name,
             } => {
                 format!("Send event '{}' to {}", event_name, workflow_id)
+            }
+            CommandDetails::CancelChildWorkflow { workflow_id } => {
+                format!("Cancel child workflow {}", workflow_id)
             }
             CommandDetails::WaitForEvent {
                 event_name,
@@ -333,6 +348,7 @@ impl CommandInspector {
                 CommandDetails::StartChildWorkflow { .. } => summary.child_workflow_count += 1,
                 CommandDetails::SendEvent { .. } => summary.event_count += 1,
                 CommandDetails::WaitForEvent { .. } => summary.wait_event_count += 1,
+                CommandDetails::CancelChildWorkflow { .. } => {}
                 CommandDetails::RestartFresh { .. } => summary.start_refresh = true,
                 CommandDetails::Other { .. } => {
                     if cmd.command_type == "CompleteWorkflow" {

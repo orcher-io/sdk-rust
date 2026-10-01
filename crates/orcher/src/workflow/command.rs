@@ -38,6 +38,9 @@ pub enum WorkflowCommand {
     /// Send an event to another workflow.
     SendEvent(SendEventCommand),
 
+    /// Cancel a child workflow this workflow started.
+    CancelChildWorkflow(CancelChildWorkflowCommand),
+
     /// Wait for an event.
     WaitForEvent(WaitForEventCommand),
 
@@ -227,6 +230,16 @@ pub struct SendEventCommand {
     pub data: Vec<u8>,
 }
 
+/// Cancels a child workflow this workflow started.
+#[derive(Debug, Clone)]
+pub struct CancelChildWorkflowCommand {
+    /// Position of the command in the workflow; identical on every replay.
+    pub sequence: u64,
+
+    /// ID the parent gave the child.
+    pub workflow_id: String,
+}
+
 /// Waits for an event sent to this workflow.
 #[derive(Debug, Clone)]
 pub struct WaitForEventCommand {
@@ -279,6 +292,7 @@ impl WorkflowCommand {
             WorkflowCommand::StartChildWorkflow(_) => "StartChildWorkflow",
             WorkflowCommand::CancelTimer(_) => "CancelTimer",
             WorkflowCommand::SendEvent(_) => "SendEvent",
+            WorkflowCommand::CancelChildWorkflow(_) => "CancelChildWorkflow",
             WorkflowCommand::WaitForEvent(_) => "WaitForEvent",
             WorkflowCommand::RestartFresh(_) => "RestartFresh",
             WorkflowCommand::RecordStepResult(_) => "RecordStepResult",

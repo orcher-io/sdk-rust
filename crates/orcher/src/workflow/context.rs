@@ -547,7 +547,7 @@ impl WorkflowContext {
             workflow_id.clone(),
             run_id,
             workflow_type.to_string(),
-            Arc::clone(&self.state),
+            self.clone(),
         );
 
         {
