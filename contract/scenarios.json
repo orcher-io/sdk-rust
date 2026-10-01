@@ -1,0 +1,384 @@
+{
+  "$comment": "Cross-SDK contract scenarios. Language-agnostic contract: every SDK ships a worker implementing the same-named workflow catalog, and each workflow returns a JSON result describing the durable behavior it observed. The harness starts each workflow with `input`, waits for a terminal state, and asserts `expect` (terminal status + returned result). Result matching is structural \u2014 a scenario asserts only the fields it lists, so SDK-specific extras (e.g. Rust exposes a task `attempts` count that Python's TaskError does not) are ignored. Scenarios with `kind: \"actor\"` instead invoke operations on a same-named actor from the catalog: each step fires `parallel` concurrent invocations against a fresh per-run key and asserts every invocation's JSON result against `expect_each`. Keep this file in sync across SDK repos.",
+  "version": 1,
+  "scenarios": [
+    {
+      "id": "echo",
+      "description": "Sanity: worker runs, input round-trips through a workflow to a completed result.",
+      "workflow": "echo",
+      "input": {
+        "message": "hello-contract"
+      },
+      "expect": {
+        "status": "completed",
+        "result": {
+          "message": "hello-contract"
+        }
+      }
+    },
+    {
+      "id": "task-failure-caught",
+      "description": "A task fails; the workflow catches the durable task failure and completes, reporting the failed task type. Guards the durable task-failure decode path.",
+      "workflow": "catch_task_failure",
+      "input": {},
+      "expect": {
+        "status": "completed",
+        "result": {
+          "caught": true,
+          "task_type": "always_fail"
+        }
+      }
+    },
+    {
+      "id": "task-retries-exhausted",
+      "description": "A task declared with three attempts fails every time; the workflow catches the durable failure and reports how many attempts it took. Guards the attempt count, which a worker can drop while every other assertion here still passes.",
+      "workflow": "task_retries_exhausted",
+      "input": {},
+      "expect": {
+        "status": "completed",
+        "result": {
+          "caught": true,
+          "task_type": "always_fail_retried",
+          "attempts": 3
+        }
+      }
+    },
+    {
+      "id": "task-non-retryable-listed",
+      "description": "A task declared with three attempts fails with an error type its retry policy lists as non-retryable. The engine is told the type the task raised, so the task runs once.",
+      "workflow": "task_non_retryable_listed",
+      "input": {},
+      "expect": {
+        "status": "completed",
+        "result": {
+          "caught": true,
+          "task_type": "decline_card",
+          "attempts": 1
+        }
+      }
+    },
+    {
+      "id": "task-non-retryable-marked",
+      "description": "A task declared with three attempts fails with an error raised as non-retryable, under a type its policy does not list. The mark alone stops the retries, so the task runs once.",
+      "workflow": "task_non_retryable_marked",
+      "input": {},
+      "expect": {
+        "status": "completed",
+        "result": {
+          "caught": true,
+          "task_type": "close_account",
+          "attempts": 1
+        }
+      }
+    },
+    {
+      "id": "task-unlisted-retried",
+      "description": "A task whose policy lists a non-retryable type fails with a type the list does not name, so it is retried to its three attempts as usual.",
+      "workflow": "task_unlisted_retried",
+      "input": {},
+      "expect": {
+        "status": "completed",
+        "result": {
+          "caught": true,
+          "task_type": "throttle",
+          "attempts": 3
+        }
+      }
+    },
+    {
+      "id": "task-input-roundtrip",
+      "description": "A workflow passes a value into a task, which returns it under `echoed`. Guards that a task actually receives its input (not a corrupted/first-byte value).",
+      "workflow": "task_input_roundtrip",
+      "input": {
+        "value": "roundtrip-me"
+      },
+      "expect": {
+        "status": "completed",
+        "result": {
+          "echoed": "roundtrip-me"
+        }
+      }
+    },
+    {
+      "id": "child-workflow-roundtrip",
+      "description": "A parent workflow starts a child workflow, waits for its result, and returns it. Guards the full child-workflow round trip: StartChildWorkflow command emission, child execution, and the completion decode that resumes the parent with the child's result. The child must run exactly once (a correlation bug previously re-started the child on every parent replay).",
+      "workflow": "parent_starts_child",
+      "input": {
+        "n": 21
+      },
+      "expect": {
+        "status": "completed",
+        "result": {
+          "child_saw": 21,
+          "doubled": 42
+        }
+      }
+    },
+    {
+      "id": "child-workflow-failure-caught",
+      "description": "A parent starts a child workflow that always fails; the parent catches the child failure and completes, reporting it. Guards child-failure propagation (engine ChildWorkflowExecutionFailed) and the per-SDK failure decode.",
+      "workflow": "parent_catches_child_failure",
+      "input": {},
+      "expect": {
+        "status": "completed",
+        "result": {
+          "child_failed": true
+        }
+      }
+    },
+    {
+      "id": "restart-fresh-roundtrip",
+      "description": "A workflow restarts fresh (orcher's continue-as-new) once, then completes. The client following the original execution receives the continued execution's result. Guards restart-fresh persistence and the result-following chain (original -> restarted_fresh, continued -> completed).",
+      "workflow": "restart_once",
+      "input": {
+        "count": 0
+      },
+      "expect": {
+        "status": "completed",
+        "result": {
+          "restarted": true,
+          "count": 1
+        }
+      }
+    },
+    {
+      "id": "parallel-children-roundtrip",
+      "description": "A parent starts two child workflows in parallel (both StartChildWorkflow commands emitted before either result is awaited), then awaits both. Guards the handle path (start-child + handle.result) and the engine's idempotent child start: on replay after one child completes, re-emitting the still-pending child's start must return the existing child rather than spawn a duplicate.",
+      "workflow": "parent_two_children_parallel",
+      "input": {},
+      "expect": {
+        "status": "completed",
+        "result": {
+          "first": 20,
+          "second": 40
+        }
+      }
+    },
+    {
+      "id": "durable-timer-roundtrip",
+      "description": "A workflow sleeps on a durable timer, then completes. Guards the timer round trip: StartTimer command emission, the engine firing the timer, and the FireTimer correlation that resumes the workflow by the business timer id on replay (not a synthetic entry-id).",
+      "workflow": "sleep_once",
+      "input": {},
+      "expect": {
+        "status": "completed",
+        "result": {
+          "slept": true
+        },
+        "min_elapsed_ms": 900,
+        "max_elapsed_ms": 10000
+      }
+    },
+    {
+      "id": "reset-replays-journal-prefix",
+      "description": "A workflow runs a task to completion; the client then resets it to the journal event that scheduled that task. The engine must end the original run with terminal status `reset`, create a successor that replays the journal up to and including the target event, and let it make fresh decisions from there to the same result. Guards the whole reset path: the client binding, the journal key the engine reads (the execution row's internal id, not the user-facing workflow id), seeding the successor's journal before it becomes dispatchable, and the `reset` status itself.",
+      "kind": "reset",
+      "workflow": "task_input_roundtrip",
+      "input": {
+        "value": "reset-me"
+      },
+      "reset_to_event_id": 2,
+      "expect": {
+        "status": "completed",
+        "result": {
+          "echoed": "reset-me"
+        }
+      }
+    },
+    {
+      "id": "actor-shared-ops-run-concurrently",
+      "description": "Two shared (read-only) operations on the same actor key must execute concurrently. Each invocation waits (up to a deadline) until a second invocation has entered; if the scheduler wrongly serializes shared operations, the first exhausts the deadline before the second can enter and the scenario fails. Guards mode registration end-to-end (declared mode -> RegisterHandlers -> engine resolution -> concurrent dispatch).",
+      "kind": "actor",
+      "actor": "contract_probe",
+      "steps": [
+        {
+          "operation": "shared_rendezvous",
+          "input": {},
+          "parallel": 2,
+          "expect_each": {
+            "observed_concurrent": true
+          }
+        }
+      ]
+    },
+    {
+      "id": "actor-exclusive-ops-serialize",
+      "description": "Two exclusive operations on the same actor key must never overlap (single-writer-per-key). Each invocation reports whether it ever observed a concurrent peer while it held the key.",
+      "kind": "actor",
+      "actor": "contract_probe",
+      "steps": [
+        {
+          "operation": "exclusive_probe",
+          "input": {},
+          "parallel": 2,
+          "expect_each": {
+            "alone": true
+          }
+        }
+      ]
+    },
+    {
+      "id": "actor-shared-write-rejected",
+      "description": "A state write attempted from a shared (read-only) operation is rejected by the engine (writes during a key's shared window would race concurrent readers). The operation catches the rejection and reports it.",
+      "kind": "actor",
+      "actor": "contract_probe",
+      "steps": [
+        {
+          "operation": "shared_write_attempt",
+          "input": {},
+          "parallel": 1,
+          "expect_each": {
+            "write_rejected": true
+          }
+        }
+      ]
+    },
+    {
+      "id": "actor-exclusive-write-allowed",
+      "description": "Control: a state write from an exclusive operation succeeds and round-trips through actor state.",
+      "kind": "actor",
+      "actor": "contract_probe",
+      "steps": [
+        {
+          "operation": "exclusive_write_roundtrip",
+          "input": {
+            "value": "contract-42"
+          },
+          "parallel": 1,
+          "expect_each": {
+            "write_ok": true,
+            "value": "contract-42"
+          }
+        }
+      ]
+    },
+    {
+      "id": "workflow-failure-surfaces-its-message",
+      "description": "A workflow throws the SDK's typed workflow error; the caller must receive that message. Asserting only that the workflow failed is not enough — a failure the engine cannot parse also counts as a failure, which is how an unreportable error stayed hidden while every suite passed.",
+      "workflow": "typed_failure",
+      "input": {},
+      "expect": {
+        "status": "failed",
+        "error_contains": "deliberate contract failure"
+      }
+    },
+    {
+      "id": "task-declared-heartbeat-observed",
+      "description": "A workflow declares a heartbeat timeout on a task; the task reports back the value it was actually given. Guards the whole declaration loop — declared, recorded by the engine, delivered on poll — which is the path that silently dropped the value in every SDK while each layer looked implemented.",
+      "workflow": "task_timeouts_echo",
+      "input": {},
+      "expect": {
+        "status": "completed",
+        "result": {
+          "heartbeat_secs": 15
+        }
+      }
+    },
+    {
+      "id": "task-outlives-heartbeat-timeout-without-heartbeat-code",
+      "description": "A task that declares no timeouts and has no heartbeat code sleeps well past the heartbeat timeout it was given, and completes having run once. The worker says it heartbeats every task on its own, so the engine gives the task its default heartbeat timeout, and the worker's own heartbeats keep the task alive for as long as it runs. Guards both halves: a worker that stopped heartbeating would see the task timed out and run a second time (the task counts its runs in the worker process), and one not given a timeout reports so. Needs an engine whose default heartbeat timeout is under the sleep, with its timeout watcher sweeping every second or two (the engine's contract-suite.sh runs it with 3s).",
+      "workflow": "outlive_heartbeat_timeout",
+      "input": {
+        "sleep_secs": 10
+      },
+      "expect": {
+        "status": "completed",
+        "result": {
+          "runs": 1,
+          "heartbeat_timeout_given": true,
+          "outlived_heartbeat_timeout": true
+        }
+      }
+    },
+    {
+      "id": "task-retried-after-its-worker-dies",
+      "kind": "worker_crash",
+      "description": "A task that declares no timeouts kills its worker process, as a worker dying mid-task would. The workflow runs on a queue of its own, served by a separate worker process started with ORCHER_CONTRACT_DOOMED_WORKER set, whose tasks of this kind exit the process; once it has died, a second worker process is started without it, and the task is retried there. Nothing but the engine's default heartbeat timeout can recover the first attempt: the task sets no timeout, and a dead worker sends no heartbeat. Before it, the attempt stayed started for good and the workflow never finished.",
+      "workflow": "crash_mid_task",
+      "input": {},
+      "expect": {
+        "status": "completed",
+        "result": {
+          "survived_worker_death": true
+        }
+      }
+    },
+    {
+      "id": "client_error_workflow_not_found",
+      "kind": "client_error",
+      "description": "A client call naming a workflow that does not exist reports the same error code in every SDK. Asserted on the code, not the class name: the SDKs differ in what they call the class, but the code is what a user reads across languages.",
+      "client_call": "status_of_missing_workflow",
+      "expect": {
+        "error_code": "WORKFLOW_NOT_FOUND"
+      }
+    },
+    {
+      "id": "event-wakes-parked-workflow",
+      "description": "A workflow parks waiting for an external event; a client wakes it by workflow id alone; the replay consumes the journaled event and completes with its payload. The result also reports how many times the engine activated the workflow, bounded by `result_at_most`: park, wake, complete is a handful, and a parked workflow that is re-dispatched continuously until the event arrives is the defect this catches. Three separate defects on this path reached a customer before any suite waited for an event: the parking activation was rejected by the SDK's native layer over a field it never sent, the wake could not be addressed without a run id the SDK does not expose, and the engine re-dispatched the parked workflow sixteen times a second.",
+      "kind": "event",
+      "workflow": "wait_for_event_echo",
+      "input": {},
+      "event_name": "contract_event",
+      "event_payload": {
+        "status": "SHIPPED",
+        "amount": 42
+      },
+      "expect": {
+        "status": "completed",
+        "result": {
+          "received": {
+            "status": "SHIPPED",
+            "amount": 42
+          }
+        },
+        "result_at_most": {
+          "activations": 4
+        }
+      }
+    },
+    {
+      "id": "event-wait-timeout-elapses",
+      "description": "A workflow waits for an event with a two-second timeout that nobody satisfies; it must complete with a null payload and report the timeout, within a bounded wall clock. The deadline is a durable timer the SDK starts beside the wait and races against the event on replay, so the engine fires it even while no worker holds the workflow. This waited forever in every SDK until the timer was added: the timeout was accepted and ignored, because nothing evaluated it and the wire has no command the engine could enforce.",
+      "kind": "event",
+      "workflow": "wait_for_event_timeout",
+      "input": {},
+      "event_name": "contract_event_never_sent",
+      "expect": {
+        "status": "completed",
+        "result": {
+          "received": null,
+          "timed_out": true
+        },
+        "max_elapsed_ms": 15000
+      }
+    },
+    {
+      "id": "workflow-id-started-once",
+      "kind": "workflow_id_reuse",
+      "description": "A workflow is started under a caller-chosen id, then started again under the same id while it runs: the second start must be refused with WORKFLOW_ALREADY_EXISTS, naming the run already doing the work. Once that run completes, a start that reuses an id only after a failure (ALLOW_DUPLICATE_FAILED_ONLY) is refused the same way, and a plain start (ALLOW_DUPLICATE) runs the workflow again as a new run. The engine used to accept the duplicate and record a second run, so a caller relying on the id to start its work once did it twice; and the SDKs refused every reuse policy as unsupported by the server.",
+      "workflow": "sleep_once",
+      "input": {},
+      "expect": {
+        "status": "completed",
+        "result": {
+          "slept": true
+        },
+        "error_code": "WORKFLOW_ALREADY_EXISTS"
+      }
+    },
+    {
+      "id": "engine-restart-then-dispatch",
+      "description": "The engine is restarted under a running worker; a workflow started afterwards must be picked up and completed by that same worker, untouched. Guards poller recovery: the workflow pollers used to treat the error a proxy returns during a restart as permanent and stop for the life of the process, while the worker kept heartbeating and looked healthy. Opt-in: runs only when `ORCHER_CONTRACT_RESTART_CMD` names a command that restarts the engine the harness is pointed at; reported as skipped otherwise.",
+      "kind": "engine_restart",
+      "workflow": "echo",
+      "input": {
+        "message": "after-restart"
+      },
+      "expect": {
+        "status": "completed",
+        "result": {
+          "message": "after-restart"
+        }
+      }
+    }
+  ]
+}

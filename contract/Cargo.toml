@@ -1,0 +1,36 @@
+[package]
+name = "orcher-contract"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[[bin]]
+name = "orcher-contract"
+path = "src/main.rs"
+
+[[bin]]
+name = "stress"
+path = "src/bin/stress.rs"
+
+[[bin]]
+name = "long_wait"
+path = "src/bin/long_wait.rs"
+
+[[bin]]
+name = "tenancy"
+path = "src/bin/tenancy.rs"
+
+[dependencies]
+orcher = { path = "../crates/orcher", features = ["auto-register"] }
+# For ListWorkflowsOptions in the tenancy check; follows the SDK's own version.
+orcher-sdk-core = "0.8"
+
+
+tokio = { version = "1", features = ["full"] }
+futures = "0.3"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1"
+clap = { version = "4", features = ["derive", "env"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }

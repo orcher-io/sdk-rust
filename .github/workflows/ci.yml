@@ -1,0 +1,53 @@
+name: CI
+
+# Runs on GitHub-hosted runners only. Pull requests from forks run here too,
+# so this workflow must never target a self-hosted runner or read secrets.
+#
+# Every dependency comes from crates.io (orcher-sdk-core and orcher-proto
+# included), so no job needs a token, git credentials or protoc.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  # Release pull requests are opened with the default token, which starts no
+  # workflows, so their CI is started by hand on the release branch.
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  # Incremental artifacts only pay off when the same files are rebuilt over and
+  # over on one machine; in CI they just make the target directory bigger.
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all --check
+      # Every target in the workspace, tests and the contract runner included,
+      # with warnings as errors.
+      - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+      - name: Tests
+        run: cargo test --workspace --all-features --lib --tests
+      - name: Doc examples
+        run: cargo test --workspace --all-features --doc
+      - name: Docs build without warnings
+        run: cargo doc --workspace --all-features --no-deps
+        env:
+          RUSTDOCFLAGS: -D warnings
+      # Builds both crates exactly as crates.io would receive them. orcher is
+      # verified against the packaged orcher-macros, not a path dependency.
+      - run: cargo package -p orcher-macros -p orcher

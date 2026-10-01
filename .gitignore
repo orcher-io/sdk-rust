@@ -1,0 +1,7 @@
+/target
+**/target
+Cargo.lock
+.DS_Store
+
+# Local cross-repo override (see .cargo/config.example.toml)
+.cargo/config.toml

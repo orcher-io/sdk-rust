@@ -1,0 +1,102 @@
+name: Release
+
+# Every push to main is read as Conventional Commits. release-please keeps a
+# pull request open with the next version and its changelog; merging it tags
+# the release, and the publish job below sends that version to crates.io.
+#
+# The version lives in `[workspace.package].version` in the root Cargo.toml,
+# which both crates inherit, and in the version `orcher` requires of
+# `orcher-macros` under `[workspace.dependencies]`; release-please bumps both
+# (see release-please-config.json). Before 1.0, features and fixes bump the
+# patch and a breaking change bumps the minor.
+#
+# Publishing authenticates with crates.io trusted publishing (OIDC), so no
+# token is stored. A CARGO_REGISTRY_TOKEN secret in the `crates-io`
+# environment is used instead when present, which is only needed for a
+# crate's very first publish: trusted publishing is configured per crate on
+# crates.io, after the crate exists.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: "Publish the version in Cargo.toml and tag it (first release, or to retry a failed publish)"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  release-please:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    outputs:
+      released: ${{ steps.release.outputs.release_created }}
+      tag: ${{ steps.release.outputs.tag_name }}
+    steps:
+      - uses: googleapis/release-please-action@v4
+        id: release
+        with:
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+
+  publish:
+    needs: release-please
+    if: >-
+      always() &&
+      (needs.release-please.outputs.released == 'true' ||
+       (github.event_name == 'workflow_dispatch' && inputs.publish))
+    runs-on: ubuntu-latest
+    environment: crates-io
+    permissions:
+      contents: write
+      id-token: write
+    env:
+      HAS_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN != '' }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.release-please.outputs.tag || github.ref }}
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: rust-lang/crates-io-auth-action@v1
+        if: env.HAS_TOKEN != 'true'
+        id: auth
+      # orcher depends on orcher-macros, so the macros go first; cargo waits
+      # for each upload to reach the index before moving on. Versions already on
+      # crates.io are skipped, so a publish that failed halfway can be retried.
+      # (`cargo publish --workspace` would refuse the whole run instead.)
+      - name: Publish orcher-macros, then orcher
+        run: |
+          set -euo pipefail
+          for crate in orcher-macros orcher; do
+            version=$(cargo metadata --no-deps --format-version 1 |
+              jq -r --arg name "$crate" '.packages[] | select(.name == $name) | .version')
+            if curl -fsS "https://index.crates.io/${crate:0:2}/${crate:2:2}/$crate" 2>/dev/null |
+              jq -e --arg v "$version" 'select(.vers == $v)' >/dev/null; then
+              echo "$crate $version is already on crates.io; skipping."
+              continue
+            fi
+            if ! cargo publish -p "$crate" 2>&1 | tee publish.log; then
+              grep -Eq "already (exists|uploaded)" publish.log || exit 1
+              echo "$crate $version was published concurrently; continuing."
+            fi
+          done
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token || secrets.CARGO_REGISTRY_TOKEN }}
+      # A manual publish tags the version it published, so release-please
+      # starts the next changelog from it.
+      - name: Tag a manual publish
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          version=$(cargo metadata --no-deps --format-version 1 |
+            jq -r '.packages[] | select(.name == "orcher") | .version')
+          gh release view "v$version" >/dev/null 2>&1 ||
+            gh release create "v$version" --target "$GITHUB_SHA" --title "v$version" --notes "First public release."
+        env:
+          GH_TOKEN: ${{ github.token }}

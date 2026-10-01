@@ -1,0 +1,35 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 220" width="1600" height="220" role="img" aria-label="ORCHER Rust SDK">
+  <defs>
+    <linearGradient id="g" gradientUnits="userSpaceOnUse" x1="0" y1="4420" x2="4420" y2="0">
+      <stop offset="0" stop-color="#04B385"/>
+      <stop offset="1" stop-color="#38BDF0"/>
+    </linearGradient>
+    <linearGradient id="t" gradientUnits="userSpaceOnUse" x1="228" y1="0" x2="420" y2="0">
+      <stop offset="0" stop-color="#04B385"/>
+      <stop offset="1" stop-color="#38BDF0"/>
+    </linearGradient>
+  <pattern id="dots" width="8" height="8" patternUnits="userSpaceOnUse"><circle cx="1" cy="1" r="1" fill="rgba(255,255,255,0.085)"/></pattern>
+    <linearGradient id="fade" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#fff" stop-opacity="0"/><stop offset="0.35" stop-color="#fff" stop-opacity="1"/></linearGradient>
+    <mask id="m"><rect x="620" y="0" width="980" height="220" fill="url(#fade)"/></mask>
+  </defs>
+  <rect width="1600" height="220" fill="#0A0A0A"/>
+  <rect x="620" y="0" width="980" height="220" fill="url(#dots)" mask="url(#m)"/>
+  <line x1="856" y1="96" x2="1024" y2="96" stroke="#6AAB73" stroke-width="2.5"/>
+  <line x1="1056" y1="96" x2="1224" y2="96" stroke="#38BDF0" stroke-width="2.5"/>
+  <line x1="1256" y1="96" x2="1424" y2="96" stroke="#3a3a3a" stroke-width="2.5" stroke-dasharray="6 6"/>
+  <circle cx="840" cy="96" r="14" fill="#6AAB73"/>
+  <circle cx="1040" cy="96" r="14" fill="#6AAB73"/>
+  <circle cx="1240" cy="96" r="23" fill="none" stroke="#38BDF0" stroke-opacity="0.35" stroke-width="2"/>
+  <circle cx="1240" cy="96" r="14" fill="#0A0A0A" stroke="#38BDF0" stroke-width="2.5"/>
+  <path d="M1240,82 a14,14 0 0,1 0,28 z" fill="#38BDF0"/>
+  <circle cx="1440" cy="96" r="14" fill="#0A0A0A" stroke="#4a4a4a" stroke-width="2"/>
+  <text x="840" y="154" text-anchor="middle" font-family="'SF Mono', 'Fira Code', Menlo, Consolas, monospace" font-size="22" fill="#8B9299">charge</text>
+  <text x="1040" y="154" text-anchor="middle" font-family="'SF Mono', 'Fira Code', Menlo, Consolas, monospace" font-size="22" fill="#8B9299">timer</text>
+  <text x="1240" y="154" text-anchor="middle" font-family="'SF Mono', 'Fira Code', Menlo, Consolas, monospace" font-size="22" fill="#38BDF0">ship</text>
+  <text x="1440" y="154" text-anchor="middle" font-family="'SF Mono', 'Fira Code', Menlo, Consolas, monospace" font-size="22" fill="#5F646B">notify</text>
+  <g transform="translate(64,46) scale(0.2896)">
+    <g transform="translate(0,442) scale(0.1,-0.1)" fill="url(#g)"><path d="M530 4404 c-185 -40 -358 -178 -444 -354 -83 -171 -81 -152 -81 -770 0 -539 0 -546 23 -625 62 -218 222 -388 438 -466 50 -19 88 -23 242 -27 l182 -4 0 270 0 270 -103 4 c-95 3 -108 6 -152 33 -35 21 -56 45 -74 79 l-25 49 2 425 c1 410 2 426 23 468 25 52 80 100 129 114 20 6 207 10 436 10 l400 0 55 -27 c76 -39 110 -97 117 -198 l5 -75 262 0 263 0 6 23 c10 39 -5 219 -25 295 -37 142 -124 283 -227 368 -74 62 -126 91 -222 125 -65 23 -67 23 -615 25 -443 2 -563 0 -615 -12z"/><path d="M1620 3319 c-188 -51 -337 -176 -431 -364 -65 -130 -68 -167 -69 -756 0 -515 0 -517 24 -613 35 -135 75 -205 176 -307 68 -68 102 -94 170 -127 114 -57 192 -72 374 -72 l149 0 -7 37 c-3 21 -6 143 -6 271 l0 232 -79 0 c-127 0 -196 35 -244 125 -22 39 -22 49 -22 465 0 416 0 426 22 465 27 51 68 90 115 109 32 14 99 16 440 16 240 0 418 -4 439 -10 47 -13 124 -94 138 -146 6 -22 11 -63 11 -91 l0 -53 270 0 271 0 -7 128 c-7 142 -29 244 -70 324 -75 149 -177 254 -307 317 -145 72 -137 71 -742 70 -508 0 -544 -1 -615 -20z"/><path d="M2745 2244 c-206 -50 -400 -234 -472 -448 l-28 -81 -3 -558 c-3 -535 -2 -562 17 -640 34 -135 82 -219 180 -317 70 -71 102 -94 171 -127 145 -69 132 -68 755 -68 545 0 562 1 627 21 167 54 329 189 401 335 76 155 77 165 77 763 0 612 -1 614 -81 774 -82 163 -205 272 -379 334 -65 23 -67 23 -635 25 -470 1 -580 -1 -630 -13z m1068 -485 c49 -13 115 -73 138 -124 16 -36 18 -87 21 -495 3 -400 1 -459 -13 -490 -24 -52 -66 -98 -113 -123 -41 -22 -46 -22 -491 -22 -444 0 -451 0 -491 22 -53 28 -100 83 -113 130 -15 52 -15 905 0 957 14 51 80 121 132 140 34 12 119 15 467 15 271 1 439 -3 463 -10z"/></g>
+  </g>
+  <text x="228" y="118" font-family="Inter, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="68" font-weight="800" letter-spacing="5" fill="#FAFAFA">ORCHER</text>
+  <text x="231" y="162" font-family="'SF Mono', 'Fira Code', Menlo, Consolas, monospace" font-size="20" font-weight="600" letter-spacing="7" fill="url(#t)">RUST SDK</text>
+</svg>
