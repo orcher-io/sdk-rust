@@ -21,6 +21,14 @@ path = "src/bin/long_wait.rs"
 name = "tenancy"
 path = "src/bin/tenancy.rs"
 
+[[bin]]
+name = "handle_ops"
+path = "src/bin/handle_ops.rs"
+
+[[bin]]
+name = "child_handle_ops"
+path = "src/bin/child_handle_ops.rs"
+
 [dependencies]
 orcher = { path = "../crates/orcher", features = ["auto-register"] }
 # For ListWorkflowsOptions in the tenancy check; follows the SDK's own version.
