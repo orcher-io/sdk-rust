@@ -13,8 +13,8 @@ use std::time::{Duration, Instant};
 
 use anyhow::Context;
 use clap::Parser;
-use orcher::client::{ClientConfig, StartWorkflowOptions};
-use orcher::prelude::*;
+use orcher_sdk::client::{ClientConfig, StartWorkflowOptions};
+use orcher_sdk::prelude::*;
 
 #[derive(serde::Serialize, serde::Deserialize)]
 struct LongInput {

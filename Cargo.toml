@@ -1,8 +1,8 @@
 [workspace]
 resolver = "2"
 members = [
-    "crates/orcher",
-    "crates/orcher-macros",
+    "crates/orcher-sdk",
+    "crates/orcher-sdk-macros",
     "contract",
 ]
 
@@ -13,10 +13,10 @@ license = "Apache-2.0"
 authors = ["ORCHER Contributors"]
 repository = "https://github.com/orcher-io/sdk-rust"
 homepage = "https://github.com/orcher-io"
-documentation = "https://docs.rs/orcher"
+documentation = "https://docs.rs/orcher-sdk"
 
 # Workspace crates that depend on each other. The version is what gets published
 # with the dependency, so it must match `[workspace.package]`; release-please
 # bumps both (see release-please-config.json).
 [workspace.dependencies]
-orcher-macros = { path = "crates/orcher-macros", version = "0.5.0" }
+orcher-sdk-macros = { path = "crates/orcher-sdk-macros", version = "0.5.0" }

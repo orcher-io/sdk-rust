@@ -12,9 +12,9 @@ use std::time::Duration;
 
 use anyhow::Context;
 use clap::Parser;
-use orcher::client::{ClientConfig, StartWorkflowOptions};
-use orcher::error::{Error, WorkflowError};
-use orcher::prelude::*;
+use orcher_sdk::client::{ClientConfig, StartWorkflowOptions};
+use orcher_sdk::error::{Error, WorkflowError};
+use orcher_sdk::prelude::*;
 
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
 struct EventOutcome {

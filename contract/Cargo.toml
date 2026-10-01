@@ -30,7 +30,7 @@ name = "child_handle_ops"
 path = "src/bin/child_handle_ops.rs"
 
 [dependencies]
-orcher = { path = "../crates/orcher", features = ["auto-register"] }
+orcher-sdk = { path = "../crates/orcher-sdk", features = ["auto-register"] }
 # For ListWorkflowsOptions in the tenancy check; follows the SDK's own version.
 orcher-sdk-core = "0.8"
 

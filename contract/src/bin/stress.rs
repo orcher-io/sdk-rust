@@ -19,10 +19,10 @@ use std::time::{Duration, Instant};
 
 use anyhow::Context;
 use clap::Parser;
-use orcher::client::{ClientConfig, StartWorkflowOptions};
-// The prelude brings `orcher::Result`, which the #[task]/#[workflow] macros
+use orcher_sdk::client::{ClientConfig, StartWorkflowOptions};
+// The prelude brings `orcher_sdk::Result`, which the #[task]/#[workflow] macros
 // require. Keep it after other imports so it shadows any anyhow::Result.
-use orcher::prelude::*;
+use orcher_sdk::prelude::*;
 
 /// Execution ledger: unique key -> number of times the task body ran.
 /// Populated inside the worker process by every `stress_task` execution.

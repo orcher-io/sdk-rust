@@ -48,6 +48,6 @@ jobs:
         run: cargo doc --workspace --all-features --no-deps
         env:
           RUSTDOCFLAGS: -D warnings
-      # Builds both crates exactly as crates.io would receive them. orcher is
-      # verified against the packaged orcher-macros, not a path dependency.
-      - run: cargo package -p orcher-macros -p orcher
+      # Builds both crates exactly as crates.io would receive them. orcher-sdk is
+      # verified against the packaged orcher-sdk-macros, not a path dependency.
+      - run: cargo package -p orcher-sdk-macros -p orcher-sdk

@@ -6,8 +6,8 @@
 //! inspects engine internals. Keep names and result shapes in step with the
 //! other SDKs and with `scenarios.json`.
 
-use orcher::error::{Error, TaskError, WorkflowError};
-use orcher::prelude::*;
+use orcher_sdk::error::{Error, TaskError, WorkflowError};
+use orcher_sdk::prelude::*;
 
 #[derive(Serialize, Deserialize)]
 pub struct EchoInput {
@@ -82,7 +82,7 @@ pub async fn task_retries_exhausted(ctx: WorkflowContext, _input: Empty) -> Resu
 
 /// Runs `task` to its durable outcome and reports whether it failed, and after how
 /// many attempts.
-async fn attempts_until_failure<T: orcher::task::IntoTaskName>(
+async fn attempts_until_failure<T: orcher_sdk::task::IntoTaskName>(
     ctx: &WorkflowContext,
     task: T,
 ) -> Result<CatchResult> {
@@ -598,7 +598,7 @@ pub async fn task_timeouts_echo(ctx: WorkflowContext, _input: Empty) -> Result<O
     ctx.execute_task_with_options(
         "timeouts_echo_task",
         Empty::default(),
-        orcher::workflow::TaskOptions::default()
+        orcher_sdk::workflow::TaskOptions::default()
             .with_heartbeat_timeout(std::time::Duration::from_secs(15)),
     )
     .await
