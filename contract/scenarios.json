@@ -128,7 +128,7 @@
     },
     {
       "id": "restart-fresh-roundtrip",
-      "description": "A workflow restarts fresh (orcher's continue-as-new) once, then completes. The client following the original execution receives the continued execution's result. Guards restart-fresh persistence and the result-following chain (original -> restarted_fresh, continued -> completed).",
+      "description": "A workflow restarts fresh once, then completes. The client following the original execution receives the continued execution's result. Guards restart-fresh persistence and the result-following chain (original -> restarted_fresh, continued -> completed).",
       "workflow": "restart_once",
       "input": {
         "count": 0
