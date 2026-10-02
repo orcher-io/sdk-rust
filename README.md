@@ -276,3 +276,5 @@ for how to build, test and propose a change.
 ### <img height="16" src="https://octicons-col.vercel.app/law/38BDF0"> License
 
 Licensed under the [Apache License, Version 2.0](LICENSE).
+
+<sub>The Rust logo is a trademark of the Rust Foundation, shown here to indicate the language this SDK is for.</sub>
