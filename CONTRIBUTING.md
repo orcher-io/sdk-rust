@@ -6,8 +6,11 @@ fixes and code changes are all welcome.
 ## Reporting a problem
 
 Open an issue with the SDK version, what you expected, what happened, and the
-smallest code that shows it. For a suspected security problem, do not open a
-public issue; contact the maintainers privately first.
+smallest code that shows it. Ask questions in
+[Discussions](https://github.com/orcher-io/quickstart/discussions). For a
+suspected security problem, do not open a public issue;
+[report it privately](https://github.com/orcher-io/sdk-rust/security/advisories/new)
+instead.
 
 ## Setting up
 
