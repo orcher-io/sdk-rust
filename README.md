@@ -208,6 +208,20 @@ same list on a policy built in code.
 </details>
 
 <details>
+<summary><b>Large payloads</b>: what fits, and what happens when it doesn't</summary>
+
+<br />
+
+Workers and clients send and receive gRPC messages of up to 32 MiB; set
+`ORCHER_MAX_MESSAGE_BYTES` to change that. The engine accepts one payload (an
+input, a result, an event) of up to 8 MiB unless configured otherwise. A task
+whose result is too large fails straight away with a `PayloadTooLarge` failure
+that says how large it was, and is not retried: store large data elsewhere and
+pass a reference.
+
+</details>
+
+<details>
 <summary><b>Time and randomness</b>: the replay-safe way</summary>
 
 <br />

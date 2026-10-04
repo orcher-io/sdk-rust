@@ -14,7 +14,7 @@ categories = ["asynchronous", "concurrency", "network-programming"]
 
 [dependencies]
 # Core SDK and protocol definitions
-orcher-sdk-core = "0.8"
+orcher-sdk-core = "0.8.1"
 orcher-proto = "0.1"
 
 # Macros (optional, in this workspace; published before this crate)
