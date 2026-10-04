@@ -75,6 +75,15 @@ pub(crate) struct HeartbeatMessage {
     pub timestamp: SystemTime,
 }
 
+/// The attempt a task runs, counted from 1.
+///
+/// An engine that does not number the attempt sends 0, as engines up to 0.5.4
+/// did for every attempt, retries included; that reads as 1, so a first
+/// attempt is never reported as attempt 0.
+fn counted_from_one(attempt: i32) -> i32 {
+    attempt.max(1)
+}
+
 impl TaskContext {
     /// Create a task context with no heartbeat consumer.
     #[cfg_attr(not(test), allow(dead_code))] // The worker builds one with its heartbeat.
@@ -89,7 +98,7 @@ impl TaskContext {
             workflow_id,
             run_id,
             task_id,
-            attempt,
+            attempt: counted_from_one(attempt),
             heartbeat_timeout,
             heartbeat_tx: None,
             cancellation_token: Arc::new(tokio_util::sync::CancellationToken::new()),
@@ -112,7 +121,7 @@ impl TaskContext {
             workflow_id,
             run_id,
             task_id,
-            attempt,
+            attempt: counted_from_one(attempt),
             heartbeat_timeout,
             heartbeat_tx: None,
             cancellation_token: Arc::new(heartbeat.cancellation_token()),
@@ -135,7 +144,7 @@ impl TaskContext {
             workflow_id,
             run_id,
             task_id,
-            attempt,
+            attempt: counted_from_one(attempt),
             heartbeat_timeout,
             heartbeat_tx: Some(heartbeat_tx),
             cancellation_token,

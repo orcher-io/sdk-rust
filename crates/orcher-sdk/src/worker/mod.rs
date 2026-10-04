@@ -759,7 +759,8 @@ impl Worker {
                     let task_id = task.task_id.clone();
                     let task_type = task.task_type.clone();
                     let task_queue = task.task_queue.clone();
-                    let attempt = task.attempt;
+                    // Counted from 1, as the task's context reports it.
+                    let attempt = task.attempt.max(1);
                     let task_token = task.task_token.clone();
 
                     let ictx = orcher_sdk_core::interceptor::InterceptorContext::task(
