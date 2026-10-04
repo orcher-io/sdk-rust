@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.2](https://github.com/orcher-io/sdk-rust/compare/v0.5.1...v0.5.2) (2026-10-04)
+
+
+### Bug Fixes
+
+* show the README banner on the package registries ([#8](https://github.com/orcher-io/sdk-rust/issues/8)) ([8097590](https://github.com/orcher-io/sdk-rust/commit/80975902d431e4643885a6b7991ad0417e475987))
+
 ## [0.5.1](https://github.com/orcher-io/sdk-rust/compare/v0.5.0...v0.5.1) (2026-10-04)
 
 
