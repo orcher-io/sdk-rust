@@ -18,7 +18,7 @@ use orcher_proto::orcher::v1::{
 };
 use orcher_sdk_core::bridge::{Command, ExecutionErrorType, ExecutionResult};
 use orcher_sdk_core::poller::WorkflowExecutionTask;
-use orcher_sdk_core::{CommandCoverage, Replayer};
+use orcher_sdk_core::Replayer;
 
 use crate::payload::Payload;
 use crate::worker::registration::WorkflowHandlerFn;
@@ -195,7 +195,9 @@ fn completion(result: &ExecutionResult) -> Option<serde_json::Value> {
 }
 
 /// Run one activation and hold it to what the worker's driver checks: no
-/// failure, and no step id the journal recorded reissued for other work.
+/// failure, no step id the journal recorded reissued for other work, and no
+/// recorded step left unreached by an activation that issues new work or ends
+/// the workflow.
 async fn activate(runtime: &ExecutionRuntime, engine: &FakeEngine) -> ExecutionResult {
     let result = runtime.execute_workflow(engine.activation()).await;
     if let Some(error) = &result.error {
@@ -208,14 +210,14 @@ async fn activate(runtime: &ExecutionRuntime, engine: &FakeEngine) -> ExecutionR
         panic!("the activation failed: {}", error.message);
     }
     assert!(result.successful);
-    let violations = Replayer::check_commands(
-        &engine.journal,
-        &result.commands,
-        CommandCoverage::Activation,
+    assert!(
+        result.reached_steps.is_some(),
+        "the activation does not report the steps it reached"
     );
+    let violations = Replayer::check_activation(&engine.journal, &result);
     assert!(
         violations.is_empty(),
-        "the activation reissued a journaled step id for other work: {violations:?}"
+        "the activation does not replay its journal: {violations:?}"
     );
     result
 }
@@ -415,5 +417,70 @@ async fn a_closure_before_a_suspension_runs_once_and_is_journaled_before_it() {
         runs.load(std::sync::atomic::Ordering::SeqCst),
         1,
         "not run on replay"
+    );
+}
+
+/// A status watch: wait for a `status` event with a deadline, apply what came
+/// (or nothing) with a task, and escalate after `quiet_cap` rounds in a row
+/// with no event. The fake engine fires every timer at once.
+fn status_watch(quiet_cap: u32) -> WorkflowHandlerFn {
+    Arc::new(move |ctx: WorkflowContext, _input| {
+        Box::pin(async move {
+            let mut quiet = 0;
+            for round in 1u32.. {
+                let ev: Option<String> = ctx
+                    .wait_for_event_with_timeout("status", Duration::from_secs(4))
+                    .await?;
+                let _: String = ctx.execute_task_by_name("applyStatus", round).await?;
+                quiet = if ev.is_some() { 0 } else { quiet + 1 };
+                if quiet >= quiet_cap {
+                    let _: String = ctx.execute_task_by_name("escalate", round).await?;
+                    return output_of(format!("escalated at round {round}"));
+                }
+            }
+            unreachable!()
+        })
+    })
+}
+
+/// The code changed to give up after one quiet round, replaying a run the old
+/// code recorded three rounds of: it takes round one from the journal and
+/// schedules the escalation where the journal holds round two. The activation
+/// reports what it reached, and sdk-core refuses it; the old code goes on.
+#[tokio::test]
+async fn a_loop_cut_short_is_refused_where_the_journal_goes_on() {
+    let old = runtime_with(status_watch(5)).await;
+    let mut engine = FakeEngine::new();
+    for _ in 0..6 {
+        let result = activate(&old, &engine).await;
+        engine.apply(&result.commands);
+    }
+
+    let new = runtime_with(status_watch(1)).await;
+    let result = new.execute_workflow(engine.activation()).await;
+    assert_eq!(
+        result.reached_steps.as_deref(),
+        Some(
+            &[
+                "event_timeout_status_1".to_string(),
+                "applyStatus_0".to_string(),
+                "escalate_1".to_string(),
+            ][..]
+        )
+    );
+    let violations = Replayer::check_activation(&engine.journal, &result);
+    let [violation] = violations.as_slice() else {
+        panic!("expected one violation, got {violations:?}");
+    };
+    assert_eq!(violation.step_id.as_deref(), Some("event_timeout_status_2"));
+    assert_eq!(
+        violation.actual.as_deref(),
+        Some(r#"task "escalate_1" of type "escalate""#)
+    );
+
+    let result = activate(&old, &engine).await;
+    assert_eq!(
+        issued_steps(&result.commands),
+        vec![("timer", "event_timeout_status_4".to_string(), String::new())]
     );
 }

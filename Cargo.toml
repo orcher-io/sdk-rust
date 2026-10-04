@@ -20,3 +20,9 @@ documentation = "https://docs.rs/orcher-sdk"
 # bumps both (see release-please-config.json).
 [workspace.dependencies]
 orcher-sdk-macros = { path = "crates/orcher-sdk-macros", version = "0.5.2" }
+
+# Until the sdk-core release that carries `ExecutionResult::reached_steps`
+# (orcher-io/sdk-core#13) is published: then this goes, and the dependency
+# moves to that release.
+[patch.crates-io]
+orcher-sdk-core = { git = "https://github.com/orcher-io/sdk-core", branch = "fix/replay-divergence" }

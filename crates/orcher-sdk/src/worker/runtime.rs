@@ -346,8 +346,11 @@ impl ExecutionRuntime {
         let (query_responses, update_results) = self
             .process_query_and_update_jobs(&ctx, &execution_request.jobs)
             .await;
+        // The steps the code reached, which sdk-core checks against the
+        // journal to tell code that no longer replays the run.
+        let reached_steps = ctx.take_reached_steps();
 
-        let result = match handler_result {
+        let mut result = match handler_result {
             Ok(output) => {
                 self.cleanup_input_cache(&run_id).await;
                 let r = self.handle_workflow_completion(
@@ -387,6 +390,7 @@ impl ExecutionRuntime {
                 ExecutionResult::failed(run_id, workflow_failure(&e))
             }
         };
+        result.set_reached_steps(reached_steps);
         result
     }
 

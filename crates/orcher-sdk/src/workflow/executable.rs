@@ -132,6 +132,7 @@ where
         // long as the workflow issues its steps in the same order.
         let sequence = ctx.next_sequence();
         let task_id = format!("{}_{}", step_name, sequence);
+        ctx.reach_step(&task_id);
 
         // When replaying, the engine has sent the journaled results of completed
         // tasks; look this one up.

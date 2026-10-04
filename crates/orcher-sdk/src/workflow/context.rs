@@ -82,6 +82,11 @@ pub(crate) struct ContextState {
     /// `wait_for_event_with_timeout` calls made per event name in this activation. The
     /// count names each deadline timer, so ids match across replays.
     pub(crate) event_timeout_waits: HashMap<String, u32>,
+    /// The id of every step (task, timer, child workflow) the code reached in this
+    /// activation, in order, whether the journal already held its outcome or its command
+    /// is issued now. sdk-core checks them against the steps the journal recorded to tell
+    /// code that no longer replays the run.
+    pub(crate) reached_steps: Vec<String>,
     pub(crate) query_handlers: HashMap<String, Arc<dyn Fn() -> Vec<u8> + Send + Sync>>,
     pub(crate) update_handlers: HashMap<String, ContextUpdateHandler>,
 }
@@ -149,6 +154,7 @@ impl WorkflowContext {
             child_workflows: HashMap::new(),
             event_buffer: HashMap::new(),
             event_timeout_waits: HashMap::new(),
+            reached_steps: Vec::new(),
             query_handlers: HashMap::new(),
             update_handlers: HashMap::new(),
         };
@@ -182,6 +188,23 @@ impl WorkflowContext {
     pub(crate) fn take_commands(&self) -> Vec<WorkflowCommand> {
         let mut state = self.state.lock().unwrap();
         std::mem::take(&mut state.commands)
+    }
+
+    /// The code reached the step with this id; see
+    /// [`take_reached_steps`](Self::take_reached_steps).
+    pub(crate) fn reach_step(&self, step_id: &str) {
+        let mut state = self.state.lock().unwrap();
+        state.reached_steps.push(step_id.to_string());
+    }
+
+    /// The ids of the steps the code reached in this activation, for its result.
+    ///
+    /// sdk-core compares them with the steps the journal recorded: a recorded step left
+    /// unreached by an activation that issues new work or ends the workflow is reported
+    /// as non-determinism, and the activation is tried again instead of applied.
+    pub(crate) fn take_reached_steps(&self) -> Vec<String> {
+        let mut state = self.state.lock().unwrap();
+        std::mem::take(&mut state.reached_steps)
     }
 
     pub(crate) fn execution(&self) -> &WorkflowExecution {
@@ -290,6 +313,7 @@ impl WorkflowContext {
             .task_id
             .clone()
             .unwrap_or_else(|| format!("task_{}", sequence));
+        self.reach_step(&task_id);
 
         let replaying = {
             let state = self.state.lock().unwrap();
@@ -393,6 +417,7 @@ impl WorkflowContext {
     /// fired, so later ids stay the same across replays. The runtime marks a timer fired
     /// by the timer id in its FireTimer job.
     fn emit_timer(&self, timer_id: String, sequence: u64, duration: Duration) -> Result<()> {
+        self.reach_step(&timer_id);
         let already_fired = {
             let state = self.state.lock().unwrap();
             let fired = state.fired_timers.contains_key(&timer_id);
@@ -532,6 +557,7 @@ impl WorkflowContext {
             .workflow_id
             .clone()
             .unwrap_or_else(|| format!("child_{}", sequence));
+        self.reach_step(&workflow_id);
 
         let run_id = format!("run_{}", uuid::Uuid::new_v4());
 
@@ -749,6 +775,9 @@ impl WorkflowContext {
                 .or_insert(0);
             *n += 1;
             let timer_id = format!("event_timeout_{}_{}", event_name, n);
+            // Reached on every path, whichever of the event and the deadline wins: the
+            // journal holds this timer whenever an earlier activation parked here.
+            state.reached_steps.push(timer_id.clone());
 
             // A fired marker without a position has no known order: treat it as later
             // than any event, so a buffered event still wins.
@@ -990,6 +1019,7 @@ impl WorkflowContext {
         let sequence = self.next_sequence();
         let session_id = format!("session_{}", sequence);
         let task_id = format!("{}_{}", SESSION_CREATE_TASK, sequence);
+        self.reach_step(&task_id);
 
         // On replay the creation task's recorded result is a serialized SessionInfo.
         {
