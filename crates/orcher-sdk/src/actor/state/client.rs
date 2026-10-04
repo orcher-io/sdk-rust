@@ -140,7 +140,11 @@ impl ActorStateClient {
             .await
             .map_err(|e| Error::Network(format!("Failed to connect to server: {}", e)))?;
 
-        let grpc_client = ActorServiceClient::new(channel);
+        // State up to the configured message limit, not tonic's 4 MiB.
+        let max = orcher_sdk_core::limits::default_max_message_bytes();
+        let grpc_client = ActorServiceClient::new(channel)
+            .max_decoding_message_size(max)
+            .max_encoding_message_size(max);
 
         let cache = if config.enable_cache {
             Some(Arc::new(

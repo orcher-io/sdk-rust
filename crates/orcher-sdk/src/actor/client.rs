@@ -92,7 +92,11 @@ impl ActorClient {
             })
         })?;
 
-        let client = ActorServiceClient::new(channel);
+        // Operations up to the configured message limit, not tonic's 4 MiB.
+        let max = orcher_sdk_core::limits::default_max_message_bytes();
+        let client = ActorServiceClient::new(channel)
+            .max_decoding_message_size(max)
+            .max_encoding_message_size(max);
 
         info!(
             server_url = %server_url,

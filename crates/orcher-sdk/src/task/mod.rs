@@ -82,6 +82,24 @@ mod tests {
         assert!(ctx.is_retry());
     }
 
+    /// An attempt the engine does not number (0) reads as the first, never
+    /// as attempt 0.
+    #[test]
+    fn test_task_context_attempt_counts_from_one() {
+        for (sent, read) in [(0, 1), (-1, 1), (1, 1), (2, 2)] {
+            let ctx = TaskContext::new(
+                "wf-123".to_string(),
+                "run-456".to_string(),
+                "task-789".to_string(),
+                sent,
+                None,
+            );
+            assert_eq!(ctx.attempt(), read, "attempt {sent} sent");
+            assert_eq!(ctx.is_retry(), read > 1, "attempt {sent} sent");
+            assert_eq!(ctx.logger().attempt(), read, "attempt {sent} sent");
+        }
+    }
+
     #[test]
     fn test_task_logger() {
         let ctx = TaskContext::new(
