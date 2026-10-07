@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.7.0](https://github.com/orcher-io/sdk-rust/compare/v0.6.0...v0.7.0) (2026-10-07)
+
+
+### ⚠ BREAKING CHANGES
+
+* reject namespace on #[workflow], warn on timeout and version, deregister on shutdown ([#13](https://github.com/orcher-io/sdk-rust/issues/13))
+
+### Bug Fixes
+
+* reject namespace on #[workflow], warn on timeout and version, deregister on shutdown ([#13](https://github.com/orcher-io/sdk-rust/issues/13)) ([f4f1012](https://github.com/orcher-io/sdk-rust/commit/f4f1012ec65420c052d3ba5f5cd19262a06085e3))
+
 ## [0.6.0](https://github.com/orcher-io/sdk-rust/compare/v0.5.2...v0.6.0) (2026-10-05)
 
 
