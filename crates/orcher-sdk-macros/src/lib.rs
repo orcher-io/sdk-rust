@@ -199,10 +199,14 @@ pub fn tasks(attr: TokenStream, item: TokenStream) -> TokenStream {
 ///
 /// Unrecognized attributes are ignored.
 ///
-/// `timeout`, `version` and `namespace` are accepted but have no effect, and each produces
-/// a deprecation warning that names the replacement: set the execution timeout per start
-/// with `StartWorkflowOptions::with_workflow_execution_timeout`, the code release with
-/// `WorkerBuilder::version_id`, and the namespace on the worker and the client.
+/// `timeout` and `version` are accepted but have no effect, and each produces a deprecation
+/// warning that names the replacement: set the execution timeout per start with
+/// `StartWorkflowOptions::with_workflow_execution_timeout`, and the code release with
+/// `WorkerBuilder::version_id`.
+///
+/// There is no `namespace` option: a workflow runs in whatever namespace its worker serves,
+/// so the namespace is set on the worker (`WorkerBuilder::namespace`) and where workflows are
+/// started (`ClientConfig::with_namespace`, `StartWorkflowOptions::with_namespace`).
 ///
 /// # Examples
 ///

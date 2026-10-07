@@ -226,12 +226,6 @@ fn ineffective_attr_note(attr: IneffectiveWorkflowAttr) -> &'static str {
              executions to a code release, set the worker's version with \
              WorkerBuilder::version_id or ORCHER_VERSION_ID"
         }
-        IneffectiveWorkflowAttr::Namespace => {
-            "`namespace` on #[workflow] has no effect and will be removed; the \
-             namespace comes from the worker (WorkerBuilder::namespace) and from \
-             the client (ClientConfig::with_namespace, \
-             StartWorkflowOptions::with_namespace)"
-        }
     }
 }
 
@@ -313,11 +307,6 @@ mod tests {
                 parse_quote!(workflow(name = "w", version = "2.0.0")),
                 "version",
                 "version_id",
-            ),
-            (
-                parse_quote!(workflow(name = "w", namespace = "production")),
-                "namespace",
-                "WorkerBuilder::namespace",
             ),
         ] {
             let expanded = expand(meta);
@@ -452,31 +441,24 @@ mod tests {
     }
 
     #[test]
-    fn test_workflow_impl_with_namespace() {
+    fn namespace_is_rejected_with_where_to_set_it() {
         let meta: Meta = parse_quote!(workflow(name = "test_workflow", namespace = "production"));
-        let attrs = crate::common::attrs::WorkflowAttrs::from_meta(&meta).unwrap();
-        assert_eq!(attrs.namespace, Some("production".to_string()));
-
-        let item: ItemFn = parse_quote! {
-            async fn my_workflow(ctx: WorkflowContext) -> Result<(), Box<dyn std::error::Error>> {
-                Ok(())
-            }
-        };
-
-        let result = workflow_impl_inner(attrs, item);
-        assert!(result.is_ok());
+        let err = crate::common::attrs::WorkflowAttrs::from_meta(&meta)
+            .expect_err("`namespace` must not be accepted on #[workflow]");
+        let message = err.to_string();
+        assert!(message.contains("not a #[workflow] option"), "{message}");
+        assert!(message.contains("WorkerBuilder::namespace"), "{message}");
+        assert!(
+            message.contains("StartWorkflowOptions::with_namespace"),
+            "{message}"
+        );
     }
 
     #[test]
-    fn test_workflow_impl_with_version_and_namespace() {
-        let meta: Meta = parse_quote!(workflow(
-            name = "order_processing",
-            version = "2.1.0",
-            namespace = "tenant-acme"
-        ));
+    fn test_workflow_impl_with_name_and_version() {
+        let meta: Meta = parse_quote!(workflow(name = "order_processing", version = "2.1.0"));
         let attrs = crate::common::attrs::WorkflowAttrs::from_meta(&meta).unwrap();
         assert_eq!(attrs.version, "2.1.0");
-        assert_eq!(attrs.namespace, Some("tenant-acme".to_string()));
 
         let item: ItemFn = parse_quote! {
             async fn my_workflow(ctx: WorkflowContext) -> Result<(), Box<dyn std::error::Error>> {
@@ -495,9 +477,6 @@ mod tests {
 
         assert_eq!(attrs.version, "1.0.0");
 
-        // No namespace unless one is set explicitly.
-        assert_eq!(attrs.namespace, None);
-
         let item: ItemFn = parse_quote! {
             async fn my_workflow(ctx: WorkflowContext) -> Result<(), Box<dyn std::error::Error>> {
                 Ok(())
@@ -513,13 +492,11 @@ mod tests {
         let meta: Meta = parse_quote!(workflow(
             name = "user_workflow",
             version = "3.0.0",
-            namespace = "customer-xyz",
             description = "Customer-specific workflow"
         ));
         let attrs = crate::common::attrs::WorkflowAttrs::from_meta(&meta).unwrap();
         assert_eq!(attrs.name, Some("user_workflow".to_string()));
         assert_eq!(attrs.version, "3.0.0");
-        assert_eq!(attrs.namespace, Some("customer-xyz".to_string()));
         assert_eq!(
             attrs.description,
             Some("Customer-specific workflow".to_string())

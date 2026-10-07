@@ -255,8 +255,8 @@ pub fn generate_sdk_task_registration(
 /// Generates the `inventory` registration for a workflow.
 ///
 /// Only the workflow name and handler are registered. The other workflow attributes are
-/// parsed and validated but not registered; `version`, `namespace` and `timeout` also
-/// produce a deprecation warning, emitted by the workflow macro.
+/// parsed and validated but not registered; `version` and `timeout` also produce a
+/// deprecation warning, emitted by the workflow macro.
 ///
 /// # Generated Code
 ///
@@ -276,7 +276,6 @@ pub fn generate_sdk_task_registration(
 ///         metadata: Some(orcher_sdk::worker::WorkflowMetadata {
 ///             description: Some("Process orders".to_string()),
 ///             tags: vec!["orders".to_string()],
-///             namespace: Some("default".to_string()),
 ///             max_concurrent_steps: None,
 ///         }),
 ///     }

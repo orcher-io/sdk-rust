@@ -355,8 +355,6 @@ pub enum IneffectiveWorkflowAttr {
     Timeout,
     /// `version`: the code release is declared by the worker.
     Version,
-    /// `namespace`: the namespace comes from the worker and the client.
-    Namespace,
 }
 
 impl IneffectiveWorkflowAttr {
@@ -365,18 +363,17 @@ impl IneffectiveWorkflowAttr {
         match self {
             Self::Timeout => "timeout",
             Self::Version => "version",
-            Self::Namespace => "namespace",
         }
     }
 }
 
 /// Arguments accepted by `#[workflow]`.
 ///
-/// The parser reads `name`, `description`, `version`, `namespace`, `task_queue`, `timeout`,
+/// The parser reads `name`, `description`, `version`, `task_queue`, `timeout`,
 /// `max_concurrent`, `enabled`, `cron`, `schedule`, `tags(...)` and `retry_policy(...)`.
-/// Other keys are ignored, so the remaining fields always keep their defaults. `version`,
-/// `namespace` and `timeout` have no effect and are recorded in `ineffective`, so the macro
-/// can warn about them.
+/// Other keys are ignored, so the remaining fields always keep their defaults. `version`
+/// and `timeout` have no effect and are recorded in `ineffective`, so the macro can warn
+/// about them. `namespace` is rejected: the namespace belongs to the worker and the client.
 #[derive(Debug, Clone)]
 pub struct WorkflowAttrs {
     /// Workflow name; defaults to the function name.
@@ -387,9 +384,6 @@ pub struct WorkflowAttrs {
 
     /// Workflow version ("1.0.0" by default). Has no effect; see `ineffective`.
     pub version: String,
-
-    /// Namespace written on the workflow. Has no effect; see `ineffective`.
-    pub namespace: Option<String>,
 
     /// Task queue used to route workflow executions.
     pub task_queue: Option<String>,
@@ -526,7 +520,6 @@ impl Default for WorkflowAttrs {
             name: None,
             description: None,
             version: default_version(),
-            namespace: None,
             task_queue: None,
             timeout: None,
             max_concurrent: default_max_concurrent(),
@@ -585,14 +578,14 @@ impl FromMeta for WorkflowAttrs {
                                 }
                             }
                             "namespace" => {
-                                attrs
-                                    .ineffective
-                                    .push((IneffectiveWorkflowAttr::Namespace, nv.path.span()));
-                                if let Expr::Lit(lit) = &nv.value {
-                                    if let Lit::Str(s) = &lit.lit {
-                                        attrs.namespace = Some(s.value());
-                                    }
-                                }
+                                return Err(darling::Error::custom(
+                                    "`namespace` is not a #[workflow] option: a workflow runs in \
+                                     whatever namespace its worker serves. Set it on the worker \
+                                     (WorkerBuilder::namespace) and where you start workflows \
+                                     (ClientConfig::with_namespace, \
+                                     StartWorkflowOptions::with_namespace)",
+                                )
+                                .with_span(&nv.path));
                             }
                             "timeout" => {
                                 attrs
