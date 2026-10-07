@@ -45,7 +45,7 @@ use orcher_proto::orcher::v1::{
     RegisterHandlersResponse, SetStateRequest, SetStateResponse, WorkerMetrics, WorkerStatus,
 };
 use std::collections::HashMap;
-use tonic::transport::{Channel, Endpoint};
+use tonic::transport::Channel;
 use tracing::{debug, error, info, warn};
 
 /// gRPC client a worker uses to serve actor operations.
@@ -69,6 +69,23 @@ impl ActorClient {
     ///
     /// Returns an error if the URL is invalid or the connection cannot be established.
     pub async fn new(server_url: impl Into<String>, service_id: impl Into<String>) -> Result<Self> {
+        Self::connect_with_tls(server_url, service_id, None).await
+    }
+
+    /// Connects like [`ActorClient::new`], with explicit TLS settings.
+    ///
+    /// `None` follows the URL scheme: `https://` uses TLS verified against the
+    /// system trust store, `http://` connects in plaintext.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the URL is invalid, the TLS settings are rejected or
+    /// the connection cannot be established.
+    pub async fn connect_with_tls(
+        server_url: impl Into<String>,
+        service_id: impl Into<String>,
+        tls: Option<crate::client::ClientTlsConfig>,
+    ) -> Result<Self> {
         let server_url = server_url.into();
         let service_id = service_id.into();
 
@@ -78,17 +95,17 @@ impl ActorClient {
             "Creating actor client"
         );
 
-        let endpoint = Endpoint::from_shared(server_url.clone()).map_err(|e| {
+        let endpoint = crate::tls::endpoint(&server_url, tls.as_ref()).map_err(|reason| {
             Error::Worker(crate::error::WorkerError::ConnectionFailed {
                 url: server_url.clone(),
-                reason: format!("Invalid server URL: {}", e),
+                reason,
             })
         })?;
 
         let channel = endpoint.connect().await.map_err(|e| {
             Error::Worker(crate::error::WorkerError::ConnectionFailed {
                 url: server_url.clone(),
-                reason: format!("Connection failed: {}", e),
+                reason: format!("Connection failed: {}", crate::tls::with_causes(&e)),
             })
         })?;
 

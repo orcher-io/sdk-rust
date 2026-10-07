@@ -275,6 +275,40 @@ impl WorkerBuilder {
         self
     }
 
+    /// Sets the TLS settings for every connection the worker opens.
+    ///
+    /// An `https://` server URL needs none of this: it connects over TLS
+    /// verified against the system trust store by default. Supply settings to
+    /// trust a private CA, present a client certificate (mTLS) or override the
+    /// server name. They take the same [`ClientTlsConfig`] as the client.
+    /// TLS is only negotiated for `https://` addresses.
+    ///
+    /// # Example
+    ///
+    /// ```rust,no_run
+    /// # use orcher_sdk::prelude::*;
+    /// # use orcher_sdk::client::ClientTlsConfig;
+    /// # async fn example() -> std::result::Result<(), Box<dyn std::error::Error>> {
+    /// let worker = WorkerBuilder::new()
+    ///     .server_url("https://orcher.internal:443")
+    ///     .task_queue("orders")
+    ///     .tls(
+    ///         ClientTlsConfig::new()
+    ///             .with_ca_cert_file("ca.pem")?
+    ///             .with_client_identity_files("client.pem", "client-key.pem")?,
+    ///     )
+    ///     .build()
+    ///     .await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    ///
+    /// [`ClientTlsConfig`]: crate::client::ClientTlsConfig
+    pub fn tls(mut self, tls: crate::client::ClientTlsConfig) -> Self {
+        self.config.tls = Some(tls);
+        self
+    }
+
     /// Declares the code release this worker is running.
     ///
     /// An opaque label, such as a git SHA, an image digest or a release tag. The
@@ -383,6 +417,14 @@ impl WorkerBuilder {
             ));
         }
 
+        // Reject unusable TLS settings now rather than at the first poll:
+        // a certificate without its key, or PEM that does not parse.
+        if self.config.tls.is_some() {
+            crate::tls::endpoint(&self.config.server_url, self.config.tls.as_ref()).map_err(
+                |reason| Error::Worker(crate::error::WorkerError::InvalidConfiguration(reason)),
+            )?;
+        }
+
         tracing::info!(
             server_url = %self.config.server_url,
             namespace = %self.config.namespace,
@@ -424,9 +466,10 @@ impl WorkerBuilder {
                     "Registering actor handlers with server"
                 );
 
-                let mut client = crate::actor::ActorClient::new(
+                let mut client = crate::actor::ActorClient::connect_with_tls(
                     self.config.server_url.clone(),
                     self.config.identity.clone(),
+                    self.config.tls.clone(),
                 )
                 .await?;
 
@@ -572,6 +615,85 @@ mod tests {
         assert_eq!(builder.config.max_concurrent_workflows, 50);
         assert_eq!(builder.config.max_concurrent_tasks, 100);
         assert_eq!(builder.config.poll_interval, Duration::from_millis(200));
+    }
+
+    #[tokio::test]
+    async fn tls_settings_reach_the_driver_configs() {
+        let worker = WorkerBuilder::new()
+            .server_url("https://10.0.0.1:443")
+            .task_queue("q")
+            .tls(crate::client::ClientTlsConfig::new().with_domain_name("orcher.internal"))
+            .build()
+            .await
+            .expect("builds");
+        let core = worker.core_tls().expect("TLS configured");
+        assert_eq!(core.domain_name.as_deref(), Some("orcher.internal"));
+    }
+
+    #[tokio::test]
+    async fn pem_that_does_not_parse_fails_the_build() {
+        let result = WorkerBuilder::new()
+            .server_url("https://orcher.example:443")
+            .task_queue("q")
+            .tls(
+                crate::client::ClientTlsConfig::new()
+                    .with_client_identity(b"not a cert".to_vec(), b"not a key".to_vec()),
+            )
+            .build()
+            .await;
+        assert!(matches!(
+            result,
+            Err(Error::Worker(
+                crate::error::WorkerError::InvalidConfiguration(_)
+            ))
+        ));
+    }
+
+    #[tokio::test]
+    async fn an_https_url_gets_tls_without_settings_and_http_does_not() {
+        let https = WorkerBuilder::new()
+            .server_url("https://orcher.example:443")
+            .task_queue("q")
+            .build()
+            .await
+            .unwrap();
+        let core = https.core_tls().expect("https gets TLS");
+        assert!(core.ca_cert.is_none(), "system trust store");
+
+        let http = WorkerBuilder::new()
+            .server_url("http://localhost:50051")
+            .task_queue("q")
+            .build()
+            .await
+            .unwrap();
+        assert!(http.core_tls().is_none());
+    }
+
+    #[tokio::test]
+    async fn a_client_certificate_without_a_key_fails_the_build() {
+        let mut tls = crate::client::ClientTlsConfig::new();
+        tls.client_cert = Some(b"cert".to_vec());
+        let result = WorkerBuilder::new()
+            .server_url("https://orcher.example:443")
+            .task_queue("q")
+            .tls(tls)
+            .build()
+            .await;
+        match result {
+            Err(Error::Worker(crate::error::WorkerError::InvalidConfiguration(reason))) => {
+                assert!(reason.contains("must be set together"), "{reason}")
+            }
+            Err(other) => panic!("unexpected error: {other}"),
+            Ok(_) => panic!("must fail"),
+        }
+    }
+
+    #[test]
+    fn tls_files_that_do_not_exist_name_the_path() {
+        let err = crate::client::ClientTlsConfig::new()
+            .with_ca_cert_file("/nonexistent/ca.pem")
+            .unwrap_err();
+        assert!(err.to_string().contains("/nonexistent/ca.pem"), "{err}");
     }
 
     #[tokio::test]

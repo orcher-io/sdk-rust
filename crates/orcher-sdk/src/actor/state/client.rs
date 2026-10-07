@@ -29,7 +29,7 @@ use orcher_proto::orcher::v1::{
 use serde::{de::DeserializeOwned, Serialize};
 use std::sync::Arc;
 use std::time::Duration;
-use tonic::transport::{Channel, Endpoint};
+use tonic::transport::Channel;
 
 use super::mock::MockStateBackend;
 
@@ -60,6 +60,10 @@ pub struct ActorStateClientConfig {
 
     /// Not sent by this client.
     pub auth_token: Option<String>,
+
+    /// TLS settings (default: None, which follows the URL scheme: `https://`
+    /// uses TLS verified against the system trust store).
+    pub tls: Option<crate::client::ClientTlsConfig>,
 }
 
 impl Default for ActorStateClientConfig {
@@ -72,6 +76,7 @@ impl Default for ActorStateClientConfig {
             cache_ttl: Duration::from_secs(60),
             max_cache_size: 1_000,
             auth_token: None,
+            tls: None,
         }
     }
 }
@@ -130,15 +135,17 @@ impl ActorStateClient {
     ///
     /// Returns an error if the URL is invalid or the connection fails.
     pub async fn new(config: ActorStateClientConfig) -> Result<Self> {
-        let endpoint = Endpoint::from_shared(config.server_url.clone())
-            .map_err(|e| Error::Network(format!("Invalid server URL: {}", e)))?
+        let endpoint = crate::tls::endpoint(&config.server_url, config.tls.as_ref())
+            .map_err(Error::Network)?
             .timeout(config.timeout)
             .connect_timeout(Duration::from_secs(5));
 
-        let channel = endpoint
-            .connect()
-            .await
-            .map_err(|e| Error::Network(format!("Failed to connect to server: {}", e)))?;
+        let channel = endpoint.connect().await.map_err(|e| {
+            Error::Network(format!(
+                "Failed to connect to server: {}",
+                crate::tls::with_causes(&e)
+            ))
+        })?;
 
         // State up to the configured message limit, not tonic's 4 MiB.
         let max = orcher_sdk_core::limits::default_max_message_bytes();
