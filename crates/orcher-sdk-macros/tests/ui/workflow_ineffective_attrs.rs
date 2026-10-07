@@ -5,7 +5,12 @@
 
 use orcher_sdk::prelude::*;
 
-#[workflow(name = "ineffective", timeout = 600, version = "2.0.0", namespace = "production")]
+#[workflow(
+    name = "ineffective",
+    timeout = 600,
+    version = "2.0.0",
+    namespace = "production"
+)]
 async fn ineffective(_ctx: WorkflowContext, input: String) -> Result<String> {
     Ok(input)
 }

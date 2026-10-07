@@ -1,23 +1,23 @@
 error: use of deprecated constant `_::timeout_has_no_effect_on_workflow`: `timeout` on #[workflow] has no effect and will be removed; set the workflow's timeout when you start it, with StartWorkflowOptions::with_workflow_execution_timeout
- --> tests/ui/workflow_ineffective_attrs.rs:8:34
-  |
-8 | #[workflow(name = "ineffective", timeout = 600, version = "2.0.0", namespace = "production")]
-  |                                  ^^^^^^^
-  |
+  --> tests/ui/workflow_ineffective_attrs.rs:10:5
+   |
+10 |     timeout = 600,
+   |     ^^^^^^^
+   |
 note: the lint level is defined here
- --> tests/ui/workflow_ineffective_attrs.rs:4:9
-  |
-4 | #![deny(deprecated)]
-  |         ^^^^^^^^^^
+  --> tests/ui/workflow_ineffective_attrs.rs:4:9
+   |
+ 4 | #![deny(deprecated)]
+   |         ^^^^^^^^^^
 
 error: use of deprecated constant `_::version_has_no_effect_on_workflow`: `version` on #[workflow] has no effect and will be removed; to tie executions to a code release, set the worker's version with WorkerBuilder::version_id or ORCHER_VERSION_ID
- --> tests/ui/workflow_ineffective_attrs.rs:8:49
-  |
-8 | #[workflow(name = "ineffective", timeout = 600, version = "2.0.0", namespace = "production")]
-  |                                                 ^^^^^^^
+  --> tests/ui/workflow_ineffective_attrs.rs:11:5
+   |
+11 |     version = "2.0.0",
+   |     ^^^^^^^
 
 error: use of deprecated constant `_::namespace_has_no_effect_on_workflow`: `namespace` on #[workflow] has no effect and will be removed; the namespace comes from the worker (WorkerBuilder::namespace) and from the client (ClientConfig::with_namespace, StartWorkflowOptions::with_namespace)
- --> tests/ui/workflow_ineffective_attrs.rs:8:68
-  |
-8 | #[workflow(name = "ineffective", timeout = 600, version = "2.0.0", namespace = "production")]
-  |                                                                    ^^^^^^^^^
+  --> tests/ui/workflow_ineffective_attrs.rs:12:5
+   |
+12 |     namespace = "production"
+   |     ^^^^^^^^^
