@@ -72,6 +72,13 @@ use crate::error::{Error, Result};
 /// must return even then.
 const DRIVER_STOP_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// How long [`Worker::run`] waits for the worker to deregister on shutdown.
+///
+/// Deregistration is a courtesy: the server drops a registration that stops
+/// heartbeating anyway. So a slow or unreachable server must not hold up
+/// shutdown for longer than this; past it the attempt is abandoned and logged.
+const REGISTRATION_STOP_TIMEOUT: Duration = Duration::from_secs(5);
+
 /// Waits up to [`DRIVER_STOP_TIMEOUT`] for a driver that has been asked to
 /// stop, and aborts it if it has not stopped by then.
 async fn stop_driver(driver: &str, handle: &mut tokio::task::JoinHandle<()>) {
@@ -463,6 +470,11 @@ impl Worker {
     ///
     /// [`WorkerError::StartupFailed`]: crate::error::WorkerError::StartupFailed
     pub async fn run(&self) -> Result<()> {
+        // Listen before anything else: a shutdown asked for while the worker is
+        // still starting (registering, say) would otherwise go unheard, and the
+        // worker would run on.
+        let mut shutdown_rx = self.shutdown_tx.subscribe();
+
         tracing::info!(
             identity = %self.config.identity,
             namespace = %self.config.namespace,
@@ -968,11 +980,29 @@ impl Worker {
             match WorkerRegistrationDriver::new(reg_config).await {
                 Ok(mut driver) => {
                     tracing::info!("Worker registration driver started");
-                    Some(tokio::spawn(async move {
-                        if let Err(e) = driver.run().await {
-                            tracing::error!(error = %e, "Worker registration driver error");
+                    // `run` borrows the driver until it returns, and returns, after
+                    // deregistering the worker, only once the driver's own shutdown
+                    // is signaled. So on `stop`, drop the running loop, signal, and
+                    // run it again: with the signal already set it goes straight to
+                    // deregistration. A dropped `stop` (the worker future itself was
+                    // dropped) deregisters too.
+                    let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
+                    let handle = tokio::spawn(async move {
+                        tokio::select! {
+                            result = driver.run() => {
+                                if let Err(e) = result {
+                                    tracing::error!(error = %e, "Worker registration driver error");
+                                }
+                                return;
+                            }
+                            _ = stopped => {}
                         }
-                    }))
+                        driver.shutdown();
+                        if let Err(e) = driver.run().await {
+                            tracing::warn!(error = %e, "Worker deregistration failed");
+                        }
+                    });
+                    Some((stop, handle))
                 }
                 Err(e) => {
                     tracing::warn!(error = %e, "Failed to create worker registration driver — continuing without registration");
@@ -985,8 +1015,6 @@ impl Worker {
             identity = %self.service_id,
             "Worker started successfully"
         );
-
-        let mut shutdown_rx = self.shutdown_tx.subscribe();
 
         // Run until any driver or loop ends, or shutdown is requested.
         let (mut workflow_driver_stopped, mut task_driver_stopped) = (false, false);
@@ -1050,9 +1078,22 @@ impl Worker {
             }
         }
 
-        if let Some(handle) = worker_reg_handle {
+        // Last, so the worker stays listed as live while it still finishes work.
+        // Stopping the driver, rather than aborting it, deregisters the worker;
+        // otherwise the server keeps listing it until the registration expires.
+        if let Some((stop, mut handle)) = worker_reg_handle {
             tracing::debug!("Stopping worker registration driver");
-            handle.abort();
+            let _ = stop.send(());
+            match tokio::time::timeout(REGISTRATION_STOP_TIMEOUT, &mut handle).await {
+                Ok(_) => tracing::debug!("Worker registration driver stopped"),
+                Err(_) => {
+                    tracing::warn!(
+                        timeout_secs = REGISTRATION_STOP_TIMEOUT.as_secs(),
+                        "Worker registration driver did not stop in time; the worker may stay listed until its registration expires"
+                    );
+                    handle.abort();
+                }
+            }
         }
 
         tracing::info!("Worker stopped");
