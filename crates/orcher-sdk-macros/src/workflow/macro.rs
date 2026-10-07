@@ -4,9 +4,11 @@
 //! `<Name>` metadata struct with an `execute` method, and the `inventory` registration that
 //! makes the workflow available to workers.
 
-use crate::common::attrs::{validate_retry_policy, validate_schedule, validate_workflow_attrs};
+use crate::common::attrs::{
+    validate_retry_policy, validate_schedule, validate_workflow_attrs, IneffectiveWorkflowAttr,
+};
 use crate::common::codegen::{
-    extract_fn_info, generate_sdk_workflow_wrapper_with_attrs, workflow_wrapper_name,
+    extract_fn_info, generate_sdk_workflow_wrapper, workflow_wrapper_name,
 };
 use crate::common::integration::{
     extract_sdk_input_type, extract_sdk_output_type, uses_sdk_workflow_context,
@@ -130,13 +132,12 @@ fn workflow_impl_inner(
     let wrapper_fn = if has_sdk_context {
         let input_type = extract_sdk_input_type(&fn_info);
         let output_type_extracted = extract_sdk_output_type(fn_output);
-        generate_sdk_workflow_wrapper_with_attrs(
+        generate_sdk_workflow_wrapper(
             &fn_info,
             fn_name,
             &handler_wrapper_name,
             input_type,
             output_type_extracted,
-            &attrs,
         )
     } else {
         quote! {}
@@ -165,7 +166,11 @@ fn workflow_impl_inner(
 
     let enabled_flag = attrs.enabled;
 
+    let ineffective_warnings = ineffective_attr_warnings(&attrs);
+
     let expanded = quote! {
+        #ineffective_warnings
+
         #(#fn_attrs)*
         #fn_vis async fn #fn_name(#fn_inputs) #fn_output {
             #fn_body
@@ -207,6 +212,52 @@ fn workflow_impl_inner(
     Ok(expanded)
 }
 
+/// Explains, per key, why an accepted `#[workflow]` attribute has no effect and what to
+/// use instead.
+fn ineffective_attr_note(attr: IneffectiveWorkflowAttr) -> &'static str {
+    match attr {
+        IneffectiveWorkflowAttr::Timeout => {
+            "`timeout` on #[workflow] has no effect and will be removed; set the \
+             workflow's timeout when you start it, with \
+             StartWorkflowOptions::with_workflow_execution_timeout"
+        }
+        IneffectiveWorkflowAttr::Version => {
+            "`version` on #[workflow] has no effect and will be removed; to tie \
+             executions to a code release, set the worker's version with \
+             WorkerBuilder::version_id or ORCHER_VERSION_ID"
+        }
+        IneffectiveWorkflowAttr::Namespace => {
+            "`namespace` on #[workflow] has no effect and will be removed; the \
+             namespace comes from the worker (WorkerBuilder::namespace) and from \
+             the client (ClientConfig::with_namespace, \
+             StartWorkflowOptions::with_namespace)"
+        }
+    }
+}
+
+/// Emits a deprecation warning, at the attribute, for each attribute that is accepted but
+/// has no effect.
+///
+/// A procedural macro cannot emit a warning directly on stable Rust, so this defines a
+/// `#[deprecated]` constant carrying the note and uses it with the attribute's span; the
+/// compiler then reports the use as a `deprecated` warning. A warning rather than an
+/// error keeps code that sets these attributes compiling.
+fn ineffective_attr_warnings(attrs: &crate::common::attrs::WorkflowAttrs) -> TokenStream2 {
+    let warnings = attrs.ineffective.iter().map(|(attr, span)| {
+        let note = ineffective_attr_note(*attr);
+        let name = syn::Ident::new(&format!("{}_has_no_effect_on_workflow", attr.key()), *span);
+        quote::quote_spanned! {*span=>
+            const _: () = {
+                #[deprecated(note = #note)]
+                #[allow(non_upper_case_globals)]
+                const #name: () = ();
+                #name
+            };
+        }
+    });
+    quote! { #(#warnings)* }
+}
+
 /// Checks that the workflow function declares a return type.
 ///
 /// It does not reject `anyhow::Result`, although using it instead of `orcher_sdk::Result` loses
@@ -239,6 +290,66 @@ mod tests {
     use super::*;
     use darling::FromMeta;
     use syn::parse_quote;
+
+    fn expand(meta: Meta) -> String {
+        let attrs = crate::common::attrs::WorkflowAttrs::from_meta(&meta).unwrap();
+        let item: ItemFn = parse_quote! {
+            async fn my_workflow(ctx: WorkflowContext, input: String) -> Result<String> {
+                Ok(input)
+            }
+        };
+        workflow_impl_inner(attrs, item).unwrap().to_string()
+    }
+
+    #[test]
+    fn each_ineffective_attribute_is_reported_as_deprecated() {
+        for (meta, key, replacement) in [
+            (
+                parse_quote!(workflow(name = "w", timeout = 600)),
+                "timeout",
+                "with_workflow_execution_timeout",
+            ),
+            (
+                parse_quote!(workflow(name = "w", version = "2.0.0")),
+                "version",
+                "version_id",
+            ),
+            (
+                parse_quote!(workflow(name = "w", namespace = "production")),
+                "namespace",
+                "WorkerBuilder::namespace",
+            ),
+        ] {
+            let expanded = expand(meta);
+            let name = format!("{key}_has_no_effect_on_workflow");
+            assert!(
+                expanded.contains("deprecated") && expanded.contains(&name),
+                "`{key}` produced no deprecation warning: {expanded}"
+            );
+            assert!(
+                expanded.contains(replacement),
+                "the `{key}` warning does not name its replacement"
+            );
+        }
+    }
+
+    #[test]
+    fn effective_attributes_produce_no_warning() {
+        let expanded = expand(parse_quote!(workflow(
+            name = "w",
+            description = "d",
+            tags("a")
+        )));
+        assert!(!expanded.contains("deprecated"), "{expanded}");
+    }
+
+    #[test]
+    fn timeout_does_not_bound_the_workflow_by_wall_clock() {
+        // A workflow suspends between activations, so a wall-clock bound in the handler
+        // would limit one activation and make replay depend on timing.
+        let expanded = expand(parse_quote!(workflow(name = "w", timeout = 600)));
+        assert!(!expanded.contains("tokio :: time :: timeout"), "{expanded}");
+    }
 
     #[test]
     fn test_workflow_impl_basic() {
