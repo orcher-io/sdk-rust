@@ -43,7 +43,7 @@
 //!
 //! # #[task]
 //! # async fn process_data(_ctx: TaskContext, input: String) -> Result<String> { Ok(input) }
-//! #[workflow(name = "data-pipeline", version = "1.0.0", timeout = 300)]
+//! #[workflow(name = "data-pipeline")]
 //! async fn data_pipeline(ctx: WorkflowContext, input: String) -> Result<String> {
 //!     // Orchestrate tasks here.
 //!     ctx.execute_task(process_data, input).await
@@ -188,9 +188,7 @@ pub fn tasks(attr: TokenStream, item: TokenStream) -> TokenStream {
 /// # Attributes
 ///
 /// - `name`: workflow name; defaults to the function name.
-/// - `description`, `namespace`, `task_queue`: metadata.
-/// - `version`: workflow version (default: `"1.0.0"`).
-/// - `timeout`: workflow timeout in seconds.
+/// - `description`, `task_queue`: metadata.
 /// - `max_concurrent`: maximum concurrent steps (default: 10).
 /// - `tags("a", "b")`: tags for categorization.
 /// - `retry_policy(...)`: retry policy for the whole workflow, with the same keys as on
@@ -201,6 +199,15 @@ pub fn tasks(attr: TokenStream, item: TokenStream) -> TokenStream {
 ///
 /// Unrecognized attributes are ignored.
 ///
+/// `timeout` and `version` are accepted but have no effect, and each produces a deprecation
+/// warning that names the replacement: set the execution timeout per start with
+/// `StartWorkflowOptions::with_workflow_execution_timeout`, and the code release with
+/// `WorkerBuilder::version_id`.
+///
+/// There is no `namespace` option: a workflow runs in whatever namespace its worker serves,
+/// so the namespace is set on the worker (`WorkerBuilder::namespace`) and where workflows are
+/// started (`ClientConfig::with_namespace`, `StartWorkflowOptions::with_namespace`).
+///
 /// # Examples
 ///
 /// ```rust
@@ -209,8 +216,6 @@ pub fn tasks(attr: TokenStream, item: TokenStream) -> TokenStream {
 /// #[workflow(
 ///     name = "etl-pipeline",
 ///     description = "Extract, transform, and load data",
-///     version = "2.0.0",
-///     timeout = 600,
 ///     max_concurrent = 5,
 ///     tags("etl", "data", "production"),
 ///     retry_policy(max_attempts = 3, initial_interval = 5)

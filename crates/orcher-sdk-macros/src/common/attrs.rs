@@ -4,7 +4,7 @@
 //! that accepts a fixed set of keys and ignores any others.
 
 use darling::FromMeta;
-use syn::{punctuated::Punctuated, Expr, Lit, Meta, Token};
+use syn::{punctuated::Punctuated, spanned::Spanned, Expr, Lit, Meta, Token};
 
 /// Retry policy arguments, such as `retry_policy(max_attempts = 5, initial_interval = 2)`.
 #[derive(Debug, Clone, FromMeta)]
@@ -348,11 +348,32 @@ pub struct EventAttrs {
     pub priority: Option<u8>,
 }
 
+/// A `#[workflow]` attribute that is accepted but has no effect, so the macro warns about it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IneffectiveWorkflowAttr {
+    /// `timeout`: the execution timeout is set per start.
+    Timeout,
+    /// `version`: the code release is declared by the worker.
+    Version,
+}
+
+impl IneffectiveWorkflowAttr {
+    /// The attribute key as written.
+    pub fn key(self) -> &'static str {
+        match self {
+            Self::Timeout => "timeout",
+            Self::Version => "version",
+        }
+    }
+}
+
 /// Arguments accepted by `#[workflow]`.
 ///
-/// The parser reads `name`, `description`, `version`, `namespace`, `task_queue`, `timeout`,
+/// The parser reads `name`, `description`, `version`, `task_queue`, `timeout`,
 /// `max_concurrent`, `enabled`, `cron`, `schedule`, `tags(...)` and `retry_policy(...)`.
-/// Other keys are ignored, so the remaining fields always keep their defaults.
+/// Other keys are ignored, so the remaining fields always keep their defaults. `version`
+/// and `timeout` have no effect and are recorded in `ineffective`, so the macro can warn
+/// about them. `namespace` is rejected: the namespace belongs to the worker and the client.
 #[derive(Debug, Clone)]
 pub struct WorkflowAttrs {
     /// Workflow name; defaults to the function name.
@@ -361,16 +382,13 @@ pub struct WorkflowAttrs {
     /// Workflow description.
     pub description: Option<String>,
 
-    /// Workflow version ("1.0.0" by default).
+    /// Workflow version ("1.0.0" by default). Has no effect; see `ineffective`.
     pub version: String,
-
-    /// Namespace the workflow belongs to.
-    pub namespace: Option<String>,
 
     /// Task queue used to route workflow executions.
     pub task_queue: Option<String>,
 
-    /// Workflow timeout in seconds.
+    /// Workflow timeout in seconds. Has no effect; see `ineffective`.
     pub timeout: Option<u64>,
 
     /// Maximum number of concurrent steps (10 by default).
@@ -413,6 +431,9 @@ pub struct WorkflowAttrs {
 
     /// Maximum number of attempts for the whole workflow.
     pub max_retry_attempts: Option<u32>,
+
+    /// Attributes that were set but have no effect, with where each was written.
+    pub ineffective: Vec<(IneffectiveWorkflowAttr, proc_macro2::Span)>,
 }
 
 // Defaults referenced by the darling attributes above.
@@ -499,7 +520,6 @@ impl Default for WorkflowAttrs {
             name: None,
             description: None,
             version: default_version(),
-            namespace: None,
             task_queue: None,
             timeout: None,
             max_concurrent: default_max_concurrent(),
@@ -515,6 +535,7 @@ impl Default for WorkflowAttrs {
             heartbeat_interval: None,
             on_timeout: None,
             max_retry_attempts: None,
+            ineffective: Vec::new(),
         }
     }
 }
@@ -547,6 +568,9 @@ impl FromMeta for WorkflowAttrs {
                                 }
                             }
                             "version" => {
+                                attrs
+                                    .ineffective
+                                    .push((IneffectiveWorkflowAttr::Version, nv.path.span()));
                                 if let Expr::Lit(lit) = &nv.value {
                                     if let Lit::Str(s) = &lit.lit {
                                         attrs.version = s.value();
@@ -554,13 +578,19 @@ impl FromMeta for WorkflowAttrs {
                                 }
                             }
                             "namespace" => {
-                                if let Expr::Lit(lit) = &nv.value {
-                                    if let Lit::Str(s) = &lit.lit {
-                                        attrs.namespace = Some(s.value());
-                                    }
-                                }
+                                return Err(darling::Error::custom(
+                                    "`namespace` is not a #[workflow] option: a workflow runs in \
+                                     whatever namespace its worker serves. Set it on the worker \
+                                     (WorkerBuilder::namespace) and where you start workflows \
+                                     (ClientConfig::with_namespace, \
+                                     StartWorkflowOptions::with_namespace)",
+                                )
+                                .with_span(&nv.path));
                             }
                             "timeout" => {
+                                attrs
+                                    .ineffective
+                                    .push((IneffectiveWorkflowAttr::Timeout, nv.path.span()));
                                 if let Expr::Lit(lit) = &nv.value {
                                     if let Lit::Int(i) = &lit.lit {
                                         attrs.timeout = Some(i.base10_parse()?);

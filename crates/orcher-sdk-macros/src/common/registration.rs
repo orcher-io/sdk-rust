@@ -99,7 +99,6 @@ fn parse_memory_size(size_str: &str) -> u64 {
 ///             description: Some("Process data".to_string()),
 ///             timeout_seconds: Some(30),
 ///             retry_policy: Some(orcher_sdk::worker::RetryPolicy { /* ... */ }),
-///             namespace: Some("default".to_string()),
 ///             version: Some("1.0.0".to_string()),
 ///         }),
 ///     }
@@ -256,7 +255,8 @@ pub fn generate_sdk_task_registration(
 /// Generates the `inventory` registration for a workflow.
 ///
 /// Only the workflow name and handler are registered. The other workflow attributes are
-/// parsed and validated but not registered.
+/// parsed and validated but not registered; `version` and `timeout` also produce a
+/// deprecation warning, emitted by the workflow macro.
 ///
 /// # Generated Code
 ///
@@ -275,10 +275,7 @@ pub fn generate_sdk_task_registration(
 ///         }),
 ///         metadata: Some(orcher_sdk::worker::WorkflowMetadata {
 ///             description: Some("Process orders".to_string()),
-///             version: "1.0.0".to_string(),
-///             timeout_seconds: Some(600),
 ///             tags: vec!["orders".to_string()],
-///             namespace: Some("default".to_string()),
 ///             max_concurrent_steps: None,
 ///         }),
 ///     }
@@ -299,19 +296,6 @@ pub fn generate_sdk_workflow_registration(
         .description
         .as_ref()
         .map(|d| quote! { Some(#d.to_string()) })
-        .unwrap_or_else(|| quote! { None });
-
-    let _version = &attrs.version;
-
-    let _timeout_seconds = attrs
-        .timeout
-        .map(|t| quote! { Some(#t) })
-        .unwrap_or_else(|| quote! { None });
-
-    let _namespace = attrs
-        .namespace
-        .as_ref()
-        .map(|ns| quote! { Some(#ns.to_string()) })
         .unwrap_or_else(|| quote! { None });
 
     let _task_queue = attrs
