@@ -53,17 +53,26 @@ pub struct ClientConfig {
     /// scoped to its own organization, and the server refuses a different one.
     pub organization_id: Option<String>,
 
-    /// TLS configuration (default: None, which means plain TCP).
+    /// TLS configuration (default: None).
     ///
-    /// For mTLS, also give the client certificate and key.
+    /// `None` follows the URL scheme: `https://` connects over TLS verified
+    /// against the system trust store, `http://` connects in plaintext. Set it
+    /// to trust a private CA, present a client certificate (mTLS) or override
+    /// the server name. TLS is only negotiated for `https://` addresses.
     pub tls: Option<ClientTlsConfig>,
 }
 
 /// TLS settings for connecting to the ORCHER server.
 ///
-/// Enables TLS, and mTLS when a client identity is set. With `ca_cert: None`
-/// the server is verified against the system trust store, so a publicly-trusted
-/// server certificate needs no CA material.
+/// Used by both [`ClientConfig::with_tls`] and
+/// [`WorkerBuilder::tls`](crate::worker::WorkerBuilder::tls). An `https://`
+/// address needs none of this to connect over TLS; supply it to trust a private
+/// CA, present a client certificate (mTLS) or override the server name. With
+/// `ca_cert: None` the server is verified against the system trust store, so a
+/// publicly-trusted server certificate needs no CA material.
+///
+/// PEM can be given as bytes (`with_ca_cert`, `with_client_identity`) or read
+/// from files (`with_ca_cert_file`, `with_client_identity_files`).
 ///
 /// # Example — TLS against a publicly-trusted server
 ///
@@ -89,12 +98,12 @@ pub struct ClientConfig {
 ///
 /// ```rust,no_run
 /// # use orcher_sdk::client::ClientTlsConfig;
+/// # fn main() -> std::io::Result<()> {
 /// let tls = ClientTlsConfig::new()
-///     .with_ca_cert(std::fs::read("ca.pem").unwrap())
-///     .with_client_identity(
-///         std::fs::read("client.pem").unwrap(),
-///         std::fs::read("client-key.pem").unwrap(),
-///     );
+///     .with_ca_cert_file("ca.pem")?
+///     .with_client_identity_files("client.pem", "client-key.pem")?;
+/// # Ok(())
+/// # }
 /// ```
 #[derive(Clone, Default)]
 #[non_exhaustive]
@@ -237,6 +246,53 @@ impl ClientTlsConfig {
     pub fn with_domain_name(mut self, domain_name: impl Into<String>) -> Self {
         self.domain_name = Some(domain_name.into());
         self
+    }
+
+    /// Verify the server against the CA in this PEM file instead of the
+    /// system trust store.
+    ///
+    /// # Errors
+    ///
+    /// Returns the I/O error, naming the path, if the file cannot be read.
+    pub fn with_ca_cert_file(self, path: impl AsRef<std::path::Path>) -> std::io::Result<Self> {
+        Ok(self.with_ca_cert(read_pem(path.as_ref())?))
+    }
+
+    /// Present the client certificate and key in these PEM files, for mTLS.
+    ///
+    /// # Errors
+    ///
+    /// Returns the I/O error, naming the path, if either file cannot be read.
+    pub fn with_client_identity_files(
+        self,
+        cert_path: impl AsRef<std::path::Path>,
+        key_path: impl AsRef<std::path::Path>,
+    ) -> std::io::Result<Self> {
+        let cert = read_pem(cert_path.as_ref())?;
+        let key = read_pem(key_path.as_ref())?;
+        Ok(self.with_client_identity(cert, key))
+    }
+}
+
+/// Reads a PEM file, naming it in the error.
+fn read_pem(path: &std::path::Path) -> std::io::Result<Vec<u8>> {
+    std::fs::read(path).map_err(|e| {
+        std::io::Error::new(e.kind(), format!("cannot read {}: {}", path.display(), e))
+    })
+}
+
+impl std::fmt::Debug for ClientTlsConfig {
+    /// Shows which settings are present without printing key material.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ClientTlsConfig")
+            .field("ca_cert", &self.ca_cert.as_ref().map(|_| "<pem>"))
+            .field("client_cert", &self.client_cert.as_ref().map(|_| "<pem>"))
+            .field(
+                "client_key",
+                &self.client_key.as_ref().map(|_| "<redacted>"),
+            )
+            .field("domain_name", &self.domain_name)
+            .finish()
     }
 }
 

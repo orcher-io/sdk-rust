@@ -95,13 +95,19 @@ pub struct Client {
     pub(crate) namespace_client: Arc<NamespaceClient>,
     pub(crate) config: ClientConfig,
     pub(crate) data_converter: DataConverterType,
+    /// The connection every gRPC client above shares, kept so the clients can
+    /// be rebuilt with new credentials.
+    channel: tonic::transport::Channel,
 }
 
 impl Client {
     /// Connects to the ORCHER server at `url` with the default configuration.
     ///
-    /// The URL looks like `http://localhost:50051`. The channel connects lazily,
-    /// so an unreachable server surfaces on the first call, not here.
+    /// The URL looks like `http://localhost:50051`. An `https://` URL connects
+    /// over TLS verified against the system trust store; for a private CA or
+    /// mTLS, use [`Client::with_config`] with [`ClientConfig::with_tls`]. The
+    /// channel connects lazily, so an unreachable server surfaces on the first
+    /// call, not here.
     ///
     /// # Errors
     ///
@@ -120,8 +126,10 @@ impl Client {
 
     /// Creates a client from a full [`ClientConfig`].
     ///
-    /// The API key and organization ID are bound to every gRPC client here,
-    /// so set them on the config before calling this.
+    /// The API key and organization ID are bound to every gRPC client here.
+    /// TLS follows the URL scheme (`https://` enables it) unless
+    /// [`ClientConfig::tls`] is set, which is how a private CA or a client
+    /// certificate is supplied.
     ///
     /// # Errors
     ///
@@ -133,45 +141,18 @@ impl Client {
         tracing::info!(
             server_url = %config.server_url,
             namespace = %config.namespace,
-            tls = config.tls.is_some(),
+            tls = crate::tls::tls_for_url(&config.server_url, config.tls.as_ref()).is_some(),
             "Connecting to ORCHER server via gRPC"
         );
 
-        let mut endpoint = tonic::transport::Endpoint::from_shared(config.server_url.clone())
-            .map_err(|e| {
+        // TLS follows the URL scheme unless set explicitly; see `tls_for_url`.
+        let endpoint =
+            crate::tls::endpoint(&config.server_url, config.tls.as_ref()).map_err(|reason| {
                 Error::Client(crate::error::ClientError::ConnectionFailed {
                     url: config.server_url.clone(),
-                    reason: format!("Invalid server URL: {}", e),
+                    reason,
                 })
             })?;
-
-        if let Some(ref tls) = config.tls {
-            // Without a custom CA, verify against the system trust store. mTLS
-            // to a publicly-trusted server then needs only the client identity.
-            let mut tls_config = match tls.ca_cert {
-                Some(ref ca) => tonic::transport::ClientTlsConfig::new()
-                    .ca_certificate(tonic::transport::Certificate::from_pem(ca)),
-                None => tonic::transport::ClientTlsConfig::new().with_native_roots(),
-            };
-
-            if let (Some(ref cert), Some(ref key)) = (&tls.client_cert, &tls.client_key) {
-                let identity = tonic::transport::Identity::from_pem(cert, key);
-                tls_config = tls_config.identity(identity);
-            }
-
-            if let Some(ref domain) = tls.domain_name {
-                tls_config = tls_config.domain_name(domain.clone());
-            }
-
-            endpoint = endpoint.tls_config(tls_config).map_err(|e| {
-                Error::Client(crate::error::ClientError::ConnectionFailed {
-                    url: config.server_url.clone(),
-                    reason: format!("TLS configuration error: {}", e),
-                })
-            })?;
-
-            tracing::info!("TLS configured for gRPC connection");
-        }
 
         // One channel shared by the workflow, actor and namespace clients.
         let channel = endpoint
@@ -179,6 +160,11 @@ impl Client {
             .timeout(config.timeout)
             .connect_lazy();
 
+        Ok(Self::from_channel(config, channel))
+    }
+
+    /// Builds the gRPC clients on `channel` with the credentials in `config`.
+    fn from_channel(config: ClientConfig, channel: tonic::transport::Channel) -> Self {
         // Credentials are attached by an interceptor bound here, so every RPC
         // carries them.
         let mut core_client = CoreClient::from_channel(channel.clone())
@@ -199,17 +185,18 @@ impl Client {
             channel.clone(),
             credentials.clone(),
         ));
-        let namespace_client = Arc::new(NamespaceClient::with_auth(channel, credentials));
+        let namespace_client = Arc::new(NamespaceClient::with_auth(channel.clone(), credentials));
 
         let data_converter = config.data_converter.clone().unwrap_or_default();
 
-        Ok(Self {
+        Self {
             core_client: Arc::new(core_client),
             actor_client,
             namespace_client,
             config,
             data_converter,
-        })
+            channel,
+        }
     }
 
     // ============================================================================
@@ -242,23 +229,31 @@ impl Client {
         self
     }
 
-    /// Sets the TLS configuration.
+    /// Has no effect: TLS belongs to the connection, which is already built.
     ///
-    /// This only updates the stored config; the existing connection is not
-    /// rebuilt. Set TLS on [`ClientConfig`] before connecting.
+    /// Set TLS with [`ClientConfig::with_tls`] before
+    /// [`Client::with_config`]. An `https://` URL needs no TLS settings at all.
+    #[deprecated(
+        note = "has no effect on a connected client; set TLS with ClientConfig::with_tls before Client::with_config (https:// URLs use TLS automatically)"
+    )]
     pub fn with_tls(mut self, tls: super::ClientTlsConfig) -> Self {
         self.config.tls = Some(tls);
         self
     }
 
-    /// Sets the API key on the stored configuration.
+    /// Authenticates every later call with this API key.
     ///
-    /// The gRPC clients are built in [`Client::with_config`], so on an
-    /// already-connected client this does not change the credentials that are
-    /// sent. Set `api_key` on [`ClientConfig`] before connecting.
+    /// The workflow, actor and namespace clients are rebuilt on the existing
+    /// connection, so the key is sent from the next call on. Clones taken
+    /// before this call keep their old credentials.
     pub fn with_api_key(mut self, key: impl Into<String>) -> Self {
         self.config.api_key = Some(key.into());
-        self
+        let channel = self.channel.clone();
+        let data_converter = self.data_converter.clone();
+        let mut rebuilt = Self::from_channel(self.config, channel);
+        // Keep a converter chosen after connecting (use_binary_serialization).
+        rebuilt.data_converter = data_converter;
+        rebuilt
     }
 
     /// Serializes values in the binary format instead of JSON.
@@ -813,6 +808,32 @@ mod tests {
         assert_eq!(config.timeout, Duration::from_secs(10));
         assert_eq!(config.identity, "test-client");
         assert!(config.use_payload_format);
+    }
+
+    #[tokio::test]
+    async fn with_api_key_after_connecting_changes_the_credentials_sent() {
+        let client = Client::connect("http://127.0.0.1:1").await.unwrap();
+        assert_eq!(client.core_client.auth().api_key, None);
+
+        let client = client.use_binary_serialization().with_api_key("key-123");
+
+        assert_eq!(
+            client.core_client.auth().api_key.as_deref(),
+            Some("key-123")
+        );
+        // The binary converter chosen before survives the rebuild.
+        assert_eq!(client.data_converter.encoding(), "binary");
+    }
+
+    #[tokio::test]
+    async fn an_unusable_client_certificate_is_rejected_at_connect() {
+        let mut tls = crate::client::ClientTlsConfig::new();
+        tls.client_key = Some(b"key".to_vec());
+        let config = ClientConfig::new("https://orcher.example").with_tls(tls);
+        let Err(err) = Client::with_config(config).await else {
+            panic!("must fail");
+        };
+        assert!(err.to_string().contains("must be set together"), "{err}");
     }
 
     #[test]

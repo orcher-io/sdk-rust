@@ -264,6 +264,15 @@ pub struct WorkerConfig {
     /// or ordered. Defaults to the `ORCHER_VERSION_ID` environment variable.
     pub version_id: Option<String>,
 
+    /// TLS settings (default: None).
+    ///
+    /// `None` follows the URL scheme: `https://` connects over TLS verified
+    /// against the system trust store, `http://` in plaintext. Set it to trust a
+    /// private CA, present a client certificate (mTLS) or override the server
+    /// name. It applies to every connection the worker opens: workflow, task
+    /// and actor polling, and worker registration.
+    pub tls: Option<crate::client::ClientTlsConfig>,
+
     /// Maximum number of concurrent worker sessions (default: 10).
     ///
     /// Sessions pin a series of tasks to a single worker. Each session
@@ -297,6 +306,7 @@ impl Default for WorkerConfig {
                 .ok()
                 .filter(|v| !v.trim().is_empty()),
             max_sessions: 10,
+            tls: None,
         }
     }
 }
@@ -328,6 +338,7 @@ impl std::fmt::Debug for WorkerConfig {
             .field("poll_interval", &self.poll_interval)
             .field("heartbeat_interval", &self.heartbeat_interval)
             .field("organization_id", &self.organization_id)
+            .field("tls", &self.tls)
             .field("api_key", &self.api_key.as_ref().map(|_| "***"))
             .field(
                 "codec_chain",
@@ -455,6 +466,14 @@ impl Worker {
         let _ = self.shutdown_tx.send(());
     }
 
+    /// The TLS settings for sdk-core's drivers: the configured ones, or, for
+    /// an `https://` address without any, TLS verified against the system
+    /// trust store.
+    fn core_tls(&self) -> Option<orcher_sdk_core::poller::TlsConfig> {
+        crate::tls::tls_for_url(&self.config.server_url, self.config.tls.as_ref())
+            .map(|tls| crate::tls::to_core(&tls))
+    }
+
     /// Runs the worker until shutdown is requested or a driver or execution
     /// loop stops.
     ///
@@ -484,6 +503,9 @@ impl Worker {
 
         self.register_handlers_from_registry().await?;
 
+        // Every driver gets the same TLS settings; see `core_tls`.
+        let core_tls = self.core_tls();
+
         let mut workflow_driver_config = WorkflowDriverConfig::default();
         workflow_driver_config.server_url = self.config.server_url.clone();
         workflow_driver_config.namespace = self.config.namespace.clone();
@@ -496,7 +518,7 @@ impl Worker {
         workflow_driver_config.poller_count = self.config.workflow_poller_count;
         workflow_driver_config.organization_id = self.config.organization_id.clone();
         workflow_driver_config.api_key = self.config.api_key.clone();
-        workflow_driver_config.tls_config = None;
+        workflow_driver_config.tls_config = core_tls.clone();
         workflow_driver_config.version_id = self.config.version_id.clone();
 
         let (workflow_driver, mut workflow_work_rx, workflow_result_tx) =
@@ -521,7 +543,7 @@ impl Worker {
         task_driver_config.poller_count = self.config.task_poller_count;
         task_driver_config.organization_id = self.config.organization_id.clone();
         task_driver_config.api_key = self.config.api_key.clone();
-        task_driver_config.tls_config = None;
+        task_driver_config.tls_config = core_tls.clone();
         task_driver_config.version_id = self.config.version_id.clone();
         // Heartbeat every task while it runs, whatever its code does, so a
         // task whose worker dies is retried instead of staying started.
@@ -557,7 +579,7 @@ impl Worker {
             actor_driver_config.enable_heartbeat = true;
             actor_driver_config.heartbeat_interval = self.config.heartbeat_interval;
             actor_driver_config.registration_id = self.actor_registration_id.clone();
-            actor_driver_config.tls_config = None;
+            actor_driver_config.tls_config = core_tls.clone();
 
             let (driver, work_rx, result_tx, event_rx) =
                 ActorDriver::new(actor_driver_config).await.map_err(|e| {
@@ -817,6 +839,7 @@ impl Worker {
         {
             let actor_executor = self.actor_executor.clone();
             let server_url = self.config.server_url.clone();
+            let tls = self.config.tls.clone();
 
             let driver_handle = tokio::spawn(async move {
                 if let Err(e) = driver.run().await {
@@ -829,6 +852,7 @@ impl Worker {
                     let result_tx = result_tx.clone();
                     let executor = actor_executor.clone();
                     let server_url = server_url.clone();
+                    let tls = tls.clone();
 
                     tokio::spawn(async move {
                         let operation = work.operation;
@@ -836,7 +860,7 @@ impl Worker {
                         let execution_id = operation.execution_id.clone();
 
                         let result =
-                            Self::execute_actor_op(executor, &operation, &server_url).await;
+                            Self::execute_actor_op(executor, &operation, &server_url, tls).await;
 
                         let work_result = ActorWorkResult {
                             operation_id,
@@ -969,7 +993,7 @@ impl Worker {
             reg_config.max_concurrent_tasks = self.config.max_concurrent_tasks as u32;
             reg_config.heartbeat_interval = self.config.heartbeat_interval;
             reg_config.metadata = metadata;
-            reg_config.tls_config = None;
+            reg_config.tls_config = self.core_tls();
             reg_config.version_id = self.config.version_id.clone();
             // Registration must authenticate like polling does; otherwise a
             // server that requires credentials rejects it and the worker never
@@ -1156,6 +1180,7 @@ impl Worker {
         actor_executor: Option<Arc<crate::actor::ActorExecutor>>,
         operation: &orcher_proto::orcher::v1::ActorOperation,
         server_url: &str,
+        tls: Option<crate::client::ClientTlsConfig>,
     ) -> orcher_sdk_core::error::Result<Vec<u8>> {
         tracing::info!(
             actor = %operation.actor_name,
@@ -1178,6 +1203,7 @@ impl Worker {
 
         let state_client_config = crate::actor::ActorStateClientConfig {
             server_url: server_url.to_string(),
+            tls,
             ..Default::default()
         };
 

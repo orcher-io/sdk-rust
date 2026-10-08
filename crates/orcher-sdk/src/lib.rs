@@ -86,6 +86,7 @@ pub mod error;
 pub mod interceptor;
 pub mod payload;
 pub mod task;
+mod tls;
 pub mod worker;
 pub mod workflow;
 
