@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.1](https://github.com/orcher-io/sdk-rust/compare/v0.7.0...v0.7.1) (2026-10-08)
+
+
+### Features
+
+* TLS and mTLS for workers, automatic TLS for https:// URLs ([#26](https://github.com/orcher-io/sdk-rust/issues/26)) ([9f4ec5d](https://github.com/orcher-io/sdk-rust/commit/9f4ec5d7efb557f5abd5b95058991dc5531813fb)), closes [#17](https://github.com/orcher-io/sdk-rust/issues/17) [#18](https://github.com/orcher-io/sdk-rust/issues/18)
+
 ## [0.7.0](https://github.com/orcher-io/sdk-rust/compare/v0.6.0...v0.7.0) (2026-10-07)
 
 
