@@ -28,6 +28,7 @@ fn proto_retry_policy(
         maximum_interval: Some(proto_duration(p.max_interval)),
         maximum_attempts: p.max_attempts as i32,
         non_retryable_error_types: Vec::new(),
+        ..Default::default()
     }
 }
 
@@ -390,6 +391,7 @@ impl Client {
             workflow_id_reuse_policy: options
                 .id_reuse_policy
                 .map_or(0, |policy| policy.to_proto() as i32),
+            ..Default::default()
         };
         let handle = client
             .start_workflow_request(request)
@@ -470,6 +472,7 @@ impl Client {
                 start_delay: None,
                 schedule_config: None,
                 workflow_id_reuse_policy: 0,
+                ..Default::default()
             });
         }
 

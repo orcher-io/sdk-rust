@@ -162,6 +162,16 @@ let handle = client.get_workflow_handle("approval-42").await?;
 handle.send_event("approved", true).await?;
 ```
 
+Cancel it the same way, optionally limiting how long its cleanup may take before the engine terminates it. Engines from before cancellation cleanup ignore the limit and cancel at once:
+
+```rust
+use orcher_sdk::client::CancelOptions;
+
+handle
+    .cancel_with_options(CancelOptions::default().with_cleanup_timeout(Duration::from_secs(30)))
+    .await?;
+```
+
 </details>
 
 <details>

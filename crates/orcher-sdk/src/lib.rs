@@ -64,6 +64,10 @@
 #![warn(missing_docs)]
 #![warn(rust_2018_idioms)]
 #![allow(clippy::module_inception)]
+// Protocol messages are built with `..Default::default()` even when every
+// field is set today: a field added to the protocol then leaves an older
+// release of this crate building, sending the field unset.
+#![allow(clippy::needless_update)]
 
 // Re-exported so that macro-generated `#[::orcher_sdk::ctor::ctor]` resolves in user crates.
 #[cfg(feature = "auto-register")]

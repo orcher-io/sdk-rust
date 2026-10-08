@@ -249,6 +249,7 @@ impl ActorStateClient {
                     key: key.to_string(),
                     state_key: state_key.to_string(),
                     execution_id: execution_id.to_string(),
+                    ..Default::default()
                 });
 
                 let mut grpc_client = client.clone();
@@ -311,6 +312,7 @@ impl ActorStateClient {
                     key: key.to_string(),
                     state_key: state_key.to_string(),
                     execution_id: execution_id.to_string(),
+                    ..Default::default()
                 });
 
                 let mut grpc_client = client.clone();
@@ -382,6 +384,7 @@ impl ActorStateClient {
                     value: value_bytes.clone(),
                     execution_id: execution_id.to_string(),
                     expected_version: expected_version.unwrap_or("").to_string(),
+                    ..Default::default()
                 });
 
                 let mut grpc_client = client.clone();
@@ -439,6 +442,7 @@ impl ActorStateClient {
                     key: key.to_string(),
                     state_key: state_key.to_string(),
                     execution_id: execution_id.to_string(),
+                    ..Default::default()
                 });
 
                 let mut grpc_client = client.clone();
@@ -480,6 +484,7 @@ impl ActorStateClient {
                     key: key.to_string(),
                     execution_id: execution_id.to_string(),
                     prefix: prefix.unwrap_or_default().to_string(),
+                    ..Default::default()
                 });
 
                 let mut grpc_client = client.clone();
