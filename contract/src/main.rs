@@ -41,7 +41,7 @@ struct Args {
     /// the same string, so the child-workflow scenarios could not tell them
     /// apart.
     ///
-    /// Create it once: `orcher namespace create contract`.
+    /// Created on start when it does not exist yet.
     #[arg(long, env = "ORCHER_NAMESPACE", default_value = "contract")]
     namespace: String,
 
@@ -175,6 +175,18 @@ fn default_parallel() -> usize {
     1
 }
 
+/// Create `name` unless it already exists.
+async fn ensure_namespace(server_url: &str, name: &str) -> Result<()> {
+    let client = Client::with_config(ClientConfig::new(server_url.to_string()))
+        .await
+        .context("connecting client to create the namespace")?;
+    match client.create_namespace(name, 7).await {
+        Ok(_) => Ok(()),
+        Err(e) if e.to_string().contains("already exists") => Ok(()),
+        Err(e) => Err(e).with_context(|| format!("creating namespace '{name}'")),
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt()
@@ -184,6 +196,10 @@ async fn main() -> Result<()> {
         .init();
 
     let args = Args::parse();
+
+    // Before the worker starts polling it, and with nothing outside the
+    // harness: the suite used to need the CLI just for this.
+    ensure_namespace(&args.server_url, &args.namespace).await?;
 
     if args.worker_only {
         let worker = Worker::builder()
