@@ -7,7 +7,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.8.0"
+version = "0.8.1"
 edition = "2021"
 license = "Apache-2.0"
 authors = ["ORCHER Contributors"]
@@ -19,4 +19,4 @@ documentation = "https://docs.rs/orcher-sdk"
 # with the dependency, so it must match `[workspace.package]`; release-please
 # bumps both (see release-please-config.json).
 [workspace.dependencies]
-orcher-sdk-macros = { path = "crates/orcher-sdk-macros", version = "0.8.0" }
+orcher-sdk-macros = { path = "crates/orcher-sdk-macros", version = "0.8.1" }
