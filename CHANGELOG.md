@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.8.1](https://github.com/orcher-io/sdk-rust/compare/v0.8.0...v0.8.1) (2026-10-09)
+
+
+### Features
+
+* let a workflow clean up when it is cancelled ([#31](https://github.com/orcher-io/sdk-rust/issues/31)) ([684c4b3](https://github.com/orcher-io/sdk-rust/commit/684c4b357c3e628de14a5a2bacc87db64faeffac))
+
 ## [0.8.0](https://github.com/orcher-io/sdk-rust/compare/v0.7.1...v0.8.0) (2026-10-09)
 
 
