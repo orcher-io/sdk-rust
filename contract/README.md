@@ -24,12 +24,8 @@ workers unchanged.
 
 ## Running
 
-The suite runs in a namespace called `contract`, not `default`. Create it once
-per engine:
-
-```bash
-orcher namespace create contract
-```
+The suite runs in a namespace called `contract`, not `default`, and creates it
+on start if the engine does not have it yet.
 
 Using a namespace other than `default` makes namespace mistakes visible: a
 child workflow created in `default` instead of its parent's namespace is
