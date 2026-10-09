@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.8.0](https://github.com/orcher-io/sdk-rust/compare/v0.7.1...v0.8.0) (2026-10-09)
+
+
+### ⚠ BREAKING CHANGES
+
+* the sdk-core types this crate exposes, such as `WorkflowStatus`, the re-exported listing types and `NamespaceInfo`, now come from orcher-sdk-core 0.10 and orcher-proto 0.2.
+
+### Features
+
+* build on orcher-sdk-core 0.10, with a cleanup limit on cancellation ([#28](https://github.com/orcher-io/sdk-rust/issues/28)) ([91f79de](https://github.com/orcher-io/sdk-rust/commit/91f79de8d810b32b05c781e2f0bbf2f0a8573f7c))
+
 ## [0.7.1](https://github.com/orcher-io/sdk-rust/compare/v0.7.0...v0.7.1) (2026-10-08)
 
 
