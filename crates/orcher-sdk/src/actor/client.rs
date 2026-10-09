@@ -157,6 +157,7 @@ impl ActorClient {
                 operation: h.operation,
                 mode: h.mode as i32,
                 metadata: h.metadata,
+                ..Default::default()
             })
             .collect();
 
@@ -164,6 +165,7 @@ impl ActorClient {
             service_id: self.service_id.clone(),
             handlers: proto_handlers,
             metadata,
+            ..Default::default()
         };
 
         let response = self
@@ -231,6 +233,7 @@ impl ActorClient {
             registration_id,
             status: status as i32,
             metrics,
+            ..Default::default()
         };
 
         let response = self
@@ -288,6 +291,7 @@ impl ActorClient {
             key: key.into(),
             state_key: state_key.into(),
             execution_id: execution_id.into(),
+            ..Default::default()
         };
 
         let response = self
@@ -331,6 +335,7 @@ impl ActorClient {
             value,
             execution_id: execution_id.into(),
             expected_version: expected_version.unwrap_or_default(),
+            ..Default::default()
         };
 
         let response = self
@@ -395,6 +400,7 @@ impl ActorClient {
             service_id: self.service_id.clone(),
             max_operations,
             timeout_ms: timeout.as_millis() as u64,
+            ..Default::default()
         };
 
         let response = self
@@ -458,6 +464,7 @@ impl ActorClient {
             error_message: String::new(),
             error_code: String::new(),
             duration_ms,
+            ..Default::default()
         };
 
         let response = self
@@ -532,6 +539,7 @@ impl ActorClient {
             error_message,
             error_code,
             duration_ms,
+            ..Default::default()
         };
 
         let response = self

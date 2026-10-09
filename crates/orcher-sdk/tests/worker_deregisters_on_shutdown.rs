@@ -5,6 +5,8 @@
 //! real gRPC server that serves only `WorkerService`; the polls it also makes
 //! are refused as unimplemented, which the worker tolerates.
 
+#![allow(clippy::needless_update)]
+
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -48,6 +50,7 @@ impl WorkerService for FakeWorkerService {
             success: true,
             registration_id: REGISTRATION_ID.to_string(),
             error_message: String::new(),
+            ..Default::default()
         }))
     }
 
@@ -59,6 +62,7 @@ impl WorkerService for FakeWorkerService {
             success: true,
             re_register: false,
             timestamp: 0,
+            ..Default::default()
         }))
     }
 
@@ -74,7 +78,10 @@ impl WorkerService for FakeWorkerService {
         if self.hang_on_deregister {
             std::future::pending::<()>().await;
         }
-        Ok(Response::new(DeregisterWorkerResponse { success: true }))
+        Ok(Response::new(DeregisterWorkerResponse {
+            success: true,
+            ..Default::default()
+        }))
     }
 }
 

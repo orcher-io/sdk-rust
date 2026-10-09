@@ -533,9 +533,55 @@ impl EventOptions {
     }
 }
 
+/// Options for cancelling a workflow.
+///
+/// Pass them to [`WorkflowHandle::cancel_with_options`](super::WorkflowHandle::cancel_with_options).
+#[derive(Debug, Clone, Default)]
+#[non_exhaustive]
+pub struct CancelOptions {
+    /// How long the workflow may spend cleaning up after it observes the
+    /// cancellation, after which the engine terminates it. `None` sets no
+    /// limit.
+    ///
+    /// Engines from before cancellation cleanup ignore it and end the run as
+    /// cancelled at once.
+    pub cleanup_timeout: Option<Duration>,
+}
+
+impl CancelOptions {
+    /// Terminate the workflow if its cleanup takes longer than `timeout`.
+    pub fn with_cleanup_timeout(mut self, timeout: Duration) -> Self {
+        self.cleanup_timeout = Some(timeout);
+        self
+    }
+
+    /// The sdk-core options these translate to.
+    pub(crate) fn to_core(&self) -> orcher_sdk_core::client::CancelWorkflowOpts {
+        let opts = orcher_sdk_core::client::CancelWorkflowOpts::default();
+        match self.cleanup_timeout {
+            Some(timeout) => opts.with_cleanup_timeout(timeout),
+            None => opts,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_cancellation_sets_no_cleanup_limit_by_default() {
+        assert_eq!(CancelOptions::default().to_core().cleanup_timeout, None);
+    }
+
+    #[test]
+    fn a_cancellation_passes_its_cleanup_limit_to_sdk_core() {
+        let options = CancelOptions::default().with_cleanup_timeout(Duration::from_millis(90_500));
+        assert_eq!(
+            options.to_core().cleanup_timeout,
+            Some(Duration::from_millis(90_500))
+        );
+    }
 
     #[test]
     fn test_client_config_defaults() {

@@ -4,7 +4,7 @@
 use std::time::Duration;
 
 use orcher_sdk::client::{
-    ClientConfig, ClientTlsConfig, EventOptions, QueryOptions, QueryRejectCondition,
+    CancelOptions, ClientConfig, ClientTlsConfig, EventOptions, QueryOptions, QueryRejectCondition,
     StartWorkflowOptions, WorkflowIdReusePolicy,
 };
 use orcher_sdk::error::{ClientError, TaskError, WorkerError, WorkflowError};
@@ -49,6 +49,8 @@ fn client_options_build_with_their_methods() {
     assert_eq!(query.reject_condition, Some(QueryRejectCondition::NotOpen));
     let event = EventOptions::default().with_timeout(Duration::from_secs(2));
     assert_eq!(event.timeout, Some(Duration::from_secs(2)));
+    let cancel = CancelOptions::default().with_cleanup_timeout(Duration::from_secs(3));
+    assert_eq!(cancel.cleanup_timeout, Some(Duration::from_secs(3)));
 }
 
 #[test]

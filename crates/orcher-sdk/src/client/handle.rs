@@ -6,7 +6,7 @@ use serde::{de::DeserializeOwned, Serialize};
 use std::sync::Arc;
 use std::time::Duration;
 
-use super::{EventOptions, QueryOptions};
+use super::{CancelOptions, EventOptions, QueryOptions};
 
 /// Handle to a workflow execution.
 ///
@@ -135,15 +135,39 @@ impl WorkflowHandle {
     ///
     /// The workflow is told to cancel and can clean up before it stops. This
     /// returns once the request is accepted, not when the workflow has stopped.
+    /// Use [`WorkflowHandle::cancel_with_options`] to limit how long the
+    /// cleanup may take.
     pub async fn cancel(&self) -> Result<()> {
+        self.cancel_with_options(CancelOptions::default()).await
+    }
+
+    /// Requests graceful cancellation with options.
+    ///
+    /// With [`CancelOptions::cleanup_timeout`] set, the engine terminates the
+    /// workflow if it is still cleaning up when the limit passes. Engines from
+    /// before cancellation cleanup ignore the limit and end the run as
+    /// cancelled at once.
+    ///
+    /// ```rust,no_run
+    /// # use orcher_sdk::client::{CancelOptions, WorkflowHandle};
+    /// # use std::time::Duration;
+    /// # async fn example(handle: WorkflowHandle) -> orcher_sdk::Result<()> {
+    /// handle
+    ///     .cancel_with_options(CancelOptions::default().with_cleanup_timeout(Duration::from_secs(30)))
+    ///     .await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn cancel_with_options(&self, options: CancelOptions) -> Result<()> {
         tracing::info!(
             workflow_id = %self.workflow_id,
+            cleanup_timeout = ?options.cleanup_timeout,
             "Canceling workflow"
         );
 
         let client = self.get_client();
         client
-            .cancel_workflow(&self.workflow_id, self.run_id.clone())
+            .cancel_workflow_with(&self.workflow_id, self.run_id.clone(), options.to_core())
             .await
             .map_err(Error::from)?;
 

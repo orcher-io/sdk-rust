@@ -46,7 +46,7 @@ mod options;
 pub use client::{Client, DataConverterType};
 pub use handle::WorkflowHandle;
 pub use options::{
-    ClientConfig, ClientTlsConfig, EventOptions, QueryOptions, QueryRejectCondition,
+    CancelOptions, ClientConfig, ClientTlsConfig, EventOptions, QueryOptions, QueryRejectCondition,
     StartWorkflowOptions, WorkflowIdReusePolicy,
 };
 
