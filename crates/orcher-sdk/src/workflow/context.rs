@@ -89,9 +89,49 @@ pub(crate) struct ContextState {
     pub(crate) reached_steps: Vec<String>,
     pub(crate) query_handlers: HashMap<String, Arc<dyn Fn() -> Vec<u8> + Send + Sync>>,
     pub(crate) update_handlers: HashMap<String, ContextUpdateHandler>,
+    /// Whether the journal holds a request to cancel the workflow.
+    pub(crate) cancel_requested: bool,
+    /// When the journal recorded that request, ms since the epoch, when known.
+    pub(crate) cancel_requested_at: Option<i64>,
+    /// Whether the code has been told of the request. It is told once, at the first
+    /// wait whose result the journal did not record before the request: the same wait
+    /// on every replay, since the code's order and the journal's times are both fixed.
+    pub(crate) cancel_delivered: bool,
 }
 
 impl ContextState {
+    /// Whether the wait in hand is where the code learns of a cancellation request:
+    /// a request has come, the code has not been told yet, and the journal did not
+    /// record this wait's result before the request. Marks the request delivered
+    /// when it is.
+    ///
+    /// `result` is `None` when the wait has no result yet, and otherwise when the
+    /// journal recorded it, if known. A result recorded no later than the request is
+    /// received; one with no known time is too, since it exists.
+    pub(crate) fn take_cancellation(&mut self, result: Option<Option<i64>>) -> bool {
+        if !self.cancel_requested || self.cancel_delivered {
+            return false;
+        }
+        let received_first = match (result, self.cancel_requested_at) {
+            (None, _) => false,
+            (Some(Some(result_at)), Some(requested_at)) => result_at <= requested_at,
+            (Some(_), _) => true,
+        };
+        if received_first {
+            return false;
+        }
+        self.cancel_delivered = true;
+        true
+    }
+
+    /// The result of the wait under `key`, as
+    /// [`take_cancellation`](Self::take_cancellation) takes it.
+    pub(crate) fn result_seen(&self, key: &str) -> Option<Option<i64>> {
+        self.pending_task_results
+            .contains_key(key)
+            .then(|| self.resolved_at.get(key).copied())
+    }
+
     /// The workflow received what was journaled under `key`: its clock moves
     /// to when that was journaled.
     pub(crate) fn observe(&self, key: &str) {
@@ -157,6 +197,9 @@ impl WorkflowContext {
             reached_steps: Vec::new(),
             query_handlers: HashMap::new(),
             update_handlers: HashMap::new(),
+            cancel_requested: false,
+            cancel_requested_at: None,
+            cancel_delivered: false,
         };
 
         let ctx = Self {
@@ -314,6 +357,7 @@ impl WorkflowContext {
             .clone()
             .unwrap_or_else(|| format!("task_{}", sequence));
         self.reach_step(&task_id);
+        self.cancellation_for(&task_id)?;
 
         let replaying = {
             let state = self.state.lock().unwrap();
@@ -418,6 +462,16 @@ impl WorkflowContext {
     /// by the timer id in its FireTimer job.
     fn emit_timer(&self, timer_id: String, sequence: u64, duration: Duration) -> Result<()> {
         self.reach_step(&timer_id);
+        let fired = {
+            let state = self.state.lock().unwrap();
+            state.fired_timers.contains_key(&timer_id).then(|| {
+                state
+                    .resolved_at
+                    .get(&format!("timer:{}", timer_id))
+                    .copied()
+            })
+        };
+        self.cancellation_at(fired)?;
         let already_fired = {
             let state = self.state.lock().unwrap();
             let fired = state.fired_timers.contains_key(&timer_id);
@@ -475,6 +529,8 @@ impl WorkflowContext {
         let handle = self
             .start_child_workflow_with_options(workflow_type, input, options)
             .await?;
+
+        self.cancellation_for(&format!("child:{}", handle.id()))?;
 
         // On replay, the runtime has injected the child's outcome under `child:{id}`.
         let cached = {
@@ -671,6 +727,17 @@ impl WorkflowContext {
         //
         // Oldest first: events of one name are consumed in arrival order, as in the
         // other SDKs.
+        // The oldest event of this name is received if it came before any cancellation
+        // request; otherwise this is where the request is delivered.
+        let next = {
+            let state = self.state.lock().unwrap();
+            state
+                .event_buffer
+                .get(event_name)
+                .and_then(|events| events.front())
+                .map(|(_, _, at_ms)| *at_ms)
+        };
+        self.cancellation_at(next)?;
         let buffered = {
             let mut state = self.state.lock().unwrap();
             let event = state
@@ -785,6 +852,29 @@ impl WorkflowContext {
                 .fired_timers
                 .get(&timer_id)
                 .map(|position| position.unwrap_or(usize::MAX));
+            // Whichever of the event and the deadline came first is this wait's
+            // result; if neither came before a cancellation request, this is where the
+            // request is delivered.
+            let event = state
+                .event_buffer
+                .get(event_name)
+                .and_then(|events| events.front())
+                .map(|(_, _, at_ms)| *at_ms);
+            let deadline = state.fired_timers.contains_key(&timer_id).then(|| {
+                state
+                    .resolved_at
+                    .get(&format!("timer:{}", timer_id))
+                    .copied()
+            });
+            let result = match (event, deadline) {
+                (Some(Some(event)), Some(Some(deadline))) => Some(Some(event.min(deadline))),
+                (Some(event), None) => Some(event),
+                (None, deadline) => deadline,
+                (Some(_), Some(_)) => Some(None),
+            };
+            if state.take_cancellation(result) {
+                return Err(Error::Workflow(crate::error::WorkflowError::Canceled));
+            }
             let event_first = match (state.event_buffer.get(event_name), fired_at) {
                 (Some(events), Some(fired_at)) => events
                     .front()
@@ -1020,6 +1110,7 @@ impl WorkflowContext {
         let session_id = format!("session_{}", sequence);
         let task_id = format!("{}_{}", SESSION_CREATE_TASK, sequence);
         self.reach_step(&task_id);
+        self.cancellation_for(&task_id)?;
 
         // On replay the creation task's recorded result is a serialized SessionInfo.
         {
@@ -1654,6 +1745,40 @@ impl WorkflowContext {
         }
     }
 
+    /// Whether the workflow has been told it is being cancelled.
+    ///
+    /// True from the wait at which the code learned of the request onwards: that wait
+    /// returned [`WorkflowError::Canceled`](crate::error::WorkflowError::Canceled), and
+    /// everything after it is the workflow's cleanup, which runs normally. A long loop
+    /// that does not wait can check this to stop early. Read from the journal, so it
+    /// answers the same at the same point on every replay.
+    pub fn is_cancel_requested(&self) -> bool {
+        self.state.lock().unwrap().cancel_delivered
+    }
+
+    /// Records that the journal holds a request to cancel the workflow, recorded at
+    /// `at_ms` (ms since the epoch) when known.
+    pub(crate) fn note_cancel_requested(&self, at_ms: Option<i64>) {
+        let mut state = self.state.lock().unwrap();
+        state.cancel_requested = true;
+        state.cancel_requested_at = at_ms;
+    }
+
+    /// `Err(Canceled)` when this wait is where the code learns of a cancellation
+    /// request; see [`ContextState::take_cancellation`].
+    fn cancellation_at(&self, result: Option<Option<i64>>) -> Result<()> {
+        if self.state.lock().unwrap().take_cancellation(result) {
+            return Err(Error::Workflow(crate::error::WorkflowError::Canceled));
+        }
+        Ok(())
+    }
+
+    /// As [`cancellation_at`](Self::cancellation_at), for the result injected under `key`.
+    pub(crate) fn cancellation_for(&self, key: &str) -> Result<()> {
+        let result = self.state.lock().unwrap().result_seen(key);
+        self.cancellation_at(result)
+    }
+
     /// Records the result of one step (for example `"fetch_user_1"`) and marks it as a
     /// task. The runtime calls this for each result in the journal.
     #[doc(hidden)]
@@ -1752,6 +1877,121 @@ mod tests {
         };
 
         WorkflowContext::new(execution, false, "1.0".to_string())
+    }
+
+    // Cancellation requests
+
+    /// A context replaying a journal in which `work_0` completed at 1000 ms and the
+    /// cancellation request came at 2000 ms.
+    fn context_asked_to_cancel() -> WorkflowContext {
+        let ctx = create_test_context();
+        ctx.set_replaying_for_test(true);
+        ctx.inject_step_result("work_0".to_string(), serde_json::to_vec(&1).unwrap());
+        ctx.record_resolved_at("work_0".to_string(), 1_000);
+        ctx.note_cancel_requested(Some(2_000));
+        ctx
+    }
+
+    fn is_canceled(result: &Result<u32>) -> bool {
+        matches!(
+            result,
+            Err(Error::Workflow(crate::error::WorkflowError::Canceled))
+        )
+    }
+
+    #[tokio::test]
+    async fn a_result_from_before_the_request_is_received() {
+        let ctx = context_asked_to_cancel();
+        let first: Result<u32> = ctx.execute_task_by_name("work", 0).await;
+        assert_eq!(first.unwrap(), 1);
+        assert!(
+            !ctx.is_cancel_requested(),
+            "not told until a wait is cut short"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_first_wait_without_an_earlier_result_is_told_once() {
+        let ctx = context_asked_to_cancel();
+        let _: Result<u32> = ctx.execute_task_by_name("work", 0).await;
+
+        let interrupted: Result<u32> = ctx.execute_task_by_name("work", 1).await;
+        assert!(is_canceled(&interrupted));
+        assert!(ctx.is_cancel_requested());
+
+        // Cleanup: the next wait is scheduled as usual, not cancelled again.
+        let cleanup: Result<u32> = ctx.execute_task_by_name("refund", 2).await;
+        assert!(matches!(
+            cleanup,
+            Err(Error::Workflow(
+                crate::error::WorkflowError::Suspended { .. }
+            ))
+        ));
+    }
+
+    /// On a later replay the interrupted step may have a result of its own, recorded
+    /// after the request. It is still where the request is delivered, or the code
+    /// would take a different path than it did when it was first told.
+    #[tokio::test]
+    async fn the_same_wait_is_told_on_every_replay() {
+        let ctx = context_asked_to_cancel();
+        ctx.inject_step_result("work_1".to_string(), serde_json::to_vec(&2).unwrap());
+        ctx.record_resolved_at("work_1".to_string(), 3_000);
+        let _: Result<u32> = ctx.execute_task_by_name("work", 0).await;
+
+        let interrupted: Result<u32> = ctx.execute_task_by_name("work", 1).await;
+
+        assert!(is_canceled(&interrupted));
+    }
+
+    /// A result recorded in the same millisecond as the request counts as first.
+    #[tokio::test]
+    async fn a_result_recorded_with_the_request_is_received() {
+        let ctx = create_test_context();
+        ctx.set_replaying_for_test(true);
+        ctx.inject_step_result("work_0".to_string(), serde_json::to_vec(&1).unwrap());
+        ctx.record_resolved_at("work_0".to_string(), 2_000);
+        ctx.note_cancel_requested(Some(2_000));
+        let first: Result<u32> = ctx.execute_task_by_name("work", 0).await;
+        assert_eq!(first.unwrap(), 1);
+    }
+
+    #[tokio::test]
+    async fn without_a_request_nothing_is_cancelled() {
+        let ctx = create_test_context();
+        ctx.set_replaying_for_test(true);
+        let pending: Result<u32> = ctx.execute_task_by_name("work", 0).await;
+        assert!(!is_canceled(&pending));
+        assert!(!ctx.is_cancel_requested());
+    }
+
+    #[tokio::test]
+    async fn a_sleep_whose_timer_had_not_fired_is_told() {
+        let ctx = create_test_context();
+        ctx.set_replaying_for_test(true);
+        ctx.note_cancel_requested(Some(2_000));
+        let slept = ctx.sleep(Duration::from_secs(600)).await;
+        assert!(matches!(
+            slept,
+            Err(Error::Workflow(crate::error::WorkflowError::Canceled))
+        ));
+    }
+
+    #[tokio::test]
+    async fn an_event_that_came_before_the_request_is_received() {
+        let ctx = create_test_context();
+        ctx.set_replaying_for_test(true);
+        ctx.buffer_journaled_event(
+            "go".to_string(),
+            serde_json::to_vec(&7).unwrap(),
+            Some(0),
+            Some(1_000),
+        );
+        ctx.note_cancel_requested(Some(2_000));
+        let received: u32 = ctx.wait_for_event("go").await.unwrap();
+        assert_eq!(received, 7);
+        let next: Result<u32> = ctx.wait_for_event("go").await;
+        assert!(is_canceled(&next));
     }
 
     // Event buffering tests

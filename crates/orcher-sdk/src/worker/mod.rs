@@ -507,6 +507,10 @@ impl Worker {
         let core_tls = self.core_tls();
 
         let mut workflow_driver_config = WorkflowDriverConfig::default();
+        // This SDK hands a cancellation request to workflow code (see
+        // `WorkflowContext::is_cancel_requested`), so the engine may wait for the
+        // workflow to clean up and end itself.
+        workflow_driver_config.protocol_version = orcher_sdk_core::worker_protocol::CANCEL_REQUEST;
         workflow_driver_config.server_url = self.config.server_url.clone();
         workflow_driver_config.namespace = self.config.namespace.clone();
         workflow_driver_config.task_queue = self.config.task_queue.clone();
@@ -988,6 +992,7 @@ impl Worker {
             reg_config.task_queue = self.config.task_queue.clone();
             reg_config.namespace = self.config.namespace.clone();
             reg_config.workflow_types = workflow_types;
+            reg_config.protocol_version = orcher_sdk_core::worker_protocol::CANCEL_REQUEST;
             reg_config.task_types = task_types;
             reg_config.max_concurrent_workflows = self.config.max_concurrent_workflows as u32;
             reg_config.max_concurrent_tasks = self.config.max_concurrent_tasks as u32;
