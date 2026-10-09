@@ -14,9 +14,10 @@ use crate::workflow::{WorkflowCommand, WorkflowContext, WorkflowExecution};
 use crate::TaskContext;
 
 use orcher_sdk_core::bridge::{
-    Command as BridgeCommand, CompleteWorkflowCommand, ExecutionResult, FailWorkflowCommand,
-    QueryResponse, QueryResult, RequestJob, ScheduleTaskCommand, StartTimerCommand,
-    TaskRetryPolicy as BridgeRetryPolicy, UpdateResponse, UpdateResult, WaitForEventCommand,
+    CancelWorkflowCommand, Command as BridgeCommand, CompleteWorkflowCommand, ExecutionResult,
+    FailWorkflowCommand, QueryResponse, QueryResult, RequestJob, ScheduleTaskCommand,
+    StartTimerCommand, TaskRetryPolicy as BridgeRetryPolicy, UpdateResponse, UpdateResult,
+    WaitForEventCommand,
 };
 use orcher_sdk_core::poller::{TaskExecutionTask, WorkflowExecutionTask};
 use orcher_sdk_core::proto::orcher::v1::{journal_entry::Attributes, EntryType, JournalEntry};
@@ -354,7 +355,7 @@ impl ExecutionRuntime {
             Ok(output) => {
                 self.cleanup_input_cache(&run_id).await;
                 let r = self.handle_workflow_completion(
-                    output,
+                    Ending::Completed(output),
                     ctx,
                     run_id,
                     &task_queue,
@@ -364,6 +365,24 @@ impl ExecutionRuntime {
                 self.workflows_succeeded.fetch_add(1, Ordering::Relaxed);
                 *self.last_success_time.lock().unwrap() = Some(Instant::now());
                 r
+            }
+            // The cancellation request, delivered to the workflow and not caught, ends
+            // it as cancelled, with whatever cleanup it issued before giving up. A
+            // `Canceled` error the workflow raised without having been asked is a
+            // failure like any other, below.
+            Err(Error::Workflow(crate::error::WorkflowError::Canceled))
+                if ctx.is_cancel_requested() =>
+            {
+                self.cleanup_input_cache(&run_id).await;
+                tracing::info!(workflow_id = %workflow_id, "Workflow ended as cancelled");
+                self.handle_workflow_completion(
+                    Ending::Cancelled,
+                    ctx,
+                    run_id,
+                    &task_queue,
+                    query_responses,
+                    update_results,
+                )
             }
             Err(Error::Workflow(crate::error::WorkflowError::Suspended {
                 reason,
@@ -396,7 +415,7 @@ impl ExecutionRuntime {
 
     fn handle_workflow_completion(
         &self,
-        output: Payload,
+        ending: Ending,
         ctx: WorkflowContext,
         run_id: String,
         task_queue: &str,
@@ -441,9 +460,16 @@ impl ExecutionRuntime {
             )
         });
         if !already_terminal {
-            bridge_commands.push(BridgeCommand::CompleteWorkflow(CompleteWorkflowCommand {
-                result: Payload::new_data(output.data),
-            }));
+            bridge_commands.push(match ending {
+                Ending::Completed(output) => {
+                    BridgeCommand::CompleteWorkflow(CompleteWorkflowCommand {
+                        result: Payload::new_data(output.data),
+                    })
+                }
+                Ending::Cancelled => {
+                    BridgeCommand::CancelWorkflowExecution(CancelWorkflowCommand { details: None })
+                }
+            });
         }
 
         let mut result = ExecutionResult::success(run_id, bridge_commands);
@@ -723,6 +749,14 @@ impl ExecutionRuntime {
                 }
                 RequestJob::ChildWorkflowTimedOut(job) => {
                     inject_child_failure(ctx, &job.workflow_id, "child workflow timed out");
+                }
+                RequestJob::CancelWorkflow(_) => {
+                    // The workflow is asked to cancel. It learns of it at its first wait
+                    // whose result the journal did not record before this, and may
+                    // clean up after. Compared by the journal's times, not by place in
+                    // this list: the engine adds step results after the journal's own
+                    // entries, so their place says nothing about when they happened.
+                    ctx.note_cancel_requested(times.cancel_requested_at);
                 }
                 RequestJob::FireTimer(job) => {
                     // A durable timer fired. Mark it, keyed by the user-facing timer id,
@@ -1011,6 +1045,8 @@ struct JournalTimes {
     resolved_at: HashMap<String, i64>,
     /// When each event was journaled, per name, in journal order.
     events: HashMap<String, std::collections::VecDeque<i64>>,
+    /// When a request to cancel the workflow was journaled, ms since the epoch.
+    cancel_requested_at: Option<i64>,
 }
 
 impl JournalTimes {
@@ -1026,6 +1062,9 @@ impl JournalTimes {
             };
             if entry.entry_type == EntryType::WorkflowExecutionStarted as i32 {
                 times.started_at_ms.get_or_insert(at_ms);
+            }
+            if entry.entry_type == EntryType::WorkflowExecutionCancelRequested as i32 {
+                times.cancel_requested_at.get_or_insert(at_ms);
             }
             let key = match &entry.attributes {
                 Some(Attributes::StepCompleted(a)) => a.step_name.clone(),
@@ -1070,6 +1109,14 @@ fn inject_child_failure(ctx: &WorkflowContext, workflow_id: &str, message: &str)
     }))
     .unwrap_or_default();
     ctx.inject_step_result(format!("child:{workflow_id}"), error_bytes);
+}
+
+/// How a workflow's code ended, for the terminal command it gets.
+enum Ending {
+    /// It returned this output.
+    Completed(Payload),
+    /// It gave up on a cancellation request it had been told of.
+    Cancelled,
 }
 
 /// The key a job's result is held under in the workflow context.

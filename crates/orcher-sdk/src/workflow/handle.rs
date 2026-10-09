@@ -130,6 +130,10 @@ impl ChildWorkflowHandle {
     /// # }
     /// ```
     pub async fn result<O: DeserializeOwned>(&self) -> Result<O> {
+        // A cancellation request is delivered here if the child's outcome did not
+        // come before it.
+        self.ctx
+            .cancellation_for(&format!("child:{}", self.workflow_id))?;
         // The runtime stores the child's completion under `child:{id}`: the
         // result bytes on success, or a `{"__orcher_child_failed__":true,
         // "message":...}` sentinel on failure. The execute path reads the same entry.
