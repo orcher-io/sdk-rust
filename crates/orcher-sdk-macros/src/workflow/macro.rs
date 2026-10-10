@@ -138,7 +138,7 @@ fn workflow_impl_inner(
             &handler_wrapper_name,
             input_type,
             output_type_extracted,
-        )
+        )?
     } else {
         quote! {}
     };
