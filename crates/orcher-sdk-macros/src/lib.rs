@@ -27,8 +27,7 @@
 //!
 //! #[task(
 //!     retry_policy(max_attempts = 3, initial_interval = 1, backoff_coefficient = 2.0),
-//!     timeout = 30,
-//!     resources(cpu = 1.0, memory = "512Mi")
+//!     timeout = 30
 //! )]
 //! async fn process_data(_ctx: TaskContext, input: String) -> Result<String> {
 //!     // Do the work here.
@@ -75,7 +74,6 @@ use proc_macro::TokenStream;
 ///
 /// - `name`: task name; defaults to the function name. Workflows schedule tasks by
 ///   this name.
-/// - `description`, `version`, `namespace`: descriptive metadata.
 /// - `timeout`: timeout in seconds. `timeout_mins` sets it in minutes instead.
 /// - `heartbeat_timeout`: seconds without a heartbeat before the task counts as stalled.
 /// - `retry`: maximum attempts, with exponential backoff (1 s initial, 60 s maximum,
@@ -86,28 +84,32 @@ use proc_macro::TokenStream;
 ///   - `max_interval`: cap on the retry delay in seconds (default: 60)
 ///   - `backoff_coefficient`: multiplier applied to the delay after each retry (default: 2.0)
 /// - `non_retryable_errors = ["..."]`: error types that are never retried.
-/// - `resources(cpu, memory, disk)`: resource requirements, for example `cpu = 0.5`,
-///   `memory = "512Mi"`, `disk = "1Gi"`. `memory = "..."` is a shortcut for the memory
-///   request.
-/// - `preset`: `"long-running"`, `"quick"`, or `"critical"`. Fills in retry, timeout, and
-///   memory values that are not set explicitly.
+/// - `preset`: fills in the retry and timeout values that are not set explicitly.
+///   `"long-running"` is 3 attempts and 30 minutes, `"quick"` 1 attempt and 1 minute,
+///   `"critical"` 5 attempts and 60 minutes. Any other name is a compile error.
 ///
-/// `task_queue`, `priority`, `max_concurrent`, and `rate_limit` are accepted but not
-/// applied by the worker. Unknown attributes are a compile error.
+/// `description`, `version`, `task_queue`, `priority`, `max_concurrent`, `rate_limit`,
+/// `resources(...)`, `memory`, `idempotency_key`, `condition`, `parallel`,
+/// `requires_approval`, `approval_timeout`, and `approvers` are accepted but have no
+/// effect, and each produces a deprecation warning that says what to do instead. A task
+/// runs on the task queue of the workflow that schedules it.
+///
+/// There is no `namespace` option: a task runs in whatever namespace its worker serves,
+/// so the namespace is set on the worker (`WorkerBuilder::namespace`). Unknown attributes
+/// are a compile error.
 ///
 /// # Examples
 ///
 /// ```rust
 /// use orcher_sdk::prelude::*;
 ///
+/// /// Fetches data from an external API.
 /// #[task(
 ///     name = "fetch_data",
-///     description = "Fetch data from external API",
 ///     retry_policy(max_attempts = 5, initial_interval = 2, max_interval = 30),
 ///     non_retryable_errors = ["NotFound"],
 ///     timeout = 60,
-///     heartbeat_timeout = 10,
-///     resources(cpu = 0.5, memory = "256Mi")
+///     heartbeat_timeout = 10
 /// )]
 /// async fn fetch_data(ctx: TaskContext, url: String) -> Result<String> {
 ///     // Call the API here, reporting progress as it goes.
@@ -131,11 +133,11 @@ pub fn task(attr: TokenStream, item: TokenStream) -> TokenStream {
 /// - `timeout`: default timeout in seconds
 /// - `timeout_mins`: default timeout in minutes
 /// - `heartbeat_timeout`: default heartbeat timeout in seconds
-/// - `memory`: default memory request
 /// - `preset`: default preset (`"long-running"`, `"quick"`, `"critical"`)
-/// - `namespace`, `version`: default metadata
-/// - `task_queue`, `priority`, `max_concurrent`, `rate_limit`: accepted but not applied,
-///   as on `#[task]`
+/// - `version`, `memory`, `task_queue`, `priority`, `max_concurrent`, `rate_limit`:
+///   accepted but have no effect, and warn as on `#[task]`
+///
+/// `namespace` is rejected, as on `#[task]`.
 ///
 /// # Method Attributes
 ///
@@ -187,22 +189,16 @@ pub fn tasks(attr: TokenStream, item: TokenStream) -> TokenStream {
 ///
 /// # Attributes
 ///
-/// - `name`: workflow name; defaults to the function name.
-/// - `description`, `task_queue`: metadata.
-/// - `max_concurrent`: maximum concurrent steps (default: 10).
-/// - `tags("a", "b")`: tags for categorization.
-/// - `retry_policy(...)`: retry policy for the whole workflow, with the same keys as on
-///   `#[task]`.
-/// - `cron`: a 5- or 6-field cron expression that runs the workflow on a schedule.
-///   `schedule` is an alias; `cron` wins if both are set.
-/// - `enabled`: whether the workflow is enabled (default: `true`).
+/// - `name`: workflow name; defaults to the function name. Workflows are started by this
+///   name.
 ///
 /// Unrecognized attributes are ignored.
 ///
-/// `timeout` and `version` are accepted but have no effect, and each produces a deprecation
-/// warning that names the replacement: set the execution timeout per start with
-/// `StartWorkflowOptions::with_workflow_execution_timeout`, and the code release with
-/// `WorkerBuilder::version_id`.
+/// `timeout`, `version`, `description`, `task_queue`, `max_concurrent`, `tags(...)`,
+/// `retry_policy(...)`, `enabled`, `cron`, and `schedule` are accepted but have no effect,
+/// and each produces a deprecation warning that names the replacement. Most of them belong
+/// to a start of the workflow: set the timeout, task queue, retry policy, and cron schedule
+/// with `StartWorkflowOptions`, and the code release with `WorkerBuilder::version_id`.
 ///
 /// There is no `namespace` option: a workflow runs in whatever namespace its worker serves,
 /// so the namespace is set on the worker (`WorkerBuilder::namespace`) and where workflows are
@@ -213,13 +209,8 @@ pub fn tasks(attr: TokenStream, item: TokenStream) -> TokenStream {
 /// ```rust
 /// use orcher_sdk::prelude::*;
 ///
-/// #[workflow(
-///     name = "etl-pipeline",
-///     description = "Extract, transform, and load data",
-///     max_concurrent = 5,
-///     tags("etl", "data", "production"),
-///     retry_policy(max_attempts = 3, initial_interval = 5)
-/// )]
+/// /// Extracts, transforms, and loads data.
+/// #[workflow(name = "etl-pipeline")]
 /// async fn etl_pipeline(ctx: WorkflowContext, source: String) -> Result<u64> {
 ///     // Orchestrate tasks here.
 ///     let rows: u64 = ctx.execute_task("extract", source).await?;

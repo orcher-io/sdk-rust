@@ -5,7 +5,7 @@
 //! makes the workflow available to workers.
 
 use crate::common::attrs::{
-    validate_retry_policy, validate_schedule, validate_workflow_attrs, IneffectiveWorkflowAttr,
+    ineffective_attr_warnings, validate_retry_policy, validate_schedule, validate_workflow_attrs,
 };
 use crate::common::codegen::{
     extract_fn_info, generate_sdk_workflow_wrapper, workflow_wrapper_name,
@@ -166,7 +166,7 @@ fn workflow_impl_inner(
 
     let enabled_flag = attrs.enabled;
 
-    let ineffective_warnings = ineffective_attr_warnings(&attrs);
+    let ineffective_warnings = ineffective_attr_warnings("workflow", &attrs.ineffective);
 
     let expanded = quote! {
         #ineffective_warnings
@@ -210,46 +210,6 @@ fn workflow_impl_inner(
     };
 
     Ok(expanded)
-}
-
-/// Explains, per key, why an accepted `#[workflow]` attribute has no effect and what to
-/// use instead.
-fn ineffective_attr_note(attr: IneffectiveWorkflowAttr) -> &'static str {
-    match attr {
-        IneffectiveWorkflowAttr::Timeout => {
-            "`timeout` on #[workflow] has no effect and will be removed; set the \
-             workflow's timeout when you start it, with \
-             StartWorkflowOptions::with_workflow_execution_timeout"
-        }
-        IneffectiveWorkflowAttr::Version => {
-            "`version` on #[workflow] has no effect and will be removed; to tie \
-             executions to a code release, set the worker's version with \
-             WorkerBuilder::version_id or ORCHER_VERSION_ID"
-        }
-    }
-}
-
-/// Emits a deprecation warning, at the attribute, for each attribute that is accepted but
-/// has no effect.
-///
-/// A procedural macro cannot emit a warning directly on stable Rust, so this defines a
-/// `#[deprecated]` constant carrying the note and uses it with the attribute's span; the
-/// compiler then reports the use as a `deprecated` warning. A warning rather than an
-/// error keeps code that sets these attributes compiling.
-fn ineffective_attr_warnings(attrs: &crate::common::attrs::WorkflowAttrs) -> TokenStream2 {
-    let warnings = attrs.ineffective.iter().map(|(attr, span)| {
-        let note = ineffective_attr_note(*attr);
-        let name = syn::Ident::new(&format!("{}_has_no_effect_on_workflow", attr.key()), *span);
-        quote::quote_spanned! {*span=>
-            const _: () = {
-                #[deprecated(note = #note)]
-                #[allow(non_upper_case_globals)]
-                const #name: () = ();
-                #name
-            };
-        }
-    });
-    quote! { #(#warnings)* }
 }
 
 /// Checks that the workflow function declares a return type.
@@ -308,6 +268,46 @@ mod tests {
                 "version",
                 "version_id",
             ),
+            (
+                parse_quote!(workflow(name = "w", description = "d")),
+                "description",
+                "doc comment",
+            ),
+            (
+                parse_quote!(workflow(name = "w", task_queue = "q")),
+                "task_queue",
+                "with_task_queue",
+            ),
+            (
+                parse_quote!(workflow(name = "w", max_concurrent = 5)),
+                "max_concurrent",
+                "max_concurrent_workflows",
+            ),
+            (
+                parse_quote!(workflow(name = "w", tags("a"))),
+                "tags",
+                "nothing reads",
+            ),
+            (
+                parse_quote!(workflow(name = "w", retry_policy(max_attempts = 2))),
+                "retry_policy",
+                "StartWorkflowOptions::with_retry_policy",
+            ),
+            (
+                parse_quote!(workflow(name = "w", enabled = false)),
+                "enabled",
+                "whenever it is started",
+            ),
+            (
+                parse_quote!(workflow(name = "w", cron = "0 9 * * *")),
+                "cron",
+                "with_cron_schedule",
+            ),
+            (
+                parse_quote!(workflow(name = "w", schedule = "0 9 * * *")),
+                "schedule",
+                "with_cron_schedule",
+            ),
         ] {
             let expanded = expand(meta);
             let name = format!("{key}_has_no_effect_on_workflow");
@@ -323,12 +323,8 @@ mod tests {
     }
 
     #[test]
-    fn effective_attributes_produce_no_warning() {
-        let expanded = expand(parse_quote!(workflow(
-            name = "w",
-            description = "d",
-            tags("a")
-        )));
+    fn a_name_alone_produces_no_warning() {
+        let expanded = expand(parse_quote!(workflow(name = "w")));
         assert!(!expanded.contains("deprecated"), "{expanded}");
     }
 

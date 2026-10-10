@@ -1,0 +1,29 @@
+error: use of deprecated constant `_::task_queue_has_no_effect_on_task`: `task_queue` on #[task] has no effect and will be removed; a task runs on the task queue of the workflow that schedules it, so serve that queue with WorkerBuilder::task_queue
+ --> tests/ui/task_ineffective_attrs.rs:8:8
+  |
+8 | #[task(task_queue = "billing", priority = 5)]
+  |        ^^^^^^^^^^
+  |
+note: the lint level is defined here
+ --> tests/ui/task_ineffective_attrs.rs:4:9
+  |
+4 | #![deny(deprecated)]
+  |         ^^^^^^^^^^
+
+error: use of deprecated constant `_::priority_has_no_effect_on_task`: `priority` on #[task] has no effect and will be removed; tasks have no priority
+ --> tests/ui/task_ineffective_attrs.rs:8:32
+  |
+8 | #[task(task_queue = "billing", priority = 5)]
+  |                                ^^^^^^^^
+
+error: use of deprecated constant `_::max_concurrent_has_no_effect_on_tasks`: `max_concurrent` on #[tasks] has no effect and will be removed; limit how many tasks a worker runs at once with WorkerBuilder::max_concurrent_tasks
+  --> tests/ui/task_ineffective_attrs.rs:15:9
+   |
+15 | #[tasks(max_concurrent = 2)]
+   |         ^^^^^^^^^^^^^^
+
+error: use of deprecated constant `_::description_has_no_effect_on_task`: `description` on #[task] has no effect and will be removed; describe the task in a doc comment
+  --> tests/ui/task_ineffective_attrs.rs:17:12
+   |
+17 |     #[task(description = "Ships an order")]
+   |            ^^^^^^^^^^^
