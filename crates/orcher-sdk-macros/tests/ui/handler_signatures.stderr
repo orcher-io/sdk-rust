@@ -1,0 +1,23 @@
+error: a workflow takes at most one input after its context; pass several values as one struct or tuple
+ --> tests/ui/handler_signatures.rs:6:55
+  |
+6 | async fn two_inputs(_ctx: WorkflowContext, a: String, b: String) -> Result<String> {
+  |                                                       ^^^^^^^^^
+
+error: a workflow must return `Result<T>`, such as `orcher_sdk::Result<T>`
+  --> tests/ui/handler_signatures.rs:11:61
+   |
+11 | async fn not_a_result(_ctx: WorkflowContext, input: String) -> String {
+   |                                                             ^^^^^^^^^
+
+error: a task takes at most one input after its context; pass several values as one struct or tuple
+  --> tests/ui/handler_signatures.rs:16:53
+   |
+16 | async fn task_two_inputs(_ctx: TaskContext, a: u32, b: u32) -> Result<u32> {
+   |                                                     ^^^^^^
+
+error: a task must return `Result<T>`, such as `orcher_sdk::Result<T>`
+  --> tests/ui/handler_signatures.rs:21:59
+   |
+21 | async fn task_not_a_result(_ctx: TaskContext, input: u32) -> u32 {
+   |                                                           ^^^^^^

@@ -217,7 +217,7 @@ fn process_task_method(
         &handler_wrapper_name,
         input_type,
         output_type,
-    );
+    )?;
 
     // Registration derives the task name from `attrs.name`, so set it to the unprefixed name.
     let mut reg_attrs = attrs.clone();
