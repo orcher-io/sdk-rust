@@ -1,0 +1,15 @@
+error: Failed to parse task attributes: `namespace` is not a #[task] option: a task runs in whatever namespace its worker serves. Set it on the worker (WorkerBuilder::namespace)
+ --> tests/ui/task_namespace.rs:4:1
+  |
+4 | #[task(namespace = "production")]
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  |
+  = note: this error originates in the attribute macro `task` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error: Failed to parse tasks group attributes: `namespace` is not a #[tasks] option: a task runs in whatever namespace its worker serves. Set it on the worker (WorkerBuilder::namespace)
+  --> tests/ui/task_namespace.rs:11:1
+   |
+11 | #[tasks(namespace = "production")]
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: this error originates in the attribute macro `tasks` (in Nightly builds, run with -Z macro-backtrace for more info)

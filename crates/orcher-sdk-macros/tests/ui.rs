@@ -8,4 +8,6 @@
 fn ui() {
     let t = trybuild::TestCases::new();
     t.compile_fail("tests/ui/workflow_ineffective_attrs.rs");
+    t.compile_fail("tests/ui/task_ineffective_attrs.rs");
+    t.compile_fail("tests/ui/task_namespace.rs");
 }

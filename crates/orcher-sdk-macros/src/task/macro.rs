@@ -5,8 +5,8 @@
 //! registration that makes the task available to workers.
 
 use crate::common::attrs::{
-    validate_approval, validate_condition, validate_resources, validate_retry_policy,
-    validate_task_attrs,
+    expand_task_shortcuts, ineffective_attr_warnings, parse_task_attrs, validate_approval,
+    validate_condition, validate_resources, validate_retry_policy, validate_task_attrs,
 };
 use crate::common::codegen::{
     extract_fn_info, generate_sdk_task_wrapper, task_wrapper_name, uses_task_context,
@@ -16,7 +16,6 @@ use crate::common::integration::{
     extract_sdk_input_type, extract_sdk_output_type, uses_sdk_task_context,
 };
 use crate::common::registration::generate_sdk_task_registration;
-use darling::FromMeta;
 use proc_macro::TokenStream;
 use proc_macro2::TokenStream as TokenStream2;
 use quote::quote;
@@ -36,7 +35,7 @@ pub fn task_impl(attr: TokenStream, item: TokenStream) -> TokenStream {
         let wrapped_tokens = quote::quote! { task(#attr2) };
 
         match syn::parse2::<Meta>(wrapped_tokens) {
-            Ok(meta) => match crate::common::attrs::TaskAttrs::from_meta(&meta) {
+            Ok(meta) => match parse_task_attrs(&meta) {
                 Ok(attrs) => attrs,
                 Err(e) => {
                     return syn::Error::new(
@@ -63,60 +62,12 @@ fn task_impl_inner(
 ) -> Result<TokenStream2, syn::Error> {
     let fn_info = extract_fn_info(&item_fn);
 
-    // A preset only fills in values the user did not set explicitly.
-    if let Some(preset_name) = &attrs.preset {
-        let preset = get_preset(preset_name);
-        if attrs.retry.is_none() && preset.retry.is_some() {
-            attrs.retry = preset.retry;
-        }
-        if attrs.timeout_mins.is_none() && preset.timeout_mins.is_some() {
-            attrs.timeout_mins = preset.timeout_mins;
-        }
-        if attrs.memory.is_none() && preset.memory.is_some() {
-            attrs.memory = preset.memory;
-        }
-        if attrs.timeout.is_none() && preset.timeout.is_some() {
-            attrs.timeout = preset.timeout;
-        }
-    }
-
-    // `retry = N` expands to an exponential policy (1s initial, 60s max, factor 2.0) unless
-    // an explicit `retry_policy` is given.
-    if let Some(max_attempts) = attrs.retry {
-        if attrs.retry_policy.is_none() {
-            attrs.retry_policy = Some(crate::common::attrs::RetryPolicyAttr {
-                max_attempts,
-                initial_interval: 1,
-                max_interval: 60,
-                backoff_coefficient: 2.0,
-            });
-        }
-    }
-
-    if let Some(timeout_mins) = attrs.timeout_mins {
-        if attrs.timeout.is_none() {
-            attrs.timeout = Some(timeout_mins * 60);
-        }
-    }
-
-    // `memory` fills in the memory request without overriding an explicit one.
-    if let Some(memory) = &attrs.memory {
-        if attrs.resources.is_none() {
-            attrs.resources = Some(crate::common::attrs::ResourcesAttr {
-                cpu: None,
-                memory: Some(memory.clone()),
-                disk: None,
-                cpu_limit: None,
-                memory_limit: None,
-                disk_limit: None,
-                network_limit: None,
-            });
-        } else if let Some(ref mut resources) = attrs.resources {
-            if resources.memory.is_none() {
-                resources.memory = Some(memory.clone());
-            }
-        }
-    }
+    expand_task_shortcuts(&mut attrs).map_err(|e| {
+        syn::Error::new(
+            proc_macro2::Span::call_site(),
+            format!("Invalid task configuration: {}", e),
+        )
+    })?;
 
     if let Some(ref retry_policy) = attrs.retry_policy {
         validate_retry_policy(retry_policy).map_err(|e| {
@@ -344,7 +295,11 @@ fn task_impl_inner(
         }
     };
 
+    let ineffective_warnings = ineffective_attr_warnings("task", &attrs.ineffective);
+
     let expanded = quote! {
+        #ineffective_warnings
+
         #(#fn_attrs)*
         #fn_vis async fn #fn_name_impl(#fn_inputs) #fn_output {
             #fn_body
@@ -362,39 +317,122 @@ fn task_impl_inner(
     Ok(expanded)
 }
 
-/// Returns the attribute defaults for a named preset (`long-running`, `quick`, `critical`).
-fn get_preset(name: &str) -> crate::common::attrs::TaskAttrs {
-    match name {
-        "long-running" => crate::common::attrs::TaskAttrs {
-            retry: Some(3),
-            timeout_mins: Some(30),
-            memory: Some("512Mi".to_string()),
-            ..Default::default()
-        },
-        "quick" => crate::common::attrs::TaskAttrs {
-            timeout_mins: Some(1),
-            retry: Some(0),
-            memory: Some("128Mi".to_string()),
-            ..Default::default()
-        },
-        "critical" => crate::common::attrs::TaskAttrs {
-            retry: Some(5),
-            timeout_mins: Some(60),
-            memory: Some("1Gi".to_string()),
-            ..Default::default()
-        },
-        _ => {
-            // An unknown preset contributes nothing.
-            crate::common::attrs::TaskAttrs::default()
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use darling::FromMeta;
     use syn::parse_quote;
+
+    fn expand(meta: Meta) -> Result<String, syn::Error> {
+        let attrs = parse_task_attrs(&meta)
+            .map_err(|e| syn::Error::new(proc_macro2::Span::call_site(), e.to_string()))?;
+        let item: ItemFn = parse_quote! {
+            async fn my_task(ctx: TaskContext, input: String) -> Result<String> {
+                Ok(input)
+            }
+        };
+        task_impl_inner(attrs, item).map(|tokens| tokens.to_string())
+    }
+
+    #[test]
+    fn each_ineffective_attribute_is_reported_as_deprecated() {
+        for (meta, key, replacement) in [
+            (
+                parse_quote!(task(task_queue = "q")),
+                "task_queue",
+                "WorkerBuilder::task_queue",
+            ),
+            (parse_quote!(task(priority = 5)), "priority", "no priority"),
+            (
+                parse_quote!(task(max_concurrent = 2)),
+                "max_concurrent",
+                "max_concurrent_tasks",
+            ),
+            (
+                parse_quote!(task(rate_limit = 2)),
+                "rate_limit",
+                "not rate limited",
+            ),
+            (
+                parse_quote!(task(memory = "1Gi")),
+                "memory",
+                "size the worker",
+            ),
+            (
+                parse_quote!(task(resources(cpu = 1.0))),
+                "resources",
+                "size the worker",
+            ),
+            (parse_quote!(task(version = "2")), "version", "version_id"),
+            (
+                parse_quote!(task(description = "d")),
+                "description",
+                "doc comment",
+            ),
+            (
+                parse_quote!(task(idempotency_key = "k")),
+                "idempotency_key",
+                "with_task_id",
+            ),
+            (
+                parse_quote!(task(parallel)),
+                "parallel",
+                "awaiting them together",
+            ),
+        ] {
+            let expanded = expand(meta).unwrap();
+            let name = format!("{key}_has_no_effect_on_task");
+            assert!(
+                expanded.contains("deprecated") && expanded.contains(&name),
+                "`{key}` produced no deprecation warning: {expanded}"
+            );
+            assert!(
+                expanded.contains(replacement),
+                "the `{key}` warning does not say `{replacement}`"
+            );
+        }
+    }
+
+    #[test]
+    fn effective_attributes_produce_no_warning() {
+        let expanded = expand(parse_quote!(task(
+            name = "t",
+            timeout = 30,
+            heartbeat_timeout = 5,
+            retry = 3,
+            non_retryable_errors = ["Declined"],
+            preset = "critical"
+        )))
+        .unwrap();
+        assert!(!expanded.contains("deprecated"), "{expanded}");
+    }
+
+    #[test]
+    fn namespace_is_rejected_with_where_to_set_it() {
+        let meta: Meta = parse_quote!(task(name = "t", namespace = "production"));
+        let message = parse_task_attrs(&meta)
+            .expect_err("`namespace` must not be accepted on #[task]")
+            .to_string();
+        assert!(message.contains("not a #[task] option"), "{message}");
+        assert!(message.contains("WorkerBuilder::namespace"), "{message}");
+    }
+
+    #[test]
+    fn the_quick_preset_makes_one_attempt() {
+        let meta: Meta = parse_quote!(task(preset = "quick"));
+        let mut attrs = parse_task_attrs(&meta).unwrap();
+        expand_task_shortcuts(&mut attrs).unwrap();
+        assert_eq!(attrs.retry_policy.unwrap().max_attempts, 1);
+        assert_eq!(attrs.timeout, Some(60));
+
+        assert!(expand(parse_quote!(task(preset = "quick"))).is_ok());
+    }
+
+    #[test]
+    fn an_unknown_preset_is_rejected() {
+        let err = expand(parse_quote!(task(preset = "speedy"))).unwrap_err();
+        assert!(err.to_string().contains("unknown preset `speedy`"), "{err}");
+    }
 
     #[test]
     fn test_task_impl_basic() {
@@ -426,50 +464,11 @@ mod tests {
     }
 
     #[test]
-    fn test_task_impl_with_namespace() {
-        let meta: Meta = parse_quote!(task(name = "test_task", namespace = "production"));
-        let attrs = crate::common::attrs::TaskAttrs::from_meta(&meta).unwrap();
-        assert_eq!(attrs.namespace, Some("production".to_string()));
-
-        let item: ItemFn = parse_quote! {
-            async fn my_task(ctx: TaskContext) -> Result<(), Box<dyn std::error::Error>> {
-                Ok(())
-            }
-        };
-
-        let result = task_impl_inner(attrs, item);
-        assert!(result.is_ok());
-    }
-
-    #[test]
-    fn test_task_impl_with_version_and_namespace() {
-        let meta: Meta = parse_quote!(task(
-            name = "payment_task",
-            version = "3.1.0",
-            namespace = "tenant-xyz"
-        ));
-        let attrs = crate::common::attrs::TaskAttrs::from_meta(&meta).unwrap();
-        assert_eq!(attrs.version, Some("3.1.0".to_string()));
-        assert_eq!(attrs.namespace, Some("tenant-xyz".to_string()));
-
-        let item: ItemFn = parse_quote! {
-            async fn my_task(ctx: TaskContext) -> Result<(), Box<dyn std::error::Error>> {
-                Ok(())
-            }
-        };
-
-        let result = task_impl_inner(attrs, item);
-        assert!(result.is_ok());
-    }
-
-    #[test]
     fn test_task_impl_defaults() {
         let attrs = crate::common::attrs::TaskAttrs::default();
 
-        // Version and namespace stay unset unless given explicitly.
+        // Version stays unset unless given explicitly.
         assert_eq!(attrs.version, None);
-
-        assert_eq!(attrs.namespace, None);
 
         let item: ItemFn = parse_quote! {
             async fn my_task(ctx: TaskContext) -> Result<(), Box<dyn std::error::Error>> {
@@ -530,18 +529,16 @@ mod tests {
     }
 
     #[test]
-    fn test_task_impl_multi_tenant() {
+    fn test_task_impl_with_metadata() {
         let meta: Meta = parse_quote!(task(
             name = "data_processing",
             version = "2.5.1",
-            namespace = "customer-acme",
             description = "Process customer data",
             timeout = 300
         ));
         let attrs = crate::common::attrs::TaskAttrs::from_meta(&meta).unwrap();
         assert_eq!(attrs.name, Some("data_processing".to_string()));
         assert_eq!(attrs.version, Some("2.5.1".to_string()));
-        assert_eq!(attrs.namespace, Some("customer-acme".to_string()));
         assert_eq!(attrs.description, Some("Process customer data".to_string()));
         assert_eq!(attrs.timeout, Some(300));
 

@@ -7,6 +7,7 @@
 //! The macro is documented, with examples, on `#[tasks]` in the crate root.
 
 use crate::common::attrs::{
+    expand_task_shortcuts, ineffective_attr_warnings, parse_task_attrs, parse_tasks_group_attrs,
     validate_approval, validate_condition, validate_resources, validate_retry_policy,
     validate_task_attrs, TaskAttrs, TasksGroupAttrs,
 };
@@ -15,7 +16,6 @@ use crate::common::integration::{
     extract_sdk_input_type, extract_sdk_output_type, uses_sdk_task_context,
 };
 use crate::common::registration::generate_sdk_task_registration;
-use darling::FromMeta;
 use proc_macro::TokenStream;
 use proc_macro2::TokenStream as TokenStream2;
 use quote::{format_ident, quote};
@@ -32,7 +32,7 @@ pub fn tasks_impl(attr: TokenStream, item: TokenStream) -> TokenStream {
         let wrapped_tokens = quote::quote! { tasks(#attr2) };
 
         match syn::parse2::<Meta>(wrapped_tokens) {
-            Ok(meta) => match TasksGroupAttrs::from_meta(&meta) {
+            Ok(meta) => match parse_tasks_group_attrs(&meta) {
                 Ok(attrs) => attrs,
                 Err(e) => {
                     return syn::Error::new(
@@ -115,7 +115,11 @@ fn tasks_impl_inner(
         associated_consts.push(generated.associated_const);
     }
 
+    let group_warnings = ineffective_attr_warnings("tasks", &group_attrs.ineffective);
+
     let expanded = quote! {
+        #group_warnings
+
         // Task code is emitted as module-level items; see `TaskMethodOutput`.
         #(#free_functions)*
 
@@ -150,7 +154,12 @@ fn process_task_method(
     group_attrs.merge_into(&mut attrs);
 
     // Same shortcut expansion as a standalone `#[task]`.
-    apply_dx_shortcuts(&mut attrs)?;
+    expand_task_shortcuts(&mut attrs).map_err(|e| {
+        syn::Error::new(
+            proc_macro2::Span::call_site(),
+            format!("Invalid task configuration: {}", e),
+        )
+    })?;
 
     validate_merged_attrs(&attrs)?;
 
@@ -228,7 +237,11 @@ fn process_task_method(
         &handler_wrapper_name,
     );
 
+    let ineffective_warnings = ineffective_attr_warnings("task", &attrs.ineffective);
+
     let free_functions = quote! {
+        #ineffective_warnings
+
         #(#method_attrs)*
         #method_vis async fn #fn_name_impl(#fn_inputs) #fn_output {
             #method_body
@@ -274,72 +287,12 @@ fn parse_task_attrs_from_method(method: &ImplItemFn) -> Result<TaskAttrs, syn::E
                 return Ok(TaskAttrs::default());
             }
 
-            return TaskAttrs::from_meta(&attr.meta).map_err(|e| {
+            return parse_task_attrs(&attr.meta).map_err(|e| {
                 syn::Error::new_spanned(attr, format!("Failed to parse task attributes: {}", e))
             });
         }
     }
     Ok(TaskAttrs::default())
-}
-
-/// Expands `preset`, `retry`, `timeout_mins` and `memory` exactly as a standalone `#[task]` does.
-fn apply_dx_shortcuts(attrs: &mut TaskAttrs) -> Result<(), syn::Error> {
-    // A preset only fills in values the user did not set explicitly.
-    if let Some(preset_name) = &attrs.preset.clone() {
-        let preset = get_preset(preset_name);
-        if attrs.retry.is_none() && preset.retry.is_some() {
-            attrs.retry = preset.retry;
-        }
-        if attrs.timeout_mins.is_none() && preset.timeout_mins.is_some() {
-            attrs.timeout_mins = preset.timeout_mins;
-        }
-        if attrs.memory.is_none() && preset.memory.is_some() {
-            attrs.memory = preset.memory;
-        }
-        if attrs.timeout.is_none() && preset.timeout.is_some() {
-            attrs.timeout = preset.timeout;
-        }
-    }
-
-    // `retry = N` expands to an exponential policy (1s initial, 60s max, factor 2.0) unless
-    // an explicit `retry_policy` is given.
-    if let Some(max_attempts) = attrs.retry {
-        if attrs.retry_policy.is_none() {
-            attrs.retry_policy = Some(crate::common::attrs::RetryPolicyAttr {
-                max_attempts,
-                initial_interval: 1,
-                max_interval: 60,
-                backoff_coefficient: 2.0,
-            });
-        }
-    }
-
-    if let Some(timeout_mins) = attrs.timeout_mins {
-        if attrs.timeout.is_none() {
-            attrs.timeout = Some(timeout_mins * 60);
-        }
-    }
-
-    // `memory` fills in the memory request without overriding an explicit one.
-    if let Some(memory) = &attrs.memory.clone() {
-        if attrs.resources.is_none() {
-            attrs.resources = Some(crate::common::attrs::ResourcesAttr {
-                cpu: None,
-                memory: Some(memory.clone()),
-                disk: None,
-                cpu_limit: None,
-                memory_limit: None,
-                disk_limit: None,
-                network_limit: None,
-            });
-        } else if let Some(ref mut resources) = attrs.resources {
-            if resources.memory.is_none() {
-                resources.memory = Some(memory.clone());
-            }
-        }
-    }
-
-    Ok(())
 }
 
 /// Validates the task attributes after group defaults and shortcuts have been applied.
@@ -402,31 +355,6 @@ fn pascal_to_snake(name: &str) -> String {
         }
     }
     result
-}
-
-/// Returns the attribute defaults for a named preset; must match the presets of `#[task]`.
-fn get_preset(name: &str) -> TaskAttrs {
-    match name {
-        "long-running" => TaskAttrs {
-            retry: Some(3),
-            timeout_mins: Some(30),
-            memory: Some("512Mi".to_string()),
-            ..Default::default()
-        },
-        "quick" => TaskAttrs {
-            timeout_mins: Some(1),
-            retry: Some(0),
-            memory: Some("128Mi".to_string()),
-            ..Default::default()
-        },
-        "critical" => TaskAttrs {
-            retry: Some(5),
-            timeout_mins: Some(60),
-            memory: Some("1Gi".to_string()),
-            ..Default::default()
-        },
-        _ => TaskAttrs::default(),
-    }
 }
 
 #[cfg(test)]

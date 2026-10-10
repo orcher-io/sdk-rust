@@ -77,8 +77,8 @@ fn parse_memory_size(size_str: &str) -> u64 {
 ///
 /// The registration inserts the task handler into the worker registry and records the
 /// task's retry policy and declared limits (`timeout`, `heartbeat_timeout`) in
-/// process-global registries. The other task attributes are parsed and validated but not
-/// registered.
+/// process-global registries. The other task attributes have no effect: the task macros
+/// warn about each one, and reject `namespace`.
 ///
 /// # Generated Code
 ///
@@ -115,59 +115,14 @@ pub fn generate_sdk_task_registration(
         .map(|s| s.to_string())
         .unwrap_or_else(|| fn_name.to_string());
 
-    let _description = attrs
-        .description
-        .as_ref()
-        .map(|d| quote! { Some(#d.to_string()) })
-        .unwrap_or_else(|| quote! { None });
-
     let timeout_seconds = attrs
         .timeout
         .map(|t| quote! { Some(#t) })
         .unwrap_or_else(|| quote! { None });
 
-    let _namespace = attrs
-        .namespace
-        .as_ref()
-        .map(|ns| quote! { Some(#ns.to_string()) })
-        .unwrap_or_else(|| quote! { None });
-
-    let _version = attrs
-        .version
-        .as_ref()
-        .map(|v| quote! { Some(#v.to_string()) })
-        .unwrap_or_else(|| quote! { None });
-
-    let _task_queue = attrs
-        .task_queue
-        .as_ref()
-        .map(|tq| quote! { Some(#tq.to_string()) })
-        .unwrap_or_else(|| quote! { None });
-
     let heartbeat_timeout_seconds = attrs
         .heartbeat_timeout
         .map(|ht| quote! { Some(#ht) })
-        .unwrap_or_else(|| quote! { None });
-
-    let _priority = attrs
-        .priority
-        .map(|p| quote! { Some(#p) })
-        .unwrap_or_else(|| quote! { None });
-
-    let _max_concurrent = attrs
-        .max_concurrent
-        .map(|mc| quote! { Some(#mc) })
-        .unwrap_or_else(|| quote! { None });
-
-    let _rate_limit = attrs
-        .rate_limit
-        .map(|rl| quote! { Some(#rl) })
-        .unwrap_or_else(|| quote! { None });
-
-    let _idempotency_key = attrs
-        .idempotency_key
-        .as_ref()
-        .map(|ik| quote! { Some(#ik.to_string()) })
         .unwrap_or_else(|| quote! { None });
 
     // The retry policy goes into a process-global registry keyed by task name. A workflow
