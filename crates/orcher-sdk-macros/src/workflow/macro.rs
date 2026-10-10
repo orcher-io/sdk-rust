@@ -166,6 +166,10 @@ fn workflow_impl_inner(
 
     let enabled_flag = attrs.enabled;
 
+    // The name the worker registers the workflow under: the declared `name`, or the
+    // function name when none is given.
+    let workflow_name = attrs.name.clone().unwrap_or_else(|| fn_name.to_string());
+
     let ineffective_warnings = ineffective_attr_warnings(&attrs);
 
     let expanded = quote! {
@@ -185,9 +189,9 @@ fn workflow_impl_inner(
 
         #[automatically_derived]
         impl #wrapper_name {
-            /// Returns the workflow name.
+            /// Returns the name the workflow is registered and started under.
             pub fn name() -> &'static str {
-                stringify!(#fn_name)
+                #workflow_name
             }
 
             /// Returns the cron schedule declared on the workflow, if any.
