@@ -379,6 +379,43 @@
           "message": "after-restart"
         }
       }
+    },
+    {
+      "id": "cancel-ends-a-sleeping-workflow",
+      "kind": "cancel",
+      "description": "A workflow parked on a long sleep is cancelled. The sleep is where it is told, and it does not catch the cancellation, so it ends cancelled. Guards that a cancellation request reaches the workflow at all, and that an uncaught one ends the run.",
+      "workflow": "cancel_sleep",
+      "input": {},
+      "expect": {
+        "status": "cancelled"
+      }
+    },
+    {
+      "id": "cancel-lets-the-workflow-clean-up",
+      "kind": "cancel",
+      "description": "A workflow parked on a long sleep is cancelled, catches the cancellation, runs a cleanup task long enough to be heartbeated, and returns. It ends completed with the cleanup's result: work started after the request is not told to stop, the workflow knows it was told, and how the run ends follows the workflow.",
+      "workflow": "cancel_cleanup",
+      "input": {},
+      "expect": {
+        "status": "completed",
+        "result": {
+          "told": true,
+          "cleanup": "cleaned"
+        }
+      }
+    },
+    {
+      "id": "cancel-runs-saga-compensations",
+      "kind": "cancel",
+      "description": "A saga completes a step with a compensation, then parks and is cancelled. Told of the cancellation, it compensates: the compensation is an ordinary task, scheduled and completed after the request.",
+      "workflow": "cancel_saga",
+      "input": {},
+      "expect": {
+        "status": "completed",
+        "result": {
+          "compensated": 1
+        }
+      }
     }
   ]
 }

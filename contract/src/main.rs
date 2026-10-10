@@ -77,7 +77,8 @@ struct Scenario {
     /// resets it to `reset_to_event_id`, and asserts the successor run;
     /// "client_error" makes a failing client call and asserts the error code;
     /// "workflow_id_reuse" starts one workflow id again while it runs and
-    /// after it completes, and asserts which starts are refused.
+    /// after it completes, and asserts which starts are refused; "cancel"
+    /// cancels the workflow once it has parked and asserts how it ended.
     #[serde(default)]
     kind: Option<String>,
     #[serde(default)]
@@ -273,6 +274,9 @@ async fn main() -> Result<()> {
                 .await
                 .map(|()| Outcome::Ran),
             Some("event") => run_event_scenario(&client, &args, scenario)
+                .await
+                .map(|()| Outcome::Ran),
+            Some("cancel") => run_cancel_scenario(&client, &args, scenario)
                 .await
                 .map(|()| Outcome::Ran),
             Some("workflow_id_reuse") => run_workflow_id_reuse_scenario(&client, &args, scenario)
@@ -620,6 +624,82 @@ fn fresh_key(prefix: &str) -> String {
             .map(|d| d.as_nanos())
             .unwrap_or(0)
     )
+}
+
+/// Run one cancellation scenario: start the workflow, cancel it once it has
+/// parked, and assert how it ended.
+///
+/// `expect.status` is `cancelled` for a workflow that lets the cancellation it
+/// is told of end it, and `completed`, with `expect.result`, for one that
+/// cleans up and returns.
+async fn run_cancel_scenario(client: &Client, args: &Args, scenario: &Scenario) -> Result<()> {
+    let workflow = scenario
+        .workflow
+        .as_deref()
+        .ok_or_else(|| anyhow!("cancel scenario missing `workflow`"))?;
+    let expect = scenario
+        .expect
+        .as_ref()
+        .ok_or_else(|| anyhow!("cancel scenario missing `expect`"))?;
+
+    let key = fresh_key("conf");
+    let mut input = scenario.input.clone();
+    if !input.is_object() {
+        input = serde_json::json!({});
+    }
+    input["key"] = Value::String(key.clone());
+
+    let options =
+        StartWorkflowOptions::new(args.task_queue.clone()).with_namespace(args.namespace.clone());
+    let handle = client
+        .start_workflow_with_options(workflow, input, options)
+        .await
+        .with_context(|| format!("starting workflow {workflow}"))?;
+
+    let deadline = Duration::from_secs(args.result_timeout_secs);
+    if !wait_until_parked(&key, deadline).await {
+        let _ = handle.cancel().await;
+        return Err(anyhow!("the workflow never parked"));
+    }
+    // As for an event: let the engine record the parking activation, so the
+    // cancellation wakes a parked workflow rather than racing its first run.
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    handle.cancel().await.context("cancelling the workflow")?;
+
+    match expect.status.as_str() {
+        "cancelled" => {
+            let until = std::time::Instant::now() + deadline;
+            loop {
+                match handle.status().await.context("reading the status")? {
+                    WorkflowStatus::Cancelled => return Ok(()),
+                    WorkflowStatus::Running if std::time::Instant::now() < until => {
+                        tokio::time::sleep(Duration::from_millis(200)).await;
+                    }
+                    other => {
+                        return Err(anyhow!("expected the workflow cancelled, it is {other:?}"))
+                    }
+                }
+            }
+        }
+        "completed" => {
+            let result = handle
+                .result_with_timeout::<Value>(deadline)
+                .await
+                .map_err(|e| anyhow!("expected completion after cleanup but got: {e}"))?;
+            if json_matches(&expect.result, &result) {
+                Ok(())
+            } else {
+                Err(anyhow!(
+                    "result mismatch\n    expected: {}\n    actual:   {}",
+                    expect.result,
+                    result
+                ))
+            }
+        }
+        other => Err(anyhow!(
+            "unknown expected status '{other}' for a cancel scenario"
+        )),
+    }
 }
 
 /// Run one event scenario: start the workflow, wait for it to park, wake it

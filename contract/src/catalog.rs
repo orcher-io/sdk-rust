@@ -22,7 +22,7 @@ pub async fn echo(_ctx: WorkflowContext, input: EchoInput) -> Result<EchoInput> 
 }
 
 /// Empty input for workflows that take no meaningful arguments (deserializes from `{}`).
-#[derive(Serialize, Deserialize, Default)]
+#[derive(Serialize, Deserialize, Default, Clone)]
 pub struct Empty {}
 
 /// Result of catching a durable task failure.
@@ -698,4 +698,103 @@ pub async fn exit_if_worker_doomed(
 pub async fn crash_mid_task(ctx: WorkflowContext, _input: Empty) -> Result<SurvivedWorkerDeath> {
     ctx.execute_task(exit_if_worker_doomed, Empty::default())
         .await
+}
+
+// ---------------------------------------------------------------------------
+// Cancellation: a cancelled workflow is told, once, and may clean up.
+// ---------------------------------------------------------------------------
+
+/// Cleanup that takes long enough to be heartbeated. It reports whether it was
+/// told to stop: work started after a cancellation request is cleanup, and the
+/// engine must let it finish.
+#[task(retry = 1)]
+pub async fn cancel_cleanup(ctx: TaskContext, _input: Empty) -> Result<String> {
+    let started = std::time::Instant::now();
+    while started.elapsed() < std::time::Duration::from_millis(2_500) {
+        if ctx.is_cancelled() {
+            return Ok("interrupted".to_string());
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    Ok("cleaned".to_string())
+}
+
+/// A step a saga can undo.
+#[task(retry = 1)]
+pub async fn cancel_reserve(_ctx: TaskContext, _input: Empty) -> Result<String> {
+    Ok("reserved".to_string())
+}
+
+/// Undoes `cancel_reserve`.
+#[task(retry = 1)]
+pub async fn cancel_release(_ctx: TaskContext, _input: Empty) -> Result<String> {
+    Ok("released".to_string())
+}
+
+/// Parks on a long sleep and lets the cancellation it is told of end it.
+#[workflow(name = "cancel_sleep")]
+pub async fn cancel_sleep(ctx: WorkflowContext, input: KeyedInput) -> Result<String> {
+    mark_parked(&input.key);
+    ctx.sleep(std::time::Duration::from_secs(600)).await?;
+    Ok("slept".to_string())
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct CleanupResult {
+    pub told: bool,
+    pub cleanup: String,
+}
+
+/// Parks on a long sleep; when told it is cancelled, runs cleanup and returns,
+/// which ends it completed.
+#[workflow(name = "cancel_cleanup")]
+pub async fn cancel_cleanup_workflow(
+    ctx: WorkflowContext,
+    input: KeyedInput,
+) -> Result<CleanupResult> {
+    mark_parked(&input.key);
+    match ctx.sleep(std::time::Duration::from_secs(600)).await {
+        Ok(()) => Err(Error::Workflow(WorkflowError::StateError(
+            "the sleep finished; the cancellation never arrived".to_string(),
+        ))),
+        Err(Error::Workflow(WorkflowError::Canceled)) => {
+            let cleanup: String = ctx.execute_task(cancel_cleanup, Empty::default()).await?;
+            Ok(CleanupResult {
+                told: ctx.is_cancel_requested(),
+                cleanup,
+            })
+        }
+        Err(other) => Err(other),
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct CompensatedResult {
+    pub compensated: u32,
+}
+
+/// Reserves, then parks; when told it is cancelled, compensates the
+/// reservation and reports how many compensations ran.
+#[workflow(name = "cancel_saga")]
+pub async fn cancel_saga(ctx: WorkflowContext, input: KeyedInput) -> Result<CompensatedResult> {
+    let mut saga = orcher_sdk::workflow::Saga::new();
+    let _: String = saga
+        .add_step(&ctx, cancel_reserve, Empty::default())
+        .with_compensation(cancel_release)
+        .execute()
+        .await?;
+    mark_parked(&input.key);
+    match ctx.sleep(std::time::Duration::from_secs(600)).await {
+        Ok(()) => Err(Error::Workflow(WorkflowError::StateError(
+            "the sleep finished; the cancellation never arrived".to_string(),
+        ))),
+        Err(Error::Workflow(WorkflowError::Canceled)) => {
+            let pending = saga.pending_compensations() as u32;
+            saga.compensate(&ctx).await?;
+            Ok(CompensatedResult {
+                compensated: pending,
+            })
+        }
+        Err(other) => Err(other),
+    }
 }
