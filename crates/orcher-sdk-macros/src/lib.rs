@@ -462,8 +462,9 @@ pub fn actor(attr: TokenStream, item: TokenStream) -> TokenStream {
 /// Mark each operation method with one of:
 ///
 /// - `#[operation(exclusive)]`: single-writer; runs one at a time per actor key.
-/// - `#[operation(shared)]`: read-only. Shared operations are currently serialized like
-///   exclusive ones.
+/// - `#[operation(shared)]`: read-only. Shared operations on the same key run
+///   concurrently with each other; an exclusive operation waits for them to finish and
+///   then runs alone. State writes from a shared operation are refused.
 ///
 /// Methods without `#[operation]` are kept as ordinary methods.
 ///

@@ -43,8 +43,9 @@
 //!
 //! - **Actor**: a stateful entity identified by a key. Each instance owns its own state.
 //! - **Exclusive operation**: runs serialized per key and may read and write state.
-//! - **Shared operation**: may run concurrently with other shared operations on the same
-//!   key, so it should only read state.
+//! - **Shared operation**: runs concurrently with other shared operations on the same
+//!   key, and may only read state; writes are refused. An exclusive operation waits
+//!   for running shared ones, then runs alone.
 //! - **State**: scoped by key as `actor:{actor_name}:{key}:{state_key}`, read and written
 //!   over RPC, and persisted by the server. The worker may cache it locally.
 //!
