@@ -373,22 +373,11 @@ impl WorkflowContext {
         if replaying {
             let state = self.state.lock().unwrap();
 
-            let has_cached = state.pending_task_results.contains_key(&task_id);
-            let all_cached_keys: Vec<String> = state.pending_task_results.keys().cloned().collect();
-
-            tracing::warn!(
-                task_id = %task_id,
-                has_cached = has_cached,
-                all_cached_keys = ?all_cached_keys,
-                cached_count = all_cached_keys.len(),
-                "🟣 TASK_CACHE_LOOKUP: Checking for cached task result during replay"
-            );
-
             if let Some(result_bytes) = state.pending_task_results.get(&task_id) {
-                tracing::warn!(
+                tracing::trace!(
                     task_id = %task_id,
                     result_len = result_bytes.len(),
-                    "🟣 TASK_CACHE_HIT: Found cached result, returning from cache"
+                    "Replaying journaled task result"
                 );
                 state.observe(&task_id);
 
@@ -400,9 +389,9 @@ impl WorkflowContext {
                     result_bytes,
                 );
             } else {
-                tracing::warn!(
+                tracing::trace!(
                     task_id = %task_id,
-                    "🟣 TASK_CACHE_MISS: No cached result found, will schedule task"
+                    "No journaled task result; scheduling the task"
                 );
             }
         }
