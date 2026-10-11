@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.9.1](https://github.com/orcher-io/sdk-rust/compare/v0.9.0...v0.9.1) (2026-10-11)
+
+
+### Bug Fixes
+
+* derive a child workflow's default id from its parent ([#40](https://github.com/orcher-io/sdk-rust/issues/40)) ([3dbd503](https://github.com/orcher-io/sdk-rust/commit/3dbd503caa45c9346b8ef43fade2ab967f9ff1c5)), closes [#25](https://github.com/orcher-io/sdk-rust/issues/25)
+* raise TaskFailed from execute_task_with_options ([#41](https://github.com/orcher-io/sdk-rust/issues/41)) ([3aab407](https://github.com/orcher-io/sdk-rust/commit/3aab4072e9ce73edf0576da123a7bd083971fbe9)), closes [#38](https://github.com/orcher-io/sdk-rust/issues/38)
+
 ## [0.9.0](https://github.com/orcher-io/sdk-rust/compare/v0.8.1...v0.9.0) (2026-10-11)
 
 
