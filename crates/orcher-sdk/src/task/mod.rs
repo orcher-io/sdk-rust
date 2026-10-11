@@ -30,7 +30,7 @@
 //! # struct PaymentResult;
 //! ```
 
-mod context;
+pub(crate) mod context;
 mod options;
 mod reference;
 mod retry;

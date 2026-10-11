@@ -67,8 +67,9 @@ use proc_macro::TokenStream;
 /// Turns an `async fn` into a task that workers can run.
 ///
 /// The function must be `async`, take `TaskContext` as its first parameter, and have a
-/// return type. The macro keeps the function and adds a payload-level handler, a typed
-/// task reference, and a registration that makes the task available to workers.
+/// return type. The macro keeps the function, renamed to `<name>_impl`, and turns
+/// `<name>` into a typed task reference that workflows schedule it by. It also adds a
+/// payload-level handler and a registration that makes the task available to workers.
 ///
 /// # Attributes
 ///
@@ -116,6 +117,31 @@ use proc_macro::TokenStream;
 ///     ctx.heartbeat().await?;
 ///     Ok(format!("data from {url}"))
 /// }
+/// ```
+///
+/// # Testing
+///
+/// The task body stays callable as `<name>_impl`, with the signature written. Call it
+/// with a context from `orcher_sdk::testing::TestTaskContext`, whose probe can cancel
+/// the task and read its heartbeats:
+///
+/// ```rust
+/// use orcher_sdk::prelude::*;
+/// use orcher_sdk::testing::TestTaskContext;
+///
+/// #[task]
+/// async fn greet(ctx: TaskContext, name: String) -> Result<String> {
+///     ctx.heartbeat().await?;
+///     Ok(format!("hello {name}, attempt {}", ctx.attempt()))
+/// }
+///
+/// # #[tokio::main(flavor = "current_thread")]
+/// # async fn main() -> Result<()> {
+/// let (ctx, probe) = TestTaskContext::new().attempt(2).build();
+/// assert_eq!(greet_impl(ctx, "ada".into()).await?, "hello ada, attempt 2");
+/// assert_eq!(probe.heartbeat_count(), 1);
+/// # Ok(())
+/// # }
 /// ```
 #[proc_macro_attribute]
 pub fn task(attr: TokenStream, item: TokenStream) -> TokenStream {

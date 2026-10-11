@@ -142,6 +142,8 @@
 //! runs a context-aware workflow against a mock registry: each time the workflow
 //! suspends on tasks, it runs their mocks and replays the workflow with the results.
 //! [`MockClock`] is a manually advanced clock for time-dependent test code.
+//! [`TestTaskContext`] builds a [`TaskContext`](crate::TaskContext) so a task body can
+//! be called directly, and its [`TaskProbe`] cancels the task and reads its heartbeats.
 //!
 //! # Limitations
 //!
@@ -152,7 +154,8 @@
 //!   state and task inspection methods find nothing for it.
 //! - [`TestWorkflowExecutor`] handles task suspensions only. A workflow that waits on a
 //!   timer, event or child workflow returns an error.
-//! - Task code never runs, and everything runs in one process with no persistence.
+//! - Inside a workflow test, task code never runs; test task bodies on their own with
+//!   [`TestTaskContext`]. Everything runs in one process with no persistence.
 //!
 //! For integration tests with real execution, run against an Orcher server.
 
@@ -160,6 +163,7 @@ mod assertions;
 mod env;
 mod executor;
 mod mocks;
+mod task_context;
 mod time;
 mod trace;
 
@@ -171,6 +175,7 @@ pub use assertions::{
 pub use env::{ExecutionStatus, ExecutionTrace, TaskCall, TestEnv};
 pub use executor::TestWorkflowExecutor;
 pub use mocks::{MockRegistry, MockTask, MockTaskBuilder, TaskMock};
+pub use task_context::{TaskProbe, TestTaskContext};
 pub use time::MockClock;
 // `trace` exports nothing: it adds assertion methods to `ExecutionTrace` in an `impl` block.
 
