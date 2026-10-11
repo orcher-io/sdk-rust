@@ -256,7 +256,7 @@ fn task_impl_inner(
             &handler_wrapper_name,
             input_type,
             output_type,
-        )
+        )?
     } else if has_task_context {
         generate_task_context_wrapper(&fn_info, &item_fn, &handler_wrapper_name, &fn_name_impl)
     } else {
