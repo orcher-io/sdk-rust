@@ -276,8 +276,11 @@ pub struct WorkerConfig {
     /// Maximum number of concurrent worker sessions (default: 10).
     ///
     /// Sessions pin a series of tasks to a single worker. Each session
-    /// occupies one slot; when all slots are in use, `create_session()` calls
-    /// wait until a slot is released or the creation timeout expires.
+    /// occupies one slot. When all slots are in use, the worker that picked up
+    /// a `create_session()` waits for one of its own slots to be released, up
+    /// to the session's creation timeout; it does not pass the creation on to
+    /// another worker. If none frees in time, `create_session()` returns
+    /// `TaskFailed`.
     pub max_sessions: usize,
 }
 

@@ -1071,8 +1071,11 @@ impl WorkflowContext {
     ///
     /// # Errors
     ///
-    /// Returns a `Suspended` error while the session is being created, and an error if
-    /// the options or the recorded session info cannot be serialized.
+    /// Returns a `Suspended` error while the session is being created, and
+    /// `TaskFailed` if creation failed, for example because no worker had a free
+    /// session slot within [`SessionOptions::creation_timeout`].
+    ///
+    /// [`SessionOptions::creation_timeout`]: crate::workflow::session::SessionOptions::creation_timeout
     ///
     /// # Example
     ///
@@ -1127,12 +1130,13 @@ impl WorkflowContext {
             if state.replaying {
                 if let Some(cached) = state.pending_task_results.get(&task_id) {
                     state.observe(&task_id);
-                    let info: SessionInfo = serde_json::from_slice(cached).map_err(|e| {
-                        Error::Serialization(format!(
-                            "Failed to deserialize cached session info: {}",
-                            e
-                        ))
-                    })?;
+                    // Decoded like any task result, so a creation that failed (for
+                    // example, no session slot came free in time) raises `TaskFailed`.
+                    let info: SessionInfo = crate::workflow::executable::decode_task_result(
+                        &task_id,
+                        SESSION_CREATE_TASK,
+                        cached,
+                    )?;
 
                     tracing::debug!(
                         session_id = %info.session_id,
@@ -1942,6 +1946,32 @@ mod tests {
                 reason,
             })) => (task_type, attempts, reason),
             other => panic!("expected TaskFailed, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn create_session_raises_a_failed_creation_as_task_failed() {
+        use crate::workflow::session::{SessionOptions, SESSION_CREATE_TASK};
+        let ctx = create_test_context();
+        ctx.set_replaying_for_test(true);
+        ctx.inject_step_result(
+            format!("{SESSION_CREATE_TASK}_0"),
+            task_failure_sentinel("Resource exhausted: session slots (1/1 in use)", 1),
+        );
+
+        let result = ctx.create_session(SessionOptions::default()).await;
+
+        match result {
+            Err(Error::Workflow(crate::error::WorkflowError::TaskFailed {
+                task_type,
+                reason,
+                ..
+            })) => {
+                assert_eq!(task_type, SESSION_CREATE_TASK);
+                assert!(reason.contains("session slots"), "{reason}");
+            }
+            Err(other) => panic!("expected TaskFailed, got {other:?}"),
+            Ok(_) => panic!("expected TaskFailed, got a session"),
         }
     }
 
