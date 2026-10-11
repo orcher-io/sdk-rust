@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.9.0](https://github.com/orcher-io/sdk-rust/compare/v0.8.1...v0.9.0) (2026-10-11)
+
+
+### ⚠ BREAKING CHANGES
+
+* namespace on a task or task group is now a compile error, as it already is on a workflow, and an unknown preset name is a compile error instead of being ignored.
+
+### Bug Fixes
+
+* run a workflow or task that takes no input ([#35](https://github.com/orcher-io/sdk-rust/issues/35)) ([85e79c8](https://github.com/orcher-io/sdk-rust/commit/85e79c88d874276d1c271a39875342d58180f0ab))
+* schedule a task under its declared name ([#34](https://github.com/orcher-io/sdk-rust/issues/34)) ([5c0a0c8](https://github.com/orcher-io/sdk-rust/commit/5c0a0c814cbd91d804f48a60178c906b4cdffac1))
+* warn about task and workflow attributes that have no effect ([#36](https://github.com/orcher-io/sdk-rust/issues/36)) ([cdd942a](https://github.com/orcher-io/sdk-rust/commit/cdd942adc9e2c689ce55611938275f988f5339e5))
+
 ## [0.8.1](https://github.com/orcher-io/sdk-rust/compare/v0.8.0...v0.8.1) (2026-10-09)
 
 
