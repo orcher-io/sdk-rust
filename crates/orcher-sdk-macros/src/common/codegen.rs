@@ -77,9 +77,12 @@ pub fn extract_first_param_type(fn_info: &FnInfo) -> Option<&Type> {
 /// Generates the payload-level handler for a task.
 ///
 /// The handler deserializes the input payload into the task's second parameter type, calls
-/// the task function with the `TaskContext`, and serializes the success value. If the
-/// signature has no input parameter, a non-`Result` return type, or a context parameter that
-/// is not a plain identifier, the handler returns an error at run time instead.
+/// the task function with the `TaskContext`, and serializes the success value. A task with
+/// no input parameter is called with the context alone, and its input payload is not read.
+///
+/// A signature the handler cannot call is a compile error: more than one input parameter,
+/// a return type other than `Result<T>`, or a context parameter that is not a plain
+/// identifier.
 ///
 /// # Generated Code Pattern
 ///
@@ -108,51 +111,16 @@ pub fn generate_sdk_task_wrapper(
     wrapper_name: &Ident,
     input_type: Option<&syn::Type>,
     output_type: Option<&syn::Type>,
-) -> TokenStream {
-    let ctx_param = if !fn_info.inputs.is_empty() {
-        if let syn::FnArg::Typed(pat_type) = &fn_info.inputs[0] {
-            if let syn::Pat::Ident(pat_ident) = pat_type.pat.as_ref() {
-                Some(&pat_ident.ident)
-            } else {
-                None
-            }
-        } else {
-            None
-        }
-    } else {
-        None
-    };
-
-    if let (Some(input_ty), Some(output_ty), Some(ctx_name)) = (input_type, output_type, ctx_param)
-    {
-        quote! {
-            async fn #wrapper_name(
-                #ctx_name: orcher_sdk::TaskContext,
-                input_payload: orcher_sdk::Payload,
-            ) -> orcher_sdk::Result<orcher_sdk::Payload> {
-                use orcher_sdk::prelude::*;
-                use orcher_sdk::payload::{from_payload, to_payload};
-
-                let input: #input_ty = from_payload(&input_payload)?;
-
-                let result: #output_ty = #fn_name(#ctx_name, input).await?;
-
-                let output_payload = to_payload(&result)?;
-                Ok(output_payload)
-            }
-        }
-    } else {
-        // The signature did not fit; fail when the task runs.
-        quote! {
-            async fn #wrapper_name(
-                ctx: orcher_sdk::TaskContext,
-                input_payload: orcher_sdk::Payload,
-            ) -> orcher_sdk::Result<orcher_sdk::Payload> {
-                use orcher_sdk::prelude::*;
-                Err(orcher_sdk::Error::Other("Task wrapper generation failed".to_string()))
-            }
-        }
-    }
+) -> Result<TokenStream, syn::Error> {
+    generate_sdk_wrapper(
+        fn_info,
+        fn_name,
+        wrapper_name,
+        input_type,
+        output_type,
+        &quote! { orcher_sdk::TaskContext },
+        "task",
+    )
 }
 
 /// Generates the payload-level handler for a workflow.
@@ -167,51 +135,89 @@ pub fn generate_sdk_workflow_wrapper(
     wrapper_name: &Ident,
     input_type: Option<&syn::Type>,
     output_type: Option<&syn::Type>,
-) -> TokenStream {
-    let ctx_param = if !fn_info.inputs.is_empty() {
-        if let syn::FnArg::Typed(pat_type) = &fn_info.inputs[0] {
-            if let syn::Pat::Ident(pat_ident) = pat_type.pat.as_ref() {
-                Some(&pat_ident.ident)
-            } else {
-                None
+) -> Result<TokenStream, syn::Error> {
+    generate_sdk_wrapper(
+        fn_info,
+        fn_name,
+        wrapper_name,
+        input_type,
+        output_type,
+        &quote! { orcher_sdk::WorkflowContext },
+        "workflow",
+    )
+}
+
+/// The handler shared by tasks and workflows; `context_type` is the context the function
+/// takes first, and `kind` names the function in error messages.
+fn generate_sdk_wrapper(
+    fn_info: &FnInfo,
+    fn_name: &Ident,
+    wrapper_name: &Ident,
+    input_type: Option<&syn::Type>,
+    output_type: Option<&syn::Type>,
+    context_type: &TokenStream,
+    kind: &str,
+) -> Result<TokenStream, syn::Error> {
+    let ctx_name = match fn_info.inputs.first() {
+        Some(syn::FnArg::Typed(pat_type)) => match pat_type.pat.as_ref() {
+            syn::Pat::Ident(pat_ident) => &pat_ident.ident,
+            other => {
+                return Err(syn::Error::new_spanned(
+                    other,
+                    format!(
+                        "the context parameter of a {kind} must be a plain name, such as `ctx`"
+                    ),
+                ))
             }
-        } else {
-            None
+        },
+        _ => {
+            return Err(syn::Error::new_spanned(
+                &fn_info.name,
+                format!("a {kind} takes its context as the first parameter"),
+            ))
         }
-    } else {
-        None
     };
 
-    if let (Some(input_ty), Some(output_ty), Some(ctx_name)) = (input_type, output_type, ctx_param)
-    {
-        quote! {
-            async fn #wrapper_name(
-                #ctx_name: orcher_sdk::WorkflowContext,
-                input_payload: orcher_sdk::Payload,
-            ) -> orcher_sdk::Result<orcher_sdk::Payload> {
-                use orcher_sdk::prelude::*;
-                use orcher_sdk::payload::{from_payload, to_payload};
-
-                let input: #input_ty = from_payload(&input_payload)?;
-
-                let result: #output_ty = #fn_name(#ctx_name, input).await?;
-
-                let output_payload = to_payload(&result)?;
-                Ok(output_payload)
-            }
-        }
-    } else {
-        // The signature did not fit; fail when the workflow runs.
-        quote! {
-            async fn #wrapper_name(
-                ctx: orcher_sdk::WorkflowContext,
-                input_payload: orcher_sdk::Payload,
-            ) -> orcher_sdk::Result<orcher_sdk::Payload> {
-                use orcher_sdk::prelude::*;
-                Err(orcher_sdk::Error::Other("Workflow wrapper generation failed".to_string()))
-            }
-        }
+    if let Some(extra) = fn_info.inputs.iter().nth(2) {
+        return Err(syn::Error::new_spanned(
+            extra,
+            format!(
+                "a {kind} takes at most one input after its context; \
+                 pass several values as one struct or tuple"
+            ),
+        ));
     }
+
+    let Some(output_ty) = output_type else {
+        return Err(syn::Error::new_spanned(
+            &fn_info.output,
+            format!("a {kind} must return `Result<T>`, such as `orcher_sdk::Result<T>`"),
+        ));
+    };
+
+    let call = match input_type {
+        Some(input_ty) => quote! {
+            let input: #input_ty = orcher_sdk::payload::from_payload(&input_payload)?;
+            let result: #output_ty = #fn_name(#ctx_name, input).await?;
+        },
+        // No input parameter: the function takes the context alone, and whatever input
+        // the caller sent is not read.
+        None => quote! {
+            let _ = &input_payload;
+            let result: #output_ty = #fn_name(#ctx_name).await?;
+        },
+    };
+
+    Ok(quote! {
+        async fn #wrapper_name(
+            #ctx_name: #context_type,
+            input_payload: orcher_sdk::Payload,
+        ) -> orcher_sdk::Result<orcher_sdk::Payload> {
+            #call
+
+            orcher_sdk::payload::to_payload(&result)
+        }
+    })
 }
 
 #[cfg(test)]

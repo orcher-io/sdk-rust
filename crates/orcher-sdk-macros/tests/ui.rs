@@ -10,4 +10,5 @@ fn ui() {
     t.compile_fail("tests/ui/workflow_ineffective_attrs.rs");
     t.compile_fail("tests/ui/task_ineffective_attrs.rs");
     t.compile_fail("tests/ui/task_namespace.rs");
+    t.compile_fail("tests/ui/handler_signatures.rs");
 }
