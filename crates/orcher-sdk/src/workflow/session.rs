@@ -70,7 +70,9 @@ pub const SESSION_QUEUE_SEPARATOR: &str = "__session__";
 pub struct SessionOptions {
     /// Maximum time to wait for a worker to accept the session.
     ///
-    /// Creation fails if no worker has a free session slot within this time.
+    /// The worker that picks up the creation waits this long for one of its
+    /// session slots to come free; if none does, creation fails with
+    /// `TaskFailed`.
     #[serde(with = "humantime_serde_compat")]
     pub creation_timeout: Duration,
 

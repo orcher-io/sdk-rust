@@ -15,6 +15,10 @@ use std::sync::Arc;
 use tokio::sync::{mpsc, Semaphore};
 use tracing::{debug, info, warn};
 
+/// How much earlier than the creation timeout a worker gives up waiting for a
+/// session slot, so it can report why before the engine times the task out.
+const SLOT_WAIT_MARGIN: std::time::Duration = std::time::Duration::from_millis(500);
+
 /// Tracks the sessions hosted by one worker.
 ///
 /// Each worker has one manager, which limits how many sessions it hosts at
@@ -109,14 +113,14 @@ impl SessionManager {
 
     /// Handles the built-in `__orcher_create_session` task.
     ///
-    /// Takes a session slot without waiting, asks the `TaskDriver` to poll the
-    /// new session queue, and returns the [`SessionInfo`] that becomes the task
-    /// result. When `heartbeat_tx` is given, a loop sends a [`HeartbeatRequest`]
+    /// Takes a session slot, waiting for one to come free for up to the
+    /// session's creation timeout, asks the `TaskDriver` to poll the new session
+    /// queue, and returns the [`SessionInfo`] that becomes the task result. When `heartbeat_tx` is given, a loop sends a [`HeartbeatRequest`]
     /// on it every `heartbeat_interval_ms` until the session ends.
     ///
     /// # Errors
     ///
-    /// Returns [`WorkerError::ResourceExhausted`] if every slot is in use.
+    /// Returns [`WorkerError::ResourceExhausted`] if no slot came free in time.
     ///
     /// [`WorkerError::ResourceExhausted`]: crate::error::WorkerError::ResourceExhausted
     pub async fn handle_create_session(
@@ -125,20 +129,26 @@ impl SessionManager {
         task_queue: &str,
         heartbeat_tx: Option<mpsc::UnboundedSender<HeartbeatRequest>>,
     ) -> Result<SessionInfo> {
-        // Fail at once when no slot is free rather than waiting for one.
-        let permit = self
-            .session_slots
-            .clone()
-            .try_acquire_owned()
-            .map_err(|_| {
-                Error::Worker(crate::error::WorkerError::ResourceExhausted {
-                    resource: format!(
-                        "session slots ({}/{} in use)",
-                        self.max_sessions - self.session_slots.available_permits(),
-                        self.max_sessions,
-                    ),
-                })
-            })?;
+        // Wait for a slot, but give up a little before the creation task's own
+        // timeout (also the creation timeout), so the workflow learns the real
+        // reason rather than a bare task timeout.
+        let wait = std::time::Duration::from_millis(input.creation_timeout_ms)
+            .saturating_sub(SLOT_WAIT_MARGIN);
+        let exhausted = || {
+            Error::Worker(crate::error::WorkerError::ResourceExhausted {
+                resource: format!(
+                    "session slots ({}/{} in use)",
+                    self.max_sessions - self.session_slots.available_permits(),
+                    self.max_sessions,
+                ),
+            })
+        };
+        let permit =
+            match tokio::time::timeout(wait, self.session_slots.clone().acquire_owned()).await {
+                Ok(Ok(permit)) => permit,
+                // Timed out, or the semaphore was closed.
+                Ok(Err(_)) | Err(_) => return Err(exhausted()),
+            };
 
         let session_queue = build_session_queue(task_queue, &self.resource_id);
         let cancel = tokio_util::sync::CancellationToken::new();
@@ -377,16 +387,63 @@ mod tests {
             .await
             .unwrap();
 
-        // The second finds no slot free.
+        // The second finds no slot free within its creation timeout.
         let input2 = CreateSessionInput {
             session_id: "session_2".to_string(),
-            creation_timeout_ms: 30000,
+            creation_timeout_ms: 700,
             execution_timeout_ms: 600000,
             max_concurrent_tasks: 1,
             heartbeat_interval_ms: 5000,
         };
+        let started = std::time::Instant::now();
         let result = manager.handle_create_session(input2, "default", None).await;
-        assert!(result.is_err());
+        assert!(matches!(
+            result,
+            Err(Error::Worker(
+                crate::error::WorkerError::ResourceExhausted { .. }
+            ))
+        ));
+        // It waited (the timeout minus the margin) before giving up.
+        assert!(started.elapsed() >= std::time::Duration::from_millis(150));
+    }
+
+    #[tokio::test]
+    async fn test_session_creation_waits_for_a_released_slot() {
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let manager = Arc::new(SessionManager::new(
+            SessionManagerConfig { max_sessions: 1 },
+            tx,
+        ));
+        let input = |id: &str| CreateSessionInput {
+            session_id: id.to_string(),
+            creation_timeout_ms: 10_000,
+            execution_timeout_ms: 600000,
+            max_concurrent_tasks: 1,
+            heartbeat_interval_ms: 5000,
+        };
+        manager
+            .handle_create_session(input("session_1"), "default", None)
+            .await
+            .unwrap();
+
+        // Release the only slot shortly after the second creation starts waiting.
+        let releaser = manager.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            releaser
+                .handle_complete_session(CompleteSessionInput {
+                    session_id: "session_1".to_string(),
+                })
+                .await
+                .unwrap();
+        });
+
+        let info = manager
+            .handle_create_session(input("session_2"), "default", None)
+            .await
+            .expect("creation should take the released slot");
+        assert_eq!(info.session_id, "session_2");
+        assert_eq!(manager.active_session_count(), 1);
     }
 
     #[tokio::test]
