@@ -286,7 +286,11 @@ async fn a_replayed_workflow_issues_every_step_under_the_id_it_first_had() {
         vec![
             ("task", "step_a_0".to_string(), "step_a".to_string()),
             ("timer", "timer_1".to_string(), String::new()),
-            ("child", "child_2".to_string(), "child_wf".to_string()),
+            (
+                "child",
+                "wf-replay-child-2".to_string(),
+                "child_wf".to_string()
+            ),
             ("closure", "closure_c_3".to_string(), String::new()),
             ("task", "step_b_4".to_string(), "step_b".to_string()),
         ],
@@ -295,7 +299,7 @@ async fn a_replayed_workflow_issues_every_step_under_the_id_it_first_had() {
     // Each step got its own result back.
     assert_eq!(
         output,
-        serde_json::json!(["step_a_0", "child_2", "closure ran", "step_b_4"])
+        serde_json::json!(["step_a_0", "wf-replay-child-2", "closure ran", "step_b_4"])
     );
 
     // Replayed from the finished journal, as a worker that never saw the run
@@ -483,4 +487,83 @@ async fn a_loop_cut_short_is_refused_where_the_journal_goes_on() {
         issued_steps(&result.commands),
         vec![("timer", "event_timeout_status_4".to_string(), String::new())]
     );
+}
+
+/// Two children started without an id, then a task.
+fn two_children_then_a_task() -> WorkflowHandlerFn {
+    Arc::new(|ctx: WorkflowContext, _input| {
+        Box::pin(async move {
+            let first: String = ctx.execute_child_workflow("child_wf", ()).await?;
+            let second: String = ctx.execute_child_workflow("child_wf", ()).await?;
+            let task: String = ctx.execute_task_by_name("step_b", 2).await?;
+            output_of(vec![first, second, task])
+        })
+    })
+}
+
+/// A run started by an SDK whose default child id was `child_{sequence}`,
+/// shared by every parent, and continued by this one: its first child is
+/// still running under that id. The replay finds the child under the id the
+/// journal holds rather than starting another under the new default, so no
+/// recorded step is left behind; a child the run had not started yet gets the
+/// new default.
+#[tokio::test]
+async fn a_run_started_under_the_old_default_child_id_replays_to_its_child() {
+    let runtime = runtime_with(two_children_then_a_task()).await;
+    let mut engine = FakeEngine::new();
+    engine.append(
+        EntryType::ChildWorkflowExecutionStarted,
+        Attributes::ChildWorkflowExecutionStarted(ChildWorkflowExecutionStartedEventAttributes {
+            workflow_id: "child_0".into(),
+            workflow_type: "child_wf".into(),
+            ..Default::default()
+        }),
+    );
+
+    // The child is still running: at most its start is issued again, under
+    // the id it has, which the engine answers with the running child.
+    let result = activate(&runtime, &engine).await;
+    assert_eq!(
+        result.reached_steps.as_deref(),
+        Some(&["child_0".to_string()][..])
+    );
+    for step in issued_steps(&result.commands) {
+        assert_eq!(
+            step,
+            ("child", "child_0".to_string(), "child_wf".to_string())
+        );
+    }
+
+    // It completes, and the run goes on to the end.
+    engine.append(
+        EntryType::ChildWorkflowExecutionCompleted,
+        Attributes::ChildWorkflowExecutionCompleted(
+            ChildWorkflowExecutionCompletedEventAttributes {
+                workflow_id: "child_0".into(),
+                result: serde_json::to_vec("child_0").unwrap(),
+                ..Default::default()
+            },
+        ),
+    );
+    let (issued, output) = run_to_completion(&runtime, &mut engine).await;
+    assert_eq!(
+        issued,
+        vec![
+            (
+                "child",
+                "wf-replay-child-1".to_string(),
+                "child_wf".to_string()
+            ),
+            ("task", "step_b_2".to_string(), "step_b".to_string()),
+        ]
+    );
+    assert_eq!(
+        output,
+        serde_json::json!(["child_0", "wf-replay-child-1", "step_b_2"])
+    );
+
+    // Replayed from the finished journal: nothing is issued again.
+    let replay = activate(&runtime, &engine).await;
+    assert_eq!(issued_steps(&replay.commands), Vec::<Issued>::new());
+    assert_eq!(completion(&replay), Some(output));
 }
