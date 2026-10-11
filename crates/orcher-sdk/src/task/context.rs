@@ -17,8 +17,9 @@ use tokio::sync::mpsc;
 /// task's heartbeat timeout, so a long task needs no heartbeat code to stay
 /// alive, and one whose worker dies is timed out and retried. A task calls
 /// `heartbeat` to report progress: the details are sent with the next
-/// heartbeat due, and handed to its next attempt should this one fail. The
-/// heartbeat's answer is also how the engine asks a task to stop; see
+/// heartbeat due. They are not handed to a later attempt; a retried task
+/// starts without them, so keep anything it must resume from in its own
+/// storage. The heartbeat's answer is also how the engine asks a task to stop; see
 /// [`is_cancelled`](Self::is_cancelled).
 ///
 /// ```rust
@@ -185,8 +186,8 @@ impl TaskContext {
 
     /// Send a heartbeat with optional progress details.
     ///
-    /// The details can be any serializable value. They are handed to the next
-    /// attempt if this one fails.
+    /// The details can be any serializable value. They report progress only:
+    /// a retried attempt does not receive them.
     ///
     /// # Example
     ///
