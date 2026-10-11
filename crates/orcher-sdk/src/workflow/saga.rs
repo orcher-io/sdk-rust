@@ -111,7 +111,7 @@ use std::collections::VecDeque;
 /// let booking: HotelBooking = ctx.execute_task("book_hotel", "trip-1".to_string()).await?;
 ///
 /// // If a later step fails, cancel_hotel runs with this booking id.
-/// saga.add_compensation("cancel_hotel", booking.booking_id);
+/// saga.add_compensation("cancel_hotel", booking.booking_id)?;
 /// # Ok(())
 /// # }
 /// ```
@@ -212,8 +212,15 @@ impl Saga {
     /// Registers a compensation for an action you ran yourself.
     ///
     /// Use this when the action is not run through [`Saga::add_step`]. The
-    /// task can be a string literal or a task reference. If the input cannot
-    /// be serialized, the compensation is registered with an empty input.
+    /// task can be a string literal or a task reference.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Serialization`] naming the task and the cause if the
+    /// input cannot be serialized; nothing is registered. The input is encoded
+    /// here, not when the saga compensates, so a value that cannot be encoded
+    /// is reported where it is passed in rather than when the compensation is
+    /// needed.
     ///
     /// # Example
     ///
@@ -231,19 +238,26 @@ impl Saga {
     /// let booking: Booking = ctx.execute_task("book_hotel", "trip-1".to_string()).await?;
     ///
     /// // If a later step fails, cancel_hotel runs with this booking id.
-    /// saga.add_compensation("cancel_hotel", booking.id);
+    /// saga.add_compensation("cancel_hotel", booking.id)?;
     /// # Ok(())
     /// # }
     /// ```
-    pub fn add_compensation<T, C>(&mut self, compensation_task: T, compensation_input: C)
+    pub fn add_compensation<T, C>(
+        &mut self,
+        compensation_task: T,
+        compensation_input: C,
+    ) -> Result<()>
     where
         T: IntoTaskName,
         C: Serialize,
     {
         let compensation_task = compensation_task.into_task_name();
+        let compensation_bytes = serde_json::to_vec(&compensation_input).map_err(|e| {
+            Error::Serialization(format!(
+                "input for compensation '{compensation_task}' could not be serialized: {e}"
+            ))
+        })?;
         self.steps_executed += 1;
-
-        let compensation_bytes = serde_json::to_vec(&compensation_input).unwrap_or_else(|_| vec![]);
 
         self.compensations.push_back(CompensationEntry {
             compensation_task,
@@ -256,6 +270,7 @@ impl Saga {
             compensation = %compensation_task,
             "Registered saga compensation"
         );
+        Ok(())
     }
 
     /// Runs the compensations of all completed steps, in reverse order.
@@ -463,7 +478,7 @@ where
             Ok(result) => {
                 if let Some(compensation_task) = self.compensation_task {
                     self.saga
-                        .add_compensation(compensation_task, self.action_input);
+                        .add_compensation(compensation_task, self.action_input)?;
                 }
 
                 tracing::info!(
@@ -542,6 +557,35 @@ mod tests {
     const BOOK_HOTEL: MockTaskRef = MockTaskRef("book_hotel");
     const CANCEL_HOTEL: MockTaskRef = MockTaskRef("cancel_hotel");
 
+    /// A value whose `Serialize` impl always fails.
+    struct Unserializable;
+
+    impl Serialize for Unserializable {
+        fn serialize<S: serde::Serializer>(&self, _: S) -> std::result::Result<S::Ok, S::Error> {
+            Err(serde::ser::Error::custom("deliberately unserializable"))
+        }
+    }
+
+    #[test]
+    fn add_compensation_reports_an_input_that_cannot_be_serialized() {
+        let mut saga = Saga::new();
+
+        let err = saga
+            .add_compensation("cancel_hotel", Unserializable)
+            .unwrap_err();
+
+        match err {
+            Error::Serialization(message) => {
+                assert!(message.contains("cancel_hotel"), "{message}");
+                assert!(message.contains("deliberately unserializable"), "{message}");
+            }
+            other => panic!("expected a serialization error, got {other:?}"),
+        }
+        // Nothing is registered for the rejected compensation.
+        assert_eq!(saga.steps_executed(), 0);
+        assert_eq!(saga.pending_compensations(), 0);
+    }
+
     #[test]
     fn test_saga_new() {
         let saga = Saga::new();
@@ -554,11 +598,12 @@ mod tests {
     fn test_saga_add_compensation() {
         let mut saga = Saga::new();
 
-        saga.add_compensation("cancel_hotel", "hotel-123");
+        saga.add_compensation("cancel_hotel", "hotel-123").unwrap();
         assert_eq!(saga.steps_executed(), 1);
         assert_eq!(saga.pending_compensations(), 1);
 
-        saga.add_compensation("cancel_flight", "flight-456");
+        saga.add_compensation("cancel_flight", "flight-456")
+            .unwrap();
         assert_eq!(saga.steps_executed(), 2);
         assert_eq!(saga.pending_compensations(), 2);
     }
@@ -567,11 +612,12 @@ mod tests {
     fn test_saga_add_compensation_with_task_reference() {
         let mut saga = Saga::new();
 
-        saga.add_compensation(CANCEL_HOTEL, "hotel-123");
+        saga.add_compensation(CANCEL_HOTEL, "hotel-123").unwrap();
         assert_eq!(saga.steps_executed(), 1);
         assert_eq!(saga.pending_compensations(), 1);
 
-        saga.add_compensation("cancel_flight", "flight-456");
+        saga.add_compensation("cancel_flight", "flight-456")
+            .unwrap();
         assert_eq!(saga.steps_executed(), 2);
         assert_eq!(saga.pending_compensations(), 2);
     }
@@ -579,7 +625,7 @@ mod tests {
     #[test]
     fn test_saga_commit() {
         let mut saga = Saga::new();
-        saga.add_compensation("cancel_hotel", "hotel-123");
+        saga.add_compensation("cancel_hotel", "hotel-123").unwrap();
 
         saga.commit();
         assert!(saga.is_completed());
@@ -598,10 +644,11 @@ mod tests {
         // through `IntoTaskName`.
         let mut saga = Saga::new();
 
-        saga.add_compensation(CANCEL_HOTEL, "booking-123");
+        saga.add_compensation(CANCEL_HOTEL, "booking-123").unwrap();
         assert_eq!(saga.steps_executed(), 1);
 
-        saga.add_compensation("cancel_flight", "booking-456");
+        saga.add_compensation("cancel_flight", "booking-456")
+            .unwrap();
         assert_eq!(saga.steps_executed(), 2);
 
         assert_eq!(saga.pending_compensations(), 2);
