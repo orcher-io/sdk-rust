@@ -108,7 +108,9 @@ impl TaskOptions {
 #[derive(Debug, Clone, Default)]
 #[non_exhaustive]
 pub struct ChildWorkflowOptions {
-    /// Child workflow ID. If not set, a unique one is generated.
+    /// Child workflow ID. If not set, one is derived from the parent's workflow id and
+    /// where the child is started in the parent's code (`{parent id}-child-{sequence}`):
+    /// the same on every replay, and different for every parent.
     pub workflow_id: Option<String>,
 
     /// Maximum time for the child workflow to complete.

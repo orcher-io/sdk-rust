@@ -10,7 +10,7 @@ use crate::workflow::{
 };
 use crate::workflow::{WorkflowRand, WorkflowTime};
 use serde::{de::DeserializeOwned, Serialize};
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::future::Future;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -76,6 +76,11 @@ pub(crate) struct ContextState {
     /// activation's jobs (journal order) when known.
     pub(crate) fired_timers: HashMap<String, Option<usize>>,
     pub(crate) child_workflows: HashMap<String, ChildWorkflowHandle>,
+    /// The ids of the children the journal records this run starting. A child the code
+    /// starts without an id is started under the id the journal holds for it, when the
+    /// journal holds one from an earlier SDK's default; see
+    /// [`default_child_workflow_id`](WorkflowContext::default_child_workflow_id).
+    pub(crate) journaled_children: HashSet<String>,
     /// Events received before a matching `wait_for_event`, per name, oldest first, each
     /// with its job position (journal order) when known.
     pub(crate) event_buffer: HashMap<String, BufferedEvents>,
@@ -192,6 +197,7 @@ impl WorkflowContext {
             task_queue_override: None,
             fired_timers: HashMap::new(),
             child_workflows: HashMap::new(),
+            journaled_children: HashSet::new(),
             event_buffer: HashMap::new(),
             event_timeout_waits: HashMap::new(),
             reached_steps: Vec::new(),
@@ -612,7 +618,7 @@ impl WorkflowContext {
         let workflow_id = options
             .workflow_id
             .clone()
-            .unwrap_or_else(|| format!("child_{}", sequence));
+            .unwrap_or_else(|| self.default_child_workflow_id(sequence));
         self.reach_step(&workflow_id);
 
         let run_id = format!("run_{}", uuid::Uuid::new_v4());
@@ -1796,6 +1802,39 @@ impl WorkflowContext {
         self.mark_timer_fired_at(timer_id, None);
     }
 
+    /// The id of a child started without one, at step `sequence`.
+    ///
+    /// It is derived from the parent's workflow id and the step sequence, so it is the
+    /// same on every replay and differs between parents: children of two parents, each
+    /// started at the same point in its parent's code, do not share an id.
+    ///
+    /// SDKs up to 0.9.0 used `child_{sequence}`, which every parent shared. A run that
+    /// started a child under that id keeps it: if the journal records `child_{sequence}`,
+    /// the child at this sequence is that one, so a run that began under the old default
+    /// replays to the same child rather than starting another.
+    pub(crate) fn default_child_workflow_id(&self, sequence: u64) -> String {
+        let legacy = format!("child_{}", sequence);
+        if self
+            .state
+            .lock()
+            .unwrap()
+            .journaled_children
+            .contains(&legacy)
+        {
+            return legacy;
+        }
+        format!("{}-child-{}", self.execution.workflow_id, sequence)
+    }
+
+    /// Records that the journal holds a child started under `workflow_id`.
+    pub(crate) fn record_journaled_child(&self, workflow_id: String) {
+        self.state
+            .lock()
+            .unwrap()
+            .journaled_children
+            .insert(workflow_id);
+    }
+
     /// Records when the engine journaled the result held under `key` (milliseconds since
     /// the UNIX epoch), for the workflow's clock to move to when the result is received.
     /// The first time recorded for a key stands.
@@ -1877,6 +1916,61 @@ mod tests {
         };
 
         WorkflowContext::new(execution, false, "1.0".to_string())
+    }
+
+    // Child workflow ids
+
+    fn context_of(parent_id: &str) -> WorkflowContext {
+        let execution = WorkflowExecution {
+            workflow_id: parent_id.to_string(),
+            run_id: format!("{parent_id}-run"),
+            workflow_type: "ParentWorkflow".to_string(),
+            attempt: 1,
+            namespace: "default".to_string(),
+            task_queue: "test-queue".to_string(),
+        };
+        WorkflowContext::new(execution, false, "1.0".to_string())
+    }
+
+    #[tokio::test]
+    async fn children_of_different_parents_get_different_default_ids() {
+        let a = context_of("order-a")
+            .start_child_workflow("charge", ())
+            .await
+            .unwrap();
+        let b = context_of("order-b")
+            .start_child_workflow("charge", ())
+            .await
+            .unwrap();
+
+        assert_ne!(a.id(), b.id());
+        assert_eq!(a.id(), "order-a-child-0");
+        assert_eq!(b.id(), "order-b-child-0");
+    }
+
+    #[tokio::test]
+    async fn a_default_child_id_is_the_same_on_every_replay() {
+        let mut ids = Vec::new();
+        for _ in 0..2 {
+            let ctx = context_of("order-a");
+            ctx.execute_task::<_, _, ()>("reserve", ()).await.ok();
+            let child = ctx.start_child_workflow("charge", ()).await.unwrap();
+            ids.push(child.id().to_string());
+        }
+        assert_eq!(ids, ["order-a-child-1", "order-a-child-1"]);
+    }
+
+    #[tokio::test]
+    async fn an_explicit_child_id_is_kept() {
+        let child = context_of("order-a")
+            .start_child_workflow_with_options(
+                "charge",
+                (),
+                ChildWorkflowOptions::new().workflow_id("charge-order-a"),
+            )
+            .await
+            .unwrap();
+        assert_eq!(child.id(), "charge-order-a");
     }
 
     // Cancellation requests
