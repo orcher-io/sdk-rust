@@ -699,16 +699,14 @@ impl ExecutionRuntime {
                         // replay and raise a catchable error, as the ChildWorkflowFailed arm
                         // does. Dropping the failure would leave replay with no result, and the
                         // task would be re-executed forever.
-                        let error_bytes = serde_json::to_vec(&serde_json::json!({
-                            crate::error::TASK_FAILED_SENTINEL_KEY: true,
-                            "message": failure.message,
-                            "error_type": failure.failure_type,
-                            // How many times the task actually ran. The decode side falls back
-                            // to 1 when this is missing, which would report a task that
-                            // exhausted its retries as having run once.
-                            "attempts": complete_step.execution_attempt,
-                        }))
-                        .unwrap_or_default();
+                        // `attempts` is how many times the task actually ran. The decode
+                        // side falls back to 1 when it is missing, which would report a
+                        // task that exhausted its retries as having run once.
+                        let error_bytes = crate::workflow::executable::encode_task_failure(
+                            &failure.message,
+                            &failure.failure_type,
+                            complete_step.execution_attempt,
+                        );
                         ctx.inject_step_result(complete_step.step_name.clone(), error_bytes);
                     } else {
                         ctx.inject_step_result(

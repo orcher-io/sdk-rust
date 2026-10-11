@@ -483,6 +483,21 @@ where
     }
 }
 
+/// Encodes a terminal task failure the way it is journaled: the JSON sentinel
+/// that [`decode_task_result`] raises as `TaskFailed`.
+///
+/// `attempts` is how many times the task ran; the decode side reports it.
+pub(crate) fn encode_task_failure(message: &str, error_type: &str, attempts: i32) -> Vec<u8> {
+    serde_json::to_vec(&serde_json::json!({
+        crate::error::TASK_FAILED_SENTINEL_KEY: true,
+        "message": message,
+        "error_type": error_type,
+        "attempts": attempts,
+    }))
+    // A JSON object of strings and a number always serializes.
+    .expect("task failure sentinel serializes")
+}
+
 /// Decodes the journaled result of the task `task_id`, of type `task_type`.
 ///
 /// A task that failed for good is journaled as a JSON sentinel (see

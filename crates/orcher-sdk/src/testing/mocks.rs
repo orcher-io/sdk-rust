@@ -185,8 +185,9 @@ impl MockTaskBuilder {
 
     /// Return the values in order, one per call.
     ///
-    /// Once the values run out, further calls fail. Pass the success values directly;
-    /// to mock a failure, use [`fails_with`](Self::fails_with).
+    /// Once the values run out, further calls fail the task, as
+    /// [`fails_with`](Self::fails_with) does. Pass the success values directly; to mock
+    /// a failure, use `fails_with`.
     ///
     /// # Panics
     ///
@@ -263,6 +264,12 @@ impl MockTaskBuilder {
     }
 
     /// Fail every call with `message`.
+    ///
+    /// Under [`TestWorkflowExecutor`](crate::testing::TestWorkflowExecutor) the
+    /// workflow sees the failure as it would from an engine, as a
+    /// `WorkflowError::TaskFailed` whose `reason` is `message`, so a test can check
+    /// how the workflow handles it: catching it, falling back, or compensating. The
+    /// executor does not retry, so `attempts` is 1.
     ///
     /// # Example
     ///
