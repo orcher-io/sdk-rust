@@ -314,6 +314,12 @@ impl ExecutionRuntime {
             started_at_ms,
         );
 
+        // The children the journal records, so a child started without an id
+        // keeps the id the journal holds for it, whichever SDK chose it.
+        for child_id in task.journal.iter().filter_map(journaled_child_id) {
+            ctx.record_journaled_child(child_id);
+        }
+
         // On replay, give the context the recorded results so completed steps
         // return them instead of running again.
         if execution_request.is_replaying {
@@ -1098,6 +1104,20 @@ impl JournalTimes {
         }
         times
     }
+}
+
+/// The id of the child a journal entry is about, if it is about one.
+fn journaled_child_id(entry: &JournalEntry) -> Option<String> {
+    let id = match entry.attributes.as_ref()? {
+        Attributes::ChildWorkflowExecutionStarted(a) => &a.workflow_id,
+        Attributes::ChildWorkflowExecutionCompleted(a) => &a.workflow_id,
+        Attributes::ChildWorkflowExecutionFailed(a) => &a.workflow_id,
+        Attributes::ChildWorkflowExecutionCanceled(a) => &a.workflow_id,
+        Attributes::ChildWorkflowExecutionTerminated(a) => &a.workflow_id,
+        Attributes::ChildWorkflowExecutionTimedOut(a) => &a.workflow_id,
+        _ => return None,
+    };
+    (!id.is_empty()).then(|| id.clone())
 }
 
 /// Records that a child ended without a result, so `result()` raises

@@ -423,9 +423,9 @@ pub struct EventTimeoutResult {
 /// Parks on `contract_event` with a two-second timeout that nobody satisfies,
 /// and reports whether the timeout fired.
 ///
-/// No SDK evaluates this timeout and the engine never receives it, so the
-/// workflow waits forever. The scenario is marked as a known gap and passes
-/// once the timeout is implemented.
+/// The deadline is a durable timer the SDK starts beside the wait, so the
+/// engine fires it even while no worker holds the workflow, and the workflow
+/// completes with `timed_out` set.
 #[workflow(name = "wait_for_event_timeout")]
 pub async fn wait_for_event_timeout(
     ctx: WorkflowContext,
