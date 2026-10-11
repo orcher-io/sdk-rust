@@ -159,51 +159,7 @@ where
 
         if replaying {
             if let Some(result_bytes) = cached_result {
-                // A journaled result is never empty; an empty one means the result
-                // was lost when it was injected into the context.
-                if result_bytes.is_empty() {
-                    tracing::error!(
-                        task_id = %task_id,
-                        step_name = %step_name,
-                        "🔴 TASK_EXEC: Found EMPTY cached result during replay - this should never happen!"
-                    );
-                    return Err(Error::Workflow(crate::error::WorkflowError::StateError(
-                        format!(
-                            "Invalid replay state: Task '{}' has empty result in cache. \
-                             This indicates a bug in result injection or journal conversion.",
-                            step_name
-                        ),
-                    )));
-                }
-
-                // The engine journals a task that failed for good as a JSON sentinel
-                // result (see TASK_FAILED_SENTINEL_KEY). Raise it as a catchable
-                // TaskFailed error rather than deserializing it as a success value, so
-                // workflow code and saga compensation can observe the failure.
-                if let Ok(v) = serde_json::from_slice::<serde_json::Value>(&result_bytes) {
-                    if v.get(crate::error::TASK_FAILED_SENTINEL_KEY)
-                        .and_then(|b| b.as_bool())
-                        .unwrap_or(false)
-                    {
-                        let reason = v
-                            .get("message")
-                            .and_then(|m| m.as_str())
-                            .unwrap_or("task failed")
-                            .to_string();
-                        tracing::info!(
-                            task_id = %task_id,
-                            step_name = %step_name,
-                            reason = %reason,
-                            "Replaying terminal task failure from journal"
-                        );
-                        return Err(Error::Workflow(crate::error::WorkflowError::TaskFailed {
-                            task_type: step_name.to_string(),
-                            attempts: v.get("attempts").and_then(|a| a.as_u64()).unwrap_or(1)
-                                as u32,
-                            reason,
-                        }));
-                    }
-                }
+                let output: O = decode_task_result(&task_id, step_name, &result_bytes)?;
 
                 counter!(
                     "orcher.workflow.execute.cache_hits",
@@ -211,30 +167,6 @@ where
                     "step_type" => "task"
                 )
                 .increment(1);
-
-                tracing::debug!(
-                    task_id = %task_id,
-                    step_name = %step_name,
-                    result_len = result_bytes.len(),
-                    "Replaying task execution from journal"
-                );
-
-                let output: O = serde_json::from_slice(&result_bytes).map_err(|e| {
-                    tracing::error!(
-                        task_id = %task_id,
-                        step_name = %step_name,
-                        result_len = result_bytes.len(),
-                        result_preview = ?&result_bytes[..result_bytes.len().min(100)],
-                        error = %e,
-                        "🔴 TASK_EXEC: Failed to deserialize cached result"
-                    );
-                    Error::Serialization(format!(
-                        "Failed to deserialize task result for '{}': {} (result length: {})",
-                        step_name,
-                        e,
-                        result_bytes.len()
-                    ))
-                })?;
 
                 histogram!(
                     "orcher.workflow.step.duration_ms",
@@ -549,6 +481,75 @@ where
 
         Ok(result)
     }
+}
+
+/// Decodes the journaled result of the task `task_id`, of type `task_type`.
+///
+/// A task that failed for good is journaled as a JSON sentinel (see
+/// `TASK_FAILED_SENTINEL_KEY`), raised here as a catchable `TaskFailed` error rather
+/// than deserialized as a success value, so workflow code and saga compensation can
+/// observe the failure. Every way of running a task decodes its result here.
+pub(crate) fn decode_task_result<O: DeserializeOwned>(
+    task_id: &str,
+    task_type: &str,
+    result_bytes: &[u8],
+) -> Result<O> {
+    // A journaled result is never empty; an empty one means the result was lost
+    // when it was injected into the context.
+    if result_bytes.is_empty() {
+        tracing::error!(
+            task_id = %task_id,
+            task_type = %task_type,
+            "Found an empty journaled task result during replay"
+        );
+        return Err(Error::Workflow(crate::error::WorkflowError::StateError(
+            format!(
+                "Invalid replay state: Task '{}' has empty result in cache. \
+                 This indicates a bug in result injection or journal conversion.",
+                task_type
+            ),
+        )));
+    }
+
+    if let Ok(v) = serde_json::from_slice::<serde_json::Value>(result_bytes) {
+        if v.get(crate::error::TASK_FAILED_SENTINEL_KEY)
+            .and_then(|b| b.as_bool())
+            .unwrap_or(false)
+        {
+            let reason = v
+                .get("message")
+                .and_then(|m| m.as_str())
+                .unwrap_or("task failed")
+                .to_string();
+            tracing::info!(
+                task_id = %task_id,
+                task_type = %task_type,
+                reason = %reason,
+                "Replaying terminal task failure from journal"
+            );
+            return Err(Error::Workflow(crate::error::WorkflowError::TaskFailed {
+                task_type: task_type.to_string(),
+                attempts: v.get("attempts").and_then(|a| a.as_u64()).unwrap_or(1) as u32,
+                reason,
+            }));
+        }
+    }
+
+    serde_json::from_slice(result_bytes).map_err(|e| {
+        tracing::error!(
+            task_id = %task_id,
+            task_type = %task_type,
+            result_len = result_bytes.len(),
+            error = %e,
+            "Failed to deserialize journaled task result"
+        );
+        Error::Serialization(format!(
+            "Failed to deserialize task result for '{}': {} (result length: {})",
+            task_type,
+            e,
+            result_bytes.len()
+        ))
+    })
 }
 
 // ============================================================================

@@ -392,10 +392,13 @@ impl WorkflowContext {
                 );
                 state.observe(&task_id);
 
-                let output: O = serde_json::from_slice(result_bytes).map_err(|e| {
-                    Error::Serialization(format!("Failed to deserialize task result: {}", e))
-                })?;
-                return Ok(output);
+                // Decoded as `execute_task` decodes it, so a task that failed for good
+                // raises `TaskFailed` here too.
+                return crate::workflow::executable::decode_task_result(
+                    &task_id,
+                    task_type,
+                    result_bytes,
+                );
             } else {
                 tracing::warn!(
                     task_id = %task_id,
@@ -1916,6 +1919,91 @@ mod tests {
         };
 
         WorkflowContext::new(execution, false, "1.0".to_string())
+    }
+
+    // Terminal task failures
+
+    /// The result the runtime injects for a task that failed for good.
+    fn task_failure_sentinel(message: &str, attempts: u32) -> Vec<u8> {
+        serde_json::to_vec(&serde_json::json!({
+            crate::error::TASK_FAILED_SENTINEL_KEY: true,
+            "message": message,
+            "error_type": "TaskError",
+            "attempts": attempts,
+        }))
+        .unwrap()
+    }
+
+    fn task_failed(result: Result<String>) -> (String, u32, String) {
+        match result {
+            Err(Error::Workflow(crate::error::WorkflowError::TaskFailed {
+                task_type,
+                attempts,
+                reason,
+            })) => (task_type, attempts, reason),
+            other => panic!("expected TaskFailed, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn execute_task_raises_a_terminal_task_failure() {
+        let ctx = create_test_context();
+        ctx.set_replaying_for_test(true);
+        ctx.inject_step_result(
+            "charge_0".to_string(),
+            task_failure_sentinel("card declined", 3),
+        );
+
+        let result = ctx.execute_task::<_, _, String>("charge", 5u32).await;
+
+        assert_eq!(
+            task_failed(result),
+            ("charge".to_string(), 3, "card declined".to_string())
+        );
+    }
+
+    #[tokio::test]
+    #[allow(deprecated)]
+    async fn execute_task_with_options_raises_a_terminal_task_failure() {
+        let ctx = create_test_context();
+        ctx.set_replaying_for_test(true);
+        ctx.inject_step_result(
+            "task_0".to_string(),
+            task_failure_sentinel("card declined", 3),
+        );
+
+        let result = ctx
+            .execute_task_with_options::<_, String>("charge", 5u32, TaskOptions::default())
+            .await;
+
+        assert_eq!(
+            task_failed(result),
+            ("charge".to_string(), 3, "card declined".to_string())
+        );
+    }
+
+    #[tokio::test]
+    #[allow(deprecated)]
+    async fn execute_task_with_options_raises_a_failure_under_a_given_task_id() {
+        let ctx = create_test_context();
+        ctx.set_replaying_for_test(true);
+        ctx.inject_step_result(
+            "charge-once".to_string(),
+            task_failure_sentinel("timed out", 1),
+        );
+
+        let result = ctx
+            .execute_task_with_options::<_, String>(
+                "charge",
+                5u32,
+                TaskOptions::default().with_task_id("charge-once"),
+            )
+            .await;
+
+        assert_eq!(
+            task_failed(result),
+            ("charge".to_string(), 1, "timed out".to_string())
+        );
     }
 
     // Child workflow ids
