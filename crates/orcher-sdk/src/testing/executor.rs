@@ -3,27 +3,76 @@
 
 use crate::error::{Error, Result};
 use crate::testing::mocks::MockRegistry;
-use crate::workflow::{ScheduleTaskCommand, WorkflowCommand, WorkflowContext, WorkflowExecution};
+use crate::workflow::{WorkflowCommand, WorkflowContext, WorkflowExecution};
 use serde::{de::DeserializeOwned, Serialize};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashSet};
 use std::sync::{Arc, RwLock};
+use std::time::Duration;
 
-/// Runs a workflow in memory, serving its tasks from a [`MockRegistry`].
+/// Runs a workflow in memory, serving its tasks and child workflows from mocks, and
+/// skipping through its timers.
 ///
-/// Each time the workflow suspends on tasks, the executor runs their mocks and
-/// replays the workflow from the start with the results injected, the same way a
-/// worker replays history. A mock that fails the task reaches the workflow as
-/// `TaskFailed`; a missing mock, or a mock whose input or result does not serialize,
-/// stops the run with an error. Only task suspensions are handled: a workflow that
-/// waits on a timer, event or child workflow returns an error.
+/// The executor keeps a journal of what the workflow has been given: task results,
+/// child workflow outcomes, fired timers and delivered events. Each time the workflow
+/// suspends, it resolves what the workflow scheduled and replays the workflow from the
+/// start against the journal, the same way a worker replays history.
+///
+/// - **Tasks** are answered by the mocks passed to [`new`](Self::new). A mock that
+///   fails the task reaches the workflow as `TaskFailed`.
+/// - **Child workflows** are answered by the mocks passed to
+///   [`with_child_mocks`](Self::with_child_mocks), keyed by child workflow type. A
+///   mock that fails reaches the parent as `ChildWorkflowFailed`.
+/// - **Events** are the ones given with [`with_event`](Self::with_event) and
+///   [`with_event_after`](Self::with_event_after).
+/// - **Time** is virtual and starts when the run starts. Tasks and child workflows
+///   finish instantly. When the workflow can make no progress until something
+///   happens, the executor jumps the clock to the earliest timer or event due and
+///   delivers it, so a `sleep` of a day returns at once with the workflow's clock a
+///   day later. [`elapsed`](Self::elapsed) reports how much time a run skipped.
+///
+/// A missing mock, a mock whose input or result does not serialize, or a workflow left
+/// waiting with no timer or event to come stops the run with an error.
 pub struct TestWorkflowExecutor {
     mocks: Arc<RwLock<MockRegistry>>,
-
+    /// Mocks for child workflows, keyed by child workflow type.
+    child_mocks: Arc<RwLock<MockRegistry>>,
+    /// Events to deliver, with how long after the start each is sent.
+    events: Vec<(Duration, String, Vec<u8>)>,
     /// Replay limit, so a workflow that keeps scheduling tasks cannot loop forever
     max_steps: usize,
-
     /// Log each step through `tracing`
     verbose: bool,
+    /// Virtual time the last run skipped.
+    elapsed: Duration,
+}
+
+/// One thing the journal records the workflow as having been given, with the
+/// virtual time (ms since the epoch) it was recorded at.
+enum Entry {
+    Task {
+        id: String,
+        result: Vec<u8>,
+        at: i64,
+    },
+    Step {
+        name: String,
+        result: Vec<u8>,
+        at: i64,
+    },
+    Child {
+        id: String,
+        result: Vec<u8>,
+        at: i64,
+    },
+    Timer {
+        id: String,
+        at: i64,
+    },
+    Event {
+        name: String,
+        payload: Vec<u8>,
+        at: i64,
+    },
 }
 
 impl TestWorkflowExecutor {
@@ -31,8 +80,11 @@ impl TestWorkflowExecutor {
     pub fn new(mocks: Arc<RwLock<MockRegistry>>) -> Self {
         Self {
             mocks,
+            child_mocks: Arc::new(RwLock::new(MockRegistry::new())),
+            events: Vec::new(),
             max_steps: 1000,
             verbose: false,
+            elapsed: Duration::ZERO,
         }
     }
 
@@ -48,56 +100,106 @@ impl TestWorkflowExecutor {
         self
     }
 
-    /// Run a context-aware workflow to completion, serving its tasks from mocks.
+    /// Answer the child workflows the workflow starts from `mocks`, keyed by child
+    /// workflow type.
     ///
-    /// Each step builds a fresh context holding every task result so far (in replay
-    /// mode once there are results) and runs the workflow in it. If the workflow
-    /// suspends, the executor reads the commands it scheduled from a clone of that
-    /// context, runs the mock for each new task, and runs the workflow again. Tasks
-    /// that already have a result are not run twice.
+    /// Register them with [`MockTaskBuilder`](crate::testing::MockTaskBuilder), naming
+    /// the child workflow type where a task type would go. The child's input is what
+    /// the mock receives, and what it returns is the child's result.
+    pub fn with_child_mocks(mut self, mocks: Arc<RwLock<MockRegistry>>) -> Self {
+        self.child_mocks = mocks;
+        self
+    }
+
+    /// Send the event `name` to the workflow when it starts, as if the client sent it
+    /// before the first run. The workflow receives it at its first matching
+    /// `wait_for_event`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `payload` does not serialize to JSON.
+    pub fn with_event<T: Serialize>(self, name: impl Into<String>, payload: T) -> Self {
+        self.with_event_after(Duration::ZERO, name, payload)
+    }
+
+    /// Send the event `name` to the workflow `delay` after it starts, in virtual time.
+    ///
+    /// The executor reaches that time once the workflow is waiting with nothing else to
+    /// do sooner, so a `wait_for_event_with_timeout` shorter than `delay` times out and
+    /// one longer receives the event.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `payload` does not serialize to JSON.
+    pub fn with_event_after<T: Serialize>(
+        mut self,
+        delay: Duration,
+        name: impl Into<String>,
+        payload: T,
+    ) -> Self {
+        let payload = serde_json::to_vec(&payload).expect("event payload serializes to JSON");
+        self.events.push((delay, name.into(), payload));
+        self
+    }
+
+    /// Virtual time the last run skipped through timers and events.
+    pub fn elapsed(&self) -> Duration {
+        self.elapsed
+    }
+
+    /// Run a context-aware workflow to completion, serving its tasks and child
+    /// workflows from mocks and skipping through its timers.
     ///
     /// # Errors
     ///
-    /// Returns the workflow's own error, or an error if a scheduled task has no mock,
-    /// the workflow suspends on something other than a task, or it takes more than
-    /// the step limit.
+    /// Returns the workflow's own error, or an error if a scheduled task or child
+    /// workflow has no mock, a mock's input or result does not serialize, the workflow
+    /// is left waiting with no timer or event to come, or it takes more than the step
+    /// limit.
     ///
     /// # Example
     ///
     /// ```rust
-    /// # use orcher_sdk::testing::TestWorkflowExecutor;
-    /// # use orcher_sdk::testing::MockRegistry;
-    /// # use orcher_sdk::workflow::{WorkflowContext, WorkflowExecution};
     /// # use orcher_sdk::prelude::*;
+    /// # use orcher_sdk::testing::{MockRegistry, MockTaskBuilder, TestWorkflowExecutor};
+    /// # use orcher_sdk::workflow::WorkflowExecution;
     /// # use std::sync::{Arc, RwLock};
-    /// # async fn example() -> Result<()> {
-    /// let mut registry = MockRegistry::new();
-    /// registry.register("my_task".to_string(),
-    ///     orcher_sdk::testing::TaskMock::Fixed {
-    ///         result: serde_json::to_vec(&"result")?
+    /// # use std::time::Duration;
+    /// # #[tokio::main(flavor = "current_thread")]
+    /// # async fn main() -> Result<()> {
+    /// let mocks = Arc::new(RwLock::new(MockRegistry::new()));
+    /// MockTaskBuilder::new("send_reminder".to_string(), mocks.clone()).returns(true);
+    ///
+    /// // Waits a day for approval, and sends a reminder if none comes.
+    /// let approve = |ctx: WorkflowContext, _: ()| async move {
+    ///     let day = Duration::from_secs(24 * 3600);
+    ///     match ctx.wait_for_event_with_timeout::<bool>("approved", day).await? {
+    ///         Some(approved) => Ok(approved),
+    ///         None => {
+    ///             let _: bool = ctx.execute_task("send_reminder", ()).await?;
+    ///             Ok(false)
+    ///         }
     ///     }
-    /// );
-    ///
-    /// let mocks = Arc::new(RwLock::new(registry));
-    /// let mut executor = TestWorkflowExecutor::new(mocks);
-    ///
-    /// let execution = WorkflowExecution {
-    ///     workflow_id: "test-wf-1".to_string(),
-    ///     run_id: "test-run-1".to_string(),
-    ///     workflow_type: "TestWorkflow".to_string(),
-    ///     attempt: 1,
-    ///     namespace: "test".to_string(),
-    ///     task_queue: "test-queue".to_string(),
     /// };
     ///
-    /// let result: String = executor.execute_workflow(
-    ///     |ctx, input: String| async move {
-    ///         let task_result: String = ctx.execute_task("my_task", input).await?;
-    ///         Ok(task_result)
-    ///     },
-    ///     execution,
-    ///     "input".to_string(),
-    /// ).await?;
+    /// let execution = WorkflowExecution::new(
+    ///     "wf-1".to_string(),
+    ///     "run-1".to_string(),
+    ///     "approve".to_string(),
+    ///     "default".to_string(),
+    ///     "approvals".to_string(),
+    /// );
+    ///
+    /// // Approval comes after two hours: no reminder.
+    /// let mut executor = TestWorkflowExecutor::new(mocks.clone())
+    ///     .with_event_after(Duration::from_secs(2 * 3600), "approved", true);
+    /// assert!(executor.execute_workflow(approve, execution.clone(), ()).await?);
+    /// assert_eq!(executor.elapsed(), Duration::from_secs(2 * 3600));
+    ///
+    /// // No approval: the day passes, in no real time, and the reminder is sent.
+    /// let mut executor = TestWorkflowExecutor::new(mocks);
+    /// assert!(!executor.execute_workflow(approve, execution, ()).await?);
+    /// assert_eq!(executor.elapsed(), Duration::from_secs(24 * 3600));
     /// # Ok(())
     /// # }
     /// ```
@@ -113,8 +215,39 @@ impl TestWorkflowExecutor {
         I: Clone + Serialize + DeserializeOwned,
         O: Serialize + DeserializeOwned,
     {
-        let mut step = 0;
-        let mut task_results: HashMap<String, Vec<u8>> = HashMap::new();
+        let start_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or(0);
+        let mut now_ms = start_ms;
+        self.elapsed = Duration::ZERO;
+
+        let mut journal: Vec<Entry> = Vec::new();
+        // What has been resolved, so a command replayed on a later run is not
+        // resolved twice.
+        let mut resolved: HashSet<String> = HashSet::new();
+        // When each timer the workflow has started is due, from the run that first
+        // started it.
+        let mut timer_due: BTreeMap<String, i64> = BTreeMap::new();
+        // Events still to send, in the order they are due.
+        let mut events: Vec<(i64, String, Vec<u8>)> = self
+            .events
+            .iter()
+            .map(|(delay, name, payload)| {
+                (
+                    start_ms + delay.as_millis() as i64,
+                    name.clone(),
+                    payload.clone(),
+                )
+            })
+            .collect();
+        events.sort_by_key(|(at, _, _)| *at);
+        let mut events = std::collections::VecDeque::from(events);
+        // Events due at the start were sent before the first run.
+        while events.front().is_some_and(|(at, _, _)| *at <= start_ms) {
+            let (at, name, payload) = events.pop_front().unwrap();
+            journal.push(Entry::Event { name, payload, at });
+        }
 
         if self.verbose {
             tracing::info!(
@@ -124,41 +257,24 @@ impl TestWorkflowExecutor {
             );
         }
 
-        loop {
-            step += 1;
-            if step > self.max_steps {
-                return Err(Error::Workflow(crate::error::WorkflowError::StateError(
-                    format!(
-                        "Workflow exceeded maximum steps ({}). This might indicate an infinite loop or you need to configure max_steps higher.",
-                        self.max_steps
-                    ),
-                )));
-            }
-
-            let context = self.create_context_with_results(
-                execution.clone(),
-                task_results.clone(),
-                !task_results.is_empty(), // replay if we have task results
-            );
-
+        for step in 1..=self.max_steps {
+            let context = Self::context_from_journal(&execution, start_ms, &journal);
             // Clones share state, so the commands the workflow schedules are readable
             // from this clone after the original has been moved into the workflow.
-            let context_clone = context.clone();
+            let commands_from = context.clone();
 
             if self.verbose {
                 tracing::debug!(
                     workflow_id = %execution.workflow_id,
-                    step = step,
-                    task_results_count = task_results.len(),
-                    replaying = !task_results.is_empty(),
+                    step,
+                    journal_entries = journal.len(),
                     "Executing workflow step"
                 );
             }
 
-            let result = workflow_fn(context, input.clone()).await;
-
-            match result {
+            let error = match workflow_fn(context, input.clone()).await {
                 Ok(output) => {
+                    self.elapsed = Duration::from_millis((now_ms - start_ms).max(0) as u64);
                     if self.verbose {
                         tracing::info!(
                             workflow_id = %execution.workflow_id,
@@ -168,82 +284,137 @@ impl TestWorkflowExecutor {
                     }
                     return Ok(output);
                 }
+                Err(e) if e.is_suspend() => e,
                 Err(e) => {
-                    let error_msg = e.to_string();
-
-                    // Suspension is recognized by its message, which is
-                    // "Workflow suspended: {reason}".
-                    if error_msg.contains("Workflow suspended") {
-                        let commands = context_clone.take_commands_for_test();
-
-                        if self.verbose {
-                            tracing::debug!(
-                                workflow_id = %execution.workflow_id,
-                                commands_count = commands.len(),
-                                "Processing commands"
-                            );
-                        }
-
-                        let mut has_new_tasks = false;
-                        for command in commands {
-                            if let WorkflowCommand::ScheduleTask(task_cmd) = command {
-                                if task_results.contains_key(&task_cmd.task_id) {
-                                    if self.verbose {
-                                        tracing::trace!(
-                                            task_id = %task_cmd.task_id,
-                                            "Skipping already-executed task"
-                                        );
-                                    }
-                                    continue;
-                                }
-
-                                has_new_tasks = true;
-
-                                let task_result = self.execute_mock_task(&task_cmd)?;
-                                task_results.insert(task_cmd.task_id.clone(), task_result);
-
-                                if self.verbose {
-                                    tracing::debug!(
-                                        workflow_id = %execution.workflow_id,
-                                        task_type = %task_cmd.task_type,
-                                        task_id = %task_cmd.task_id,
-                                        "Executed mocked task"
-                                    );
-                                }
-                            }
-                        }
-
-                        if !has_new_tasks {
-                            // Suspended with no new task: the workflow is waiting on an
-                            // event, timer or child workflow, which this executor cannot
-                            // resolve.
-                            return Err(Error::Workflow(crate::error::WorkflowError::StateError(
-                                format!(
-                                    "Workflow suspended on non-task operation at step {}. \
-                                     Operations like wait_for_event, timer, or child workflows \
-                                     are not yet fully supported in TestEnv. \
-                                     Task execution with mocks is fully supported.",
-                                    step
-                                ),
-                            )));
-                        }
-
-                        // Loop again with the new task results.
-                    } else {
-                        // A real failure of the workflow.
-                        if self.verbose {
-                            tracing::error!(
-                                workflow_id = %execution.workflow_id,
-                                error = %e,
-                                step = step,
-                                "Workflow execution failed"
-                            );
-                        }
-                        return Err(e);
+                    self.elapsed = Duration::from_millis((now_ms - start_ms).max(0) as u64);
+                    if self.verbose {
+                        tracing::error!(
+                            workflow_id = %execution.workflow_id,
+                            error = %e,
+                            step,
+                            "Workflow execution failed"
+                        );
                     }
+                    return Err(e);
+                }
+            };
+
+            // Resolve what the workflow scheduled. Tasks, child workflows and recorded
+            // steps finish at once; timers are only noted, to fire when nothing else
+            // can happen sooner.
+            let mut progressed = false;
+            // Timers this run is still waiting on. Only these can fire next: a timer
+            // an earlier run started but this one no longer waits on (a deadline
+            // whose event came first) is left alone, so it cannot skew the clock.
+            let mut waiting_on: BTreeMap<String, i64> = BTreeMap::new();
+            for command in commands_from.take_commands_for_test() {
+                match command {
+                    WorkflowCommand::ScheduleTask(task) => {
+                        if resolved.insert(task.task_id.clone()) {
+                            let result = self.run_task_mock(&task.task_type, &task.input)?;
+                            journal.push(Entry::Task {
+                                id: task.task_id,
+                                result,
+                                at: now_ms,
+                            });
+                            progressed = true;
+                        }
+                    }
+                    WorkflowCommand::StartChildWorkflow(child) => {
+                        let key = format!("child:{}", child.workflow_id);
+                        if resolved.insert(key) {
+                            let result = self.run_child_mock(&child.workflow_type, &child.input)?;
+                            journal.push(Entry::Child {
+                                id: child.workflow_id,
+                                result,
+                                at: now_ms,
+                            });
+                            progressed = true;
+                        }
+                    }
+                    WorkflowCommand::RecordStepResult(step) => {
+                        if resolved.insert(step.step_name.clone()) {
+                            let result = match &step.failure {
+                                Some(failure) => crate::workflow::executable::encode_task_failure(
+                                    &failure.message,
+                                    &failure.failure_type,
+                                    step.execution_attempt,
+                                ),
+                                None => step.result,
+                            };
+                            journal.push(Entry::Step {
+                                name: step.step_name,
+                                result,
+                                at: now_ms,
+                            });
+                            progressed = true;
+                        }
+                    }
+                    WorkflowCommand::StartTimer(timer) => {
+                        if !resolved.contains(&format!("timer:{}", timer.timer_id)) {
+                            let due = *timer_due
+                                .entry(timer.timer_id.clone())
+                                .or_insert(now_ms + timer.duration.as_millis() as i64);
+                            waiting_on.insert(timer.timer_id, due);
+                        }
+                    }
+                    WorkflowCommand::CancelTimer(cancel) => {
+                        waiting_on.remove(&cancel.timer_id);
+                    }
+                    // A wait is answered by the events the test sends; an event sent
+                    // to another workflow and a cancelled child (already finished
+                    // here) need nothing.
+                    WorkflowCommand::WaitForEvent(_)
+                    | WorkflowCommand::SendEvent(_)
+                    | WorkflowCommand::CancelChildWorkflow(_) => {}
+                    // The workflow's own ending is its return value, not a command to
+                    // resolve.
+                    WorkflowCommand::CompleteWorkflow(_)
+                    | WorkflowCommand::FailWorkflow(_)
+                    | WorkflowCommand::RestartFresh(_) => {}
                 }
             }
+            if progressed {
+                continue;
+            }
+
+            // Nothing finished: skip to whichever comes first, the next timer or the
+            // next event.
+            let next_timer = waiting_on
+                .iter()
+                .min_by_key(|(id, at)| (**at, (*id).clone()))
+                .map(|(id, at)| (id.clone(), *at));
+            let next_event_at = events.front().map(|(at, _, _)| *at);
+            let timer_first = match (&next_timer, next_event_at) {
+                (Some((_, at)), Some(event_at)) => *at < event_at,
+                (Some(_), None) => true,
+                (None, _) => false,
+            };
+            if timer_first {
+                let (id, at) = next_timer.expect("timer_first implies a timer");
+                resolved.insert(format!("timer:{id}"));
+                now_ms = now_ms.max(at);
+                journal.push(Entry::Timer { id, at });
+            } else if let Some((at, name, payload)) = events.pop_front() {
+                now_ms = now_ms.max(at);
+                journal.push(Entry::Event { name, payload, at });
+            } else {
+                return Err(Error::Workflow(crate::error::WorkflowError::StateError(
+                    format!(
+                        "Workflow is waiting with nothing left to deliver: {error}. \
+                         Send the event it waits for with with_event or \
+                         with_event_after."
+                    ),
+                )));
+            }
         }
+
+        Err(Error::Workflow(crate::error::WorkflowError::StateError(
+            format!(
+                "Workflow exceeded maximum steps ({}). This might indicate an infinite loop or you need to configure max_steps higher.",
+                self.max_steps
+            ),
+        )))
     }
 
     /// Run a workflow that takes no context.
@@ -265,75 +436,126 @@ impl TestWorkflowExecutor {
         workflow_fn(input).await
     }
 
-    /// Run the mock registered for a scheduled task and return its result as JSON bytes.
-    fn execute_mock_task(&mut self, task_cmd: &ScheduleTaskCommand) -> Result<Vec<u8>> {
-        let mut registry = self.mocks.write().unwrap();
-
-        if !registry.has_mock(&task_cmd.task_type) {
-            return Err(Error::Workflow(crate::error::WorkflowError::StateError(
-                format!(
-                    "No mock registered for task '{}'. Use env.mock_task(\"{}\").returns(...) to register a mock before executing the workflow.",
-                    task_cmd.task_type,
-                    task_cmd.task_type
-                ),
-            )));
-        }
-
-        // The executor does not know the task's types, so input and output pass
-        // through `serde_json::Value`.
-        let input_any: serde_json::Value =
-            serde_json::from_slice(&task_cmd.input).map_err(|e| {
-                Error::Serialization(format!("Failed to deserialize task input: {}", e))
-            })?;
-
-        let result_any: serde_json::Value = match registry
-            .execute_mock(&task_cmd.task_type, input_any)
-        {
-            Ok(value) => value,
-            // The mock could not decode its input or encode its result: the test
-            // itself is wrong, so stop the run.
-            Err(e @ Error::Serialization(_)) => return Err(e),
-            // The mock failed the task (`fails_with`, an exhausted sequence, or a
-            // function mock returning an error). The engine journals a task that
-            // fails for good, and the workflow sees it as `TaskFailed`, so it can
-            // catch it, compensate or fall back. The executor does not retry, so
-            // the task ran once.
-            Err(e) => {
-                let message = match e {
-                    Error::Workflow(crate::error::WorkflowError::StateError(message)) => message,
-                    other => other.to_string(),
-                };
-                return Ok(crate::workflow::executable::encode_task_failure(
-                    &message,
-                    "MockFailure",
-                    1,
-                ));
-            }
-        };
-
-        let result_bytes = serde_json::to_vec(&result_any)
-            .map_err(|e| Error::Serialization(format!("Failed to serialize task result: {}", e)))?;
-
-        Ok(result_bytes)
-    }
-
-    /// Build a workflow context with `task_results` injected, keyed by task ID.
-    fn create_context_with_results(
-        &self,
-        execution: WorkflowExecution,
-        task_results: HashMap<String, Vec<u8>>,
-        replaying: bool,
+    /// Build a context holding everything in `journal`, fed in as the worker
+    /// runtime feeds an activation: each entry at its place in journal order, with
+    /// the time it was recorded, so the workflow's clock moves when it reads it.
+    fn context_from_journal(
+        execution: &WorkflowExecution,
+        start_ms: i64,
+        journal: &[Entry],
     ) -> WorkflowContext {
-        let context = WorkflowContext::new(execution, false, "1.0.0".to_string());
-
-        context.set_replaying_for_test(replaying);
-
-        for (task_id, result) in task_results {
-            context.inject_task_result_for_test(task_id, result);
+        let ctx = WorkflowContext::starting_at(
+            execution.clone(),
+            !journal.is_empty(),
+            "1.0.0".to_string(),
+            start_ms,
+        );
+        for (position, entry) in journal.iter().enumerate() {
+            match entry {
+                Entry::Task { id, result, at } => {
+                    ctx.inject_task_result_for_test(id.clone(), result.clone());
+                    ctx.record_resolved_at(id.clone(), *at);
+                }
+                Entry::Step { name, result, at } => {
+                    ctx.inject_step_result(name.clone(), result.clone());
+                    ctx.record_resolved_at(name.clone(), *at);
+                }
+                Entry::Child { id, result, at } => {
+                    let key = format!("child:{id}");
+                    ctx.inject_step_result(key.clone(), result.clone());
+                    ctx.record_resolved_at(key, *at);
+                }
+                Entry::Timer { id, at } => {
+                    ctx.mark_timer_fired_at(id.clone(), Some(position));
+                    ctx.record_resolved_at(format!("timer:{id}"), *at);
+                }
+                Entry::Event { name, payload, at } => {
+                    ctx.buffer_journaled_event(
+                        name.clone(),
+                        payload.clone(),
+                        Some(position),
+                        Some(*at),
+                    );
+                }
+            }
         }
-
-        context
+        ctx
     }
+
+    /// Run the mock registered for a scheduled task and return its result as JSON
+    /// bytes, or the journaled form of the failure if the mock fails the task.
+    fn run_task_mock(&self, task_type: &str, input: &[u8]) -> Result<Vec<u8>> {
+        let outcome = run_mock(&self.mocks, task_type, input).ok_or_else(|| {
+            Error::Workflow(crate::error::WorkflowError::StateError(format!(
+                "No mock registered for task '{task_type}'. Use \
+                 MockTaskBuilder::new(\"{task_type}\", ...).returns(...) to register one."
+            )))
+        })??;
+        Ok(match outcome {
+            Ok(result) => result,
+            // The engine journals a task that fails for good, and the workflow sees it
+            // as `TaskFailed`. The executor does not retry, so the task ran once.
+            Err(message) => {
+                crate::workflow::executable::encode_task_failure(&message, "MockFailure", 1)
+            }
+        })
+    }
+
+    /// Run the mock registered for a child workflow type and return the child's
+    /// result as JSON bytes, or the stored form of its failure.
+    fn run_child_mock(&self, workflow_type: &str, input: &[u8]) -> Result<Vec<u8>> {
+        let outcome = run_mock(&self.child_mocks, workflow_type, input).ok_or_else(|| {
+            Error::Workflow(crate::error::WorkflowError::StateError(format!(
+                "No mock registered for child workflow '{workflow_type}'. Register one \
+                 in the registry passed to TestWorkflowExecutor::with_child_mocks."
+            )))
+        })??;
+        Ok(match outcome {
+            Ok(result) => result,
+            // A failed child reaches its parent as `ChildWorkflowFailed`.
+            Err(message) => crate::workflow::handle::encode_child_failure(&message),
+        })
+    }
+}
+
+/// Runs the mock for `name` in `registry` on `input`.
+///
+/// `None` if no mock is registered. `Some(Err)` if the mock's input or result does
+/// not serialize: the test itself is wrong. Otherwise `Some(Ok)` with the result
+/// bytes, or with the message of a mock that failed (`fails_with`, an exhausted
+/// sequence, or a function mock returning an error).
+#[allow(clippy::type_complexity)]
+fn run_mock(
+    registry: &RwLock<MockRegistry>,
+    name: &str,
+    input: &[u8],
+) -> Option<Result<std::result::Result<Vec<u8>, String>>> {
+    let mut registry = registry.write().unwrap();
+    if !registry.has_mock(name) {
+        return None;
+    }
+    // The executor does not know the types, so input and output pass through
+    // `serde_json::Value`.
+    let input: serde_json::Value = match serde_json::from_slice(input) {
+        Ok(value) => value,
+        Err(e) => {
+            return Some(Err(Error::Serialization(format!(
+                "Failed to deserialize input for '{name}': {e}"
+            ))))
+        }
+    };
+    Some(
+        match registry.execute_mock::<_, serde_json::Value>(name, input) {
+            Ok(value) => serde_json::to_vec(&value).map(Ok).map_err(|e| {
+                Error::Serialization(format!("Failed to serialize result of '{name}': {e}"))
+            }),
+            Err(e @ Error::Serialization(_)) => Err(e),
+            Err(Error::Workflow(crate::error::WorkflowError::StateError(message))) => {
+                Ok(Err(message))
+            }
+            Err(other) => Ok(Err(other.to_string())),
+        },
+    )
 }
 
 #[cfg(test)]

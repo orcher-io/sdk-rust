@@ -139,8 +139,9 @@
 //!
 //! [`TestEnv`] registers and runs workflows and records each run's status in an
 //! execution trace. [`MockRegistry`] holds the task mocks. [`TestWorkflowExecutor`]
-//! runs a context-aware workflow against a mock registry: each time the workflow
-//! suspends on tasks, it runs their mocks and replays the workflow with the results.
+//! runs a context-aware workflow against mocks: each time the workflow suspends, it
+//! resolves its tasks and child workflows from mocks, skips time to its next timer or
+//! event, and replays the workflow with what it was given.
 //! [`MockClock`] is a manually advanced clock for time-dependent test code.
 //!
 //! # Limitations
@@ -150,8 +151,12 @@
 //!   [`TestWorkflowExecutor`] for workflows that call tasks.
 //! - `TestEnv` does not record state, executed tasks or task calls from a run, so the
 //!   state and task inspection methods find nothing for it.
-//! - [`TestWorkflowExecutor`] handles task suspensions only. A workflow that waits on a
-//!   timer, event or child workflow returns an error.
+//! - [`TestWorkflowExecutor`] runs timers in virtual time, delivers only the events the
+//!   test sends ([`with_event`](TestWorkflowExecutor::with_event),
+//!   [`with_event_after`](TestWorkflowExecutor::with_event_after)), and answers child
+//!   workflows from mocks ([`with_child_mocks`](TestWorkflowExecutor::with_child_mocks));
+//!   child workflows are not run. It does not retry tasks, deliver cancellation, or
+//!   answer queries and updates.
 //! - Task code never runs, and everything runs in one process with no persistence.
 //!
 //! For integration tests with real execution, run against an Orcher server.
