@@ -5,6 +5,18 @@ use crate::workflow::command::{CancelChildWorkflowCommand, SendEventCommand, Wor
 use crate::workflow::WorkflowContext;
 use serde::{de::DeserializeOwned, Serialize};
 
+/// Encodes a child workflow that ended without a result, the way the runtime
+/// stores it under `child:{workflow_id}`; [`ChildWorkflowHandle::result`]
+/// raises it as `ChildWorkflowFailed` with `message`.
+pub(crate) fn encode_child_failure(message: &str) -> Vec<u8> {
+    serde_json::to_vec(&serde_json::json!({
+        "__orcher_child_failed__": true,
+        "message": message,
+    }))
+    // A JSON object holding a bool and a string always serializes.
+    .expect("child failure sentinel serializes")
+}
+
 /// Handle to a child workflow started without waiting for its result.
 ///
 /// Use [`ChildWorkflowHandle::result`] to wait for the child,

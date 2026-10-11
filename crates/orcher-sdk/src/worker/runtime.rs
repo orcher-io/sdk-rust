@@ -582,12 +582,10 @@ impl ExecutionRuntime {
 /// Records that a child ended without a result, so `result()` raises
 /// `ChildWorkflowFailed` with `message` on replay.
 pub(crate) fn inject_child_failure(ctx: &WorkflowContext, workflow_id: &str, message: &str) {
-    let error_bytes = serde_json::to_vec(&serde_json::json!({
-        "__orcher_child_failed__": true,
-        "message": message
-    }))
-    .unwrap_or_default();
-    ctx.inject_step_result(format!("child:{workflow_id}"), error_bytes);
+    ctx.inject_step_result(
+        format!("child:{workflow_id}"),
+        crate::workflow::handle::encode_child_failure(message),
+    );
 }
 
 /// A query or update asked of the workflow in an activation.
