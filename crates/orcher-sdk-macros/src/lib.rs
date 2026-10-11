@@ -228,7 +228,9 @@ pub fn workflow(attr: TokenStream, item: TokenStream) -> TokenStream {
 /// The macro keeps the function and generates a `<Name>Query` struct (the function name
 /// with its first letter capitalized) holding the query's name and settings. It does not
 /// register the function: a workflow answers the query by passing a handler to
-/// `WorkflowContext::register_query_handler`, as below.
+/// `WorkflowContext::register_query_handler`, as below, or to
+/// `WorkflowContext::register_query_handler_with_args` to receive the arguments the
+/// client sends with the query.
 ///
 /// # Attributes
 ///

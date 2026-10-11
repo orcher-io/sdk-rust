@@ -259,13 +259,15 @@ impl WorkflowHandle {
 
     /// Sends an event with options.
     ///
-    /// The options are accepted but not applied: the request uses the client's
-    /// timeout.
+    /// # Errors
+    ///
+    /// [`Error::Timeout`] if [`EventOptions::timeout`] passes before the server
+    /// accepts the event. The server may still accept it afterwards.
     pub async fn send_event_with_options<E>(
         &self,
         event: impl Into<String>,
         arg: E,
-        _options: EventOptions,
+        options: EventOptions,
     ) -> Result<()>
     where
         E: Serialize,
@@ -280,10 +282,12 @@ impl WorkflowHandle {
 
         // sdk-core serializes `arg`.
         let client = self.get_client();
-        client
-            .send_event(&self.workflow_id, self.run_id.clone(), event.clone(), arg)
-            .await
-            .map_err(Error::from)?;
+        within(
+            options.timeout,
+            "send_event",
+            client.send_event(&self.workflow_id, self.run_id.clone(), event.clone(), arg),
+        )
+        .await?;
 
         tracing::debug!(
             workflow_id = %self.workflow_id,
@@ -310,13 +314,15 @@ impl WorkflowHandle {
 
     /// Runs a query with options.
     ///
-    /// The options are accepted but not applied: the request uses the client's
-    /// timeout and no reject condition.
+    /// # Errors
+    ///
+    /// [`Error::Timeout`] if [`QueryOptions::timeout`] passes before the
+    /// workflow answers.
     pub async fn query_with_options<Q, R>(
         &self,
         query: impl Into<String>,
         args: Q,
-        _options: QueryOptions,
+        options: QueryOptions,
     ) -> Result<R>
     where
         Q: Serialize,
@@ -332,10 +338,12 @@ impl WorkflowHandle {
 
         // sdk-core serializes `args` and deserializes the result.
         let client = self.get_client();
-        let result: R = client
-            .query_workflow(&self.workflow_id, self.run_id.clone(), query.clone(), args)
-            .await
-            .map_err(Error::from)?;
+        let result: R = within(
+            options.timeout,
+            "query",
+            client.query_workflow(&self.workflow_id, self.run_id.clone(), query.clone(), args),
+        )
+        .await?;
 
         tracing::debug!(
             workflow_id = %self.workflow_id,
@@ -424,6 +432,24 @@ impl std::fmt::Debug for WorkflowHandle {
     }
 }
 
+/// Runs a client call, failing it with [`Error::Timeout`] if `timeout` passes
+/// first. With no timeout, the call runs under the client's own request timeout.
+async fn within<T>(
+    timeout: Option<std::time::Duration>,
+    call: &str,
+    fut: impl std::future::Future<Output = orcher_sdk_core::Result<T>>,
+) -> Result<T> {
+    match timeout {
+        None => fut.await.map_err(Error::from),
+        Some(limit) => match tokio::time::timeout(limit, fut).await {
+            Ok(result) => result.map_err(Error::from),
+            Err(_) => Err(Error::Timeout(format!(
+                "{call} did not finish within {limit:?}"
+            ))),
+        },
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -449,7 +475,29 @@ mod tests {
     fn test_query_options_defaults() {
         let options = QueryOptions::default();
         assert!(options.timeout.is_none());
-        assert!(options.reject_condition.is_none());
+    }
+
+    #[tokio::test]
+    async fn within_fails_a_call_that_outlasts_its_timeout() {
+        let slow = async {
+            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+            Ok::<_, orcher_sdk_core::Error>(1)
+        };
+        let result = within(Some(std::time::Duration::from_millis(20)), "query", slow).await;
+        assert!(matches!(result, Err(Error::Timeout(ref m)) if m.contains("query")));
+    }
+
+    #[tokio::test]
+    async fn within_passes_through_a_call_that_finishes_in_time() {
+        let fast = async { Ok::<_, orcher_sdk_core::Error>(7) };
+        assert_eq!(
+            within(Some(std::time::Duration::from_secs(5)), "query", fast)
+                .await
+                .unwrap(),
+            7
+        );
+        let unbounded = async { Ok::<_, orcher_sdk_core::Error>(8) };
+        assert_eq!(within(None, "query", unbounded).await.unwrap(), 8);
     }
 }
 

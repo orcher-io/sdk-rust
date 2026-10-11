@@ -486,47 +486,33 @@ impl WorkflowIdReusePolicy {
 #[derive(Debug, Clone, Default)]
 #[non_exhaustive]
 pub struct QueryOptions {
-    /// Timeout for the query.
+    /// Longest to wait for the answer. Past it the query fails with
+    /// [`Error::Timeout`](crate::Error::Timeout). Unset, only the client's own
+    /// request timeout applies.
     pub timeout: Option<Duration>,
-
-    /// Condition under which the server rejects the query instead of running it.
-    pub reject_condition: Option<QueryRejectCondition>,
 }
 
 impl QueryOptions {
-    /// Set the query timeout.
+    /// Set the longest to wait for the answer.
     pub fn with_timeout(mut self, timeout: Duration) -> Self {
         self.timeout = Some(timeout);
         self
     }
-
-    /// Reject the query unless the workflow meets this condition.
-    pub fn with_reject_condition(mut self, condition: QueryRejectCondition) -> Self {
-        self.reject_condition = Some(condition);
-        self
-    }
-}
-
-/// Workflow states in which a query is rejected.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[non_exhaustive]
-pub enum QueryRejectCondition {
-    /// Reject if the workflow is closed (for example completed or failed).
-    NotOpen,
-    /// Reject unless the workflow has completed.
-    NotCompleted,
 }
 
 /// Options for sending an event to a workflow.
 #[derive(Debug, Clone, Default)]
 #[non_exhaustive]
 pub struct EventOptions {
-    /// Timeout for delivering the event.
+    /// Longest to wait for the server to accept the event. Past it the send
+    /// fails with [`Error::Timeout`](crate::Error::Timeout), but the server may
+    /// still accept the event, so a timed-out send is not proof it was not
+    /// delivered. Unset, only the client's own request timeout applies.
     pub timeout: Option<Duration>,
 }
 
 impl EventOptions {
-    /// Set the event timeout.
+    /// Set the longest to wait for the server to accept the event.
     pub fn with_timeout(mut self, timeout: Duration) -> Self {
         self.timeout = Some(timeout);
         self
@@ -624,16 +610,6 @@ mod tests {
     fn test_query_options_defaults() {
         let options = QueryOptions::default();
         assert!(options.timeout.is_none());
-        assert!(options.reject_condition.is_none());
-    }
-
-    #[test]
-    fn test_query_reject_condition() {
-        assert_eq!(QueryRejectCondition::NotOpen, QueryRejectCondition::NotOpen);
-        assert_ne!(
-            QueryRejectCondition::NotOpen,
-            QueryRejectCondition::NotCompleted
-        );
     }
 
     #[test]

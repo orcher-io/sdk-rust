@@ -790,7 +790,13 @@ impl ExecutionRuntime {
         for job in jobs {
             match job {
                 RequestJob::ProcessQuery(query_job) => {
-                    let response = match ctx.handle_query_request(&query_job.query_type) {
+                    // The client sends its arguments as one JSON payload.
+                    let args = query_job
+                        .arguments
+                        .first()
+                        .map(|payload| payload.data.as_slice())
+                        .unwrap_or_default();
+                    let response = match ctx.handle_query_request(&query_job.query_type, args) {
                         Ok(output) => QueryResponse {
                             query_id: query_job.query_id.clone(),
                             result: QueryResult::Success {
