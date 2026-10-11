@@ -264,9 +264,10 @@ fn task_impl_inner(
     };
 
     // The task reference lets callers write `ctx.execute_task(send_email, input)` with a
-    // name the compiler checks.
+    // name the compiler checks. It schedules the task under the name the worker registers:
+    // the declared `name`, or the function name when none is given.
     let task_reference_struct = {
-        let task_name_str = fn_name.to_string();
+        let task_name_str = attrs.name.clone().unwrap_or_else(|| fn_name.to_string());
         let task_ref_name = syn::Ident::new(&format!("{}_task_ref", fn_name), fn_name.span());
         quote! {
             /// Type-safe reference to a task.
