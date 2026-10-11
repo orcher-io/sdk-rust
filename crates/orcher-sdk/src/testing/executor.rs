@@ -12,8 +12,10 @@ use std::sync::{Arc, RwLock};
 ///
 /// Each time the workflow suspends on tasks, the executor runs their mocks and
 /// replays the workflow from the start with the results injected, the same way a
-/// worker replays history. Only task suspensions are handled: a workflow that waits
-/// on a timer, event or child workflow returns an error.
+/// worker replays history. A mock that fails the task reaches the workflow as
+/// `TaskFailed`; a missing mock, or a mock whose input or result does not serialize,
+/// stops the run with an error. Only task suspensions are handled: a workflow that
+/// waits on a timer, event or child workflow returns an error.
 pub struct TestWorkflowExecutor {
     mocks: Arc<RwLock<MockRegistry>>,
 
@@ -284,8 +286,30 @@ impl TestWorkflowExecutor {
                 Error::Serialization(format!("Failed to deserialize task input: {}", e))
             })?;
 
-        let result_any: serde_json::Value =
-            registry.execute_mock(&task_cmd.task_type, input_any)?;
+        let result_any: serde_json::Value = match registry
+            .execute_mock(&task_cmd.task_type, input_any)
+        {
+            Ok(value) => value,
+            // The mock could not decode its input or encode its result: the test
+            // itself is wrong, so stop the run.
+            Err(e @ Error::Serialization(_)) => return Err(e),
+            // The mock failed the task (`fails_with`, an exhausted sequence, or a
+            // function mock returning an error). The engine journals a task that
+            // fails for good, and the workflow sees it as `TaskFailed`, so it can
+            // catch it, compensate or fall back. The executor does not retry, so
+            // the task ran once.
+            Err(e) => {
+                let message = match e {
+                    Error::Workflow(crate::error::WorkflowError::StateError(message)) => message,
+                    other => other.to_string(),
+                };
+                return Ok(crate::workflow::executable::encode_task_failure(
+                    &message,
+                    "MockFailure",
+                    1,
+                ));
+            }
+        };
 
         let result_bytes = serde_json::to_vec(&result_any)
             .map_err(|e| Error::Serialization(format!("Failed to serialize task result: {}", e)))?;

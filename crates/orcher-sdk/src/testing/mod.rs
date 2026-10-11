@@ -110,7 +110,7 @@
 //! // One value per call, in order.
 //! mock("fetch_page").returns_seq(vec![1, 2, 3]);
 //!
-//! // A failure on every call.
+//! // A failure on every call, which the workflow sees as `TaskFailed`.
 //! mock("flaky_service").fails_with("service unavailable");
 //!
 //! assert!(mocks.read().unwrap().has_mock("fetch_page"));
