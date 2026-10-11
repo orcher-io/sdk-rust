@@ -240,10 +240,15 @@ pub enum OperationMode {
     /// Use it for any operation that writes state.
     Exclusive,
 
-    /// For read-only operations, which may run concurrently on the same key.
+    /// For read-only operations, which run concurrently with each other on the
+    /// same key.
     ///
-    /// Do not rely on concurrency: shared operations may be serialized like
-    /// exclusive ones.
+    /// An exclusive operation on the key waits for the running shared ones to
+    /// finish and then runs alone; shared operations that arrive after it wait
+    /// behind it, so reads cannot starve a write. Writing state from a shared
+    /// operation is refused. The engine caps how many run at once per key, so
+    /// treat the concurrency as a throughput gain, not something correctness
+    /// depends on.
     Shared,
 }
 
