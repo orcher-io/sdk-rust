@@ -339,6 +339,10 @@ impl std::fmt::Debug for ClientConfig {
 #[non_exhaustive]
 pub struct StartWorkflowOptions {
     /// Workflow ID; generated when unset.
+    ///
+    /// Set it to make a start safe to retry: while a run with this ID exists,
+    /// starting it again is refused according to `id_reuse_policy`, so a
+    /// retried start cannot create a second run.
     pub workflow_id: Option<String>,
 
     /// Task queue to run the workflow on.
@@ -355,9 +359,6 @@ pub struct StartWorkflowOptions {
 
     /// Namespace; the client's default when unset.
     pub namespace: Option<String>,
-
-    /// Idempotency key for detecting duplicate starts.
-    pub idempotency_key: Option<String>,
 
     /// Cron schedule, for recurring workflows.
     pub cron_schedule: Option<String>,
@@ -423,12 +424,6 @@ impl StartWorkflowOptions {
     /// Start in this namespace instead of the client's default.
     pub fn with_namespace(mut self, namespace: impl Into<String>) -> Self {
         self.namespace = Some(namespace.into());
-        self
-    }
-
-    /// Set an idempotency key for duplicate detection.
-    pub fn with_idempotency_key(mut self, key: impl Into<String>) -> Self {
-        self.idempotency_key = Some(key.into());
         self
     }
 
