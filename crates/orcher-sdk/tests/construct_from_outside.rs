@@ -4,8 +4,8 @@
 use std::time::Duration;
 
 use orcher_sdk::client::{
-    CancelOptions, ClientConfig, ClientTlsConfig, EventOptions, QueryOptions, QueryRejectCondition,
-    StartWorkflowOptions, WorkflowIdReusePolicy,
+    CancelOptions, ClientConfig, ClientTlsConfig, EventOptions, QueryOptions, StartWorkflowOptions,
+    WorkflowIdReusePolicy,
 };
 use orcher_sdk::error::{ClientError, TaskError, WorkerError, WorkflowError};
 use orcher_sdk::task::{JitterStrategy, RetryPolicy, TaskExecutionOptions};
@@ -43,10 +43,8 @@ fn client_options_build_with_their_methods() {
         Some(WorkflowIdReusePolicy::RejectDuplicate)
     );
 
-    let query = QueryOptions::default()
-        .with_timeout(Duration::from_secs(1))
-        .with_reject_condition(QueryRejectCondition::NotOpen);
-    assert_eq!(query.reject_condition, Some(QueryRejectCondition::NotOpen));
+    let query = QueryOptions::default().with_timeout(Duration::from_secs(1));
+    assert_eq!(query.timeout, Some(Duration::from_secs(1)));
     let event = EventOptions::default().with_timeout(Duration::from_secs(2));
     assert_eq!(event.timeout, Some(Duration::from_secs(2)));
     let cancel = CancelOptions::default().with_cleanup_timeout(Duration::from_secs(3));

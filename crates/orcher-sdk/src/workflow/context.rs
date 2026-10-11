@@ -45,6 +45,20 @@ pub(crate) type ContextUpdateHandler = Arc<dyn Fn(Vec<u8>) -> UpdateFuture + Sen
 /// known.
 pub(crate) type BufferedEvents = VecDeque<(Option<usize>, Vec<u8>, Option<i64>)>;
 
+/// Serializes a query handler's result, failing the query if it cannot be.
+fn encode_query_result<R: Serialize>(query: &str, result: &R) -> Result<Vec<u8>> {
+    serde_json::to_vec(result).map_err(|e| {
+        Error::Workflow(crate::error::WorkflowError::QueryError {
+            query: query.to_string(),
+            reason: format!("result could not be serialized: {e}"),
+        })
+    })
+}
+
+/// A registered query handler: takes the query's JSON arguments (empty when
+/// the client sent none) and returns its JSON result.
+pub(crate) type QueryHandlerFn = Arc<dyn Fn(&[u8]) -> Result<Vec<u8>> + Send + Sync>;
+
 /// Mutable interior state for `WorkflowContext`, wrapped in `Arc<Mutex<>>`.
 #[derive(Clone)]
 pub(crate) struct ContextState {
@@ -92,7 +106,7 @@ pub(crate) struct ContextState {
     /// is issued now. sdk-core checks them against the steps the journal recorded to tell
     /// code that no longer replays the run.
     pub(crate) reached_steps: Vec<String>,
-    pub(crate) query_handlers: HashMap<String, Arc<dyn Fn() -> Vec<u8> + Send + Sync>>,
+    pub(crate) query_handlers: HashMap<String, QueryHandlerFn>,
     pub(crate) update_handlers: HashMap<String, ContextUpdateHandler>,
     /// Whether the journal holds a request to cancel the workflow.
     pub(crate) cancel_requested: bool,
@@ -966,8 +980,10 @@ impl WorkflowContext {
     ///
     /// Queries let clients read workflow state without affecting execution. Handlers are
     /// synchronous and should not modify workflow state. The result is serialized to
-    /// JSON; if serialization fails the query returns an empty payload. Registering a name
-    /// again replaces the earlier handler.
+    /// JSON; if that fails, the query fails with the reason. Registering a name again
+    /// replaces the earlier handler. The handler ignores any arguments the client sends;
+    /// use [`register_query_handler_with_args`](Self::register_query_handler_with_args)
+    /// to read them.
     ///
     /// # Example
     ///
@@ -993,15 +1009,63 @@ impl WorkflowContext {
         F: Fn() -> R + Send + Sync + 'static,
         R: Serialize,
     {
-        let wrapped_handler = Box::new(move || {
-            let result = handler();
-            serde_json::to_vec(&result).unwrap_or_else(|_| vec![])
-        });
+        let name = query_name.to_string();
+        self.insert_query_handler(
+            query_name,
+            Arc::new(move |_args: &[u8]| encode_query_result(&name, &handler())),
+        );
+    }
 
+    /// Registers a handler that answers the query `query_name` with the
+    /// arguments the client sent.
+    ///
+    /// Like [`register_query_handler`](Self::register_query_handler), but the
+    /// handler receives the client's arguments, decoded as `A`. A query sent
+    /// with no arguments decodes from JSON `null`, so `A` can be an `Option`.
+    /// Arguments that do not decode as `A` fail the query with the reason.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// # use orcher_sdk::prelude::*;
+    /// # async fn example(ctx: &WorkflowContext) -> Result<()> {
+    /// let prices = vec![("apple".to_string(), 120u32), ("pear".to_string(), 90)];
+    ///
+    /// ctx.register_query_handler_with_args("price_of", move |item: String| {
+    ///     prices.iter().find(|(name, _)| *name == item).map(|(_, cents)| *cents)
+    /// });
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn register_query_handler_with_args<F, A, R>(&self, query_name: &str, handler: F)
+    where
+        F: Fn(A) -> R + Send + Sync + 'static,
+        A: DeserializeOwned,
+        R: Serialize,
+    {
+        let name = query_name.to_string();
+        self.insert_query_handler(
+            query_name,
+            Arc::new(move |args: &[u8]| {
+                let args = if args.is_empty() {
+                    b"null".as_slice()
+                } else {
+                    args
+                };
+                let args: A = serde_json::from_slice(args).map_err(|e| {
+                    Error::Workflow(crate::error::WorkflowError::QueryError {
+                        query: name.clone(),
+                        reason: format!("invalid query arguments: {e}"),
+                    })
+                })?;
+                encode_query_result(&name, &handler(args))
+            }),
+        );
+    }
+
+    fn insert_query_handler(&self, query_name: &str, handler: QueryHandlerFn) {
         let mut state = self.state.lock().unwrap();
-        state
-            .query_handlers
-            .insert(query_name.to_string(), Arc::new(wrapped_handler));
+        state.query_handlers.insert(query_name.to_string(), handler);
 
         tracing::debug!(
             workflow_id = %self.execution.workflow_id,
@@ -1010,33 +1074,19 @@ impl WorkflowContext {
         );
     }
 
-    /// Runs the query handler registered under `query_name`.
-    #[cfg(not(test))]
-    #[allow(dead_code)] // Used by executor for query handling
-    pub(crate) fn handle_query_request(&self, query_name: &str) -> Result<Vec<u8>> {
-        let state = self.state.lock().unwrap();
-        match state.query_handlers.get(query_name) {
-            Some(handler) => {
-                let result = handler();
-                Ok(result)
-            }
-            None => Err(Error::Workflow(crate::error::WorkflowError::QueryError {
-                query: query_name.to_string(),
-                reason: "Query handler not registered".to_string(),
-            })),
-        }
-    }
-
-    /// Runs the query handler registered under `query_name`. Public in test builds so
-    /// tests can simulate queries.
-    #[cfg(test)]
-    pub fn handle_query_request(&self, query_name: &str) -> Result<Vec<u8>> {
-        let state = self.state.lock().unwrap();
-        match state.query_handlers.get(query_name) {
-            Some(handler) => {
-                let result = handler();
-                Ok(result)
-            }
+    /// Runs the query handler registered under `query_name` with the query's
+    /// JSON arguments (empty when the client sent none).
+    pub(crate) fn handle_query_request(&self, query_name: &str, args: &[u8]) -> Result<Vec<u8>> {
+        // Clone the handler out so it does not run under the state lock.
+        let handler = self
+            .state
+            .lock()
+            .unwrap()
+            .query_handlers
+            .get(query_name)
+            .cloned();
+        match handler {
+            Some(handler) => handler(args),
             None => Err(Error::Workflow(crate::error::WorkflowError::QueryError {
                 query: query_name.to_string(),
                 reason: "Query handler not registered".to_string(),
@@ -2463,7 +2513,7 @@ mod tests {
 
         ctx.register_query_handler("get_status", || "processing".to_string());
 
-        let result = ctx.handle_query_request("get_status").unwrap();
+        let result = ctx.handle_query_request("get_status", &[]).unwrap();
         let status: String = serde_json::from_slice(&result).unwrap();
         assert_eq!(status, "processing");
     }
@@ -2478,12 +2528,64 @@ mod tests {
             total: 100,
         });
 
-        let result = ctx.handle_query_request("get_progress").unwrap();
+        let result = ctx.handle_query_request("get_progress", &[]).unwrap();
         let response: StatusResponse = serde_json::from_slice(&result).unwrap();
 
         assert_eq!(response.status, "in_progress");
         assert_eq!(response.progress, 42);
         assert_eq!(response.total, 100);
+    }
+
+    #[test]
+    fn a_query_handler_receives_the_client_arguments() {
+        let ctx = create_test_context();
+        ctx.register_query_handler_with_args("double", |n: u32| n * 2);
+
+        let result = ctx.handle_query_request("double", b"21").unwrap();
+        assert_eq!(serde_json::from_slice::<u32>(&result).unwrap(), 42);
+    }
+
+    #[test]
+    fn a_query_sent_without_arguments_decodes_from_null() {
+        let ctx = create_test_context();
+        ctx.register_query_handler_with_args("greet", |name: Option<String>| {
+            format!("hello {}", name.unwrap_or_else(|| "there".to_string()))
+        });
+
+        let result = ctx.handle_query_request("greet", &[]).unwrap();
+        assert_eq!(
+            serde_json::from_slice::<String>(&result).unwrap(),
+            "hello there"
+        );
+    }
+
+    #[test]
+    fn query_arguments_that_do_not_decode_fail_the_query() {
+        let ctx = create_test_context();
+        ctx.register_query_handler_with_args("double", |n: u32| n * 2);
+
+        let err = ctx
+            .handle_query_request("double", br#""not a number""#)
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            Error::Workflow(crate::error::WorkflowError::QueryError { ref reason, .. })
+                if reason.contains("invalid query arguments")
+        ));
+    }
+
+    #[test]
+    fn a_query_result_that_cannot_be_serialized_fails_the_query() {
+        // A map with non-string keys has no JSON form.
+        let ctx = create_test_context();
+        ctx.register_query_handler("bad", || std::collections::HashMap::from([((1, 2), "x")]));
+
+        let err = ctx.handle_query_request("bad", &[]).unwrap_err();
+        assert!(matches!(
+            err,
+            Error::Workflow(crate::error::WorkflowError::QueryError { ref reason, .. })
+                if reason.contains("could not be serialized")
+        ));
     }
 
     #[test]
@@ -2494,15 +2596,15 @@ mod tests {
         ctx.register_query_handler("get_count", || 42u32);
         ctx.register_query_handler("is_ready", || true);
 
-        let status_result = ctx.handle_query_request("get_status").unwrap();
+        let status_result = ctx.handle_query_request("get_status", &[]).unwrap();
         let status: String = serde_json::from_slice(&status_result).unwrap();
         assert_eq!(status, "running");
 
-        let count_result = ctx.handle_query_request("get_count").unwrap();
+        let count_result = ctx.handle_query_request("get_count", &[]).unwrap();
         let count: u32 = serde_json::from_slice(&count_result).unwrap();
         assert_eq!(count, 42);
 
-        let ready_result = ctx.handle_query_request("is_ready").unwrap();
+        let ready_result = ctx.handle_query_request("is_ready", &[]).unwrap();
         let ready: bool = serde_json::from_slice(&ready_result).unwrap();
         assert!(ready);
     }
@@ -2511,7 +2613,7 @@ mod tests {
     fn test_query_handler_not_registered() {
         let ctx = create_test_context();
 
-        let result = ctx.handle_query_request("unknown_query");
+        let result = ctx.handle_query_request("unknown_query", &[]);
         assert!(result.is_err());
     }
 
@@ -2522,7 +2624,7 @@ mod tests {
         ctx.register_query_handler("get_status", || "initial".to_string());
         ctx.register_query_handler("get_status", || "updated".to_string());
 
-        let result = ctx.handle_query_request("get_status").unwrap();
+        let result = ctx.handle_query_request("get_status", &[]).unwrap();
         let status: String = serde_json::from_slice(&result).unwrap();
         assert_eq!(status, "updated");
     }
@@ -2543,7 +2645,7 @@ mod tests {
     fn test_automatic_queries_workflow_id() {
         let ctx = create_test_context();
 
-        let result = ctx.handle_query_request("workflow_id").unwrap();
+        let result = ctx.handle_query_request("workflow_id", &[]).unwrap();
         let wf_id: String = serde_json::from_slice(&result).unwrap();
         assert_eq!(wf_id, "test-wf-123");
     }
@@ -2552,7 +2654,7 @@ mod tests {
     fn test_automatic_queries_workflow_type() {
         let ctx = create_test_context();
 
-        let result = ctx.handle_query_request("workflow_type").unwrap();
+        let result = ctx.handle_query_request("workflow_type", &[]).unwrap();
         let wf_type: String = serde_json::from_slice(&result).unwrap();
         assert_eq!(wf_type, "TestWorkflow");
     }
@@ -2561,7 +2663,7 @@ mod tests {
     fn test_automatic_queries_run_id() {
         let ctx = create_test_context();
 
-        let result = ctx.handle_query_request("run_id").unwrap();
+        let result = ctx.handle_query_request("run_id", &[]).unwrap();
         let run_id: String = serde_json::from_slice(&result).unwrap();
         assert_eq!(run_id, "run-456");
     }
@@ -2570,7 +2672,7 @@ mod tests {
     fn test_automatic_queries_is_replaying() {
         let ctx = create_test_context();
 
-        let result = ctx.handle_query_request("is_replaying").unwrap();
+        let result = ctx.handle_query_request("is_replaying", &[]).unwrap();
         let replaying: bool = serde_json::from_slice(&result).unwrap();
         assert!(!replaying);
     }
@@ -2579,7 +2681,7 @@ mod tests {
     fn test_automatic_queries_attempt() {
         let ctx = create_test_context();
 
-        let result = ctx.handle_query_request("attempt").unwrap();
+        let result = ctx.handle_query_request("attempt", &[]).unwrap();
         let attempt: i32 = serde_json::from_slice(&result).unwrap();
         assert_eq!(attempt, 1);
     }
@@ -2588,7 +2690,7 @@ mod tests {
     fn test_automatic_queries_version() {
         let ctx = create_test_context();
 
-        let result = ctx.handle_query_request("version").unwrap();
+        let result = ctx.handle_query_request("version", &[]).unwrap();
         let version: String = serde_json::from_slice(&result).unwrap();
         assert_eq!(version, "1.0");
     }
@@ -2597,7 +2699,7 @@ mod tests {
     fn test_automatic_queries_namespace() {
         let ctx = create_test_context();
 
-        let result = ctx.handle_query_request("namespace").unwrap();
+        let result = ctx.handle_query_request("namespace", &[]).unwrap();
         let namespace: String = serde_json::from_slice(&result).unwrap();
         assert_eq!(namespace, "default");
     }
@@ -2606,7 +2708,7 @@ mod tests {
     fn test_automatic_queries_task_queue() {
         let ctx = create_test_context();
 
-        let result = ctx.handle_query_request("task_queue").unwrap();
+        let result = ctx.handle_query_request("task_queue", &[]).unwrap();
         let task_queue: String = serde_json::from_slice(&result).unwrap();
         assert_eq!(task_queue, "test-queue");
     }
@@ -2615,7 +2717,7 @@ mod tests {
     fn test_automatic_queries_workflow_info() {
         let ctx = create_test_context();
 
-        let result = ctx.handle_query_request("workflow_info").unwrap();
+        let result = ctx.handle_query_request("workflow_info", &[]).unwrap();
         let info: serde_json::Value = serde_json::from_slice(&result).unwrap();
 
         assert_eq!(info["workflow_id"], "test-wf-123");
@@ -2635,7 +2737,7 @@ mod tests {
         ctx.register_query_handler("workflow_id", || "custom_id".to_string());
 
         // The last registration wins.
-        let result = ctx.handle_query_request("workflow_id").unwrap();
+        let result = ctx.handle_query_request("workflow_id", &[]).unwrap();
         let workflow_id: String = serde_json::from_slice(&result).unwrap();
         assert_eq!(workflow_id, "custom_id");
     }
@@ -2657,7 +2759,7 @@ mod tests {
         ];
 
         for query in queries {
-            let result = ctx.handle_query_request(query);
+            let result = ctx.handle_query_request(query, &[]);
             assert!(result.is_ok(), "Query '{}' should be available", query);
         }
     }

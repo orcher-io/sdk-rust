@@ -46,8 +46,8 @@ mod options;
 pub use client::{Client, DataConverterType};
 pub use handle::WorkflowHandle;
 pub use options::{
-    CancelOptions, ClientConfig, ClientTlsConfig, EventOptions, QueryOptions, QueryRejectCondition,
-    StartWorkflowOptions, WorkflowIdReusePolicy,
+    CancelOptions, ClientConfig, ClientTlsConfig, EventOptions, QueryOptions, StartWorkflowOptions,
+    WorkflowIdReusePolicy,
 };
 
 #[cfg(test)]
