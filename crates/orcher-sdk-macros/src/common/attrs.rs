@@ -6,6 +6,288 @@
 use darling::FromMeta;
 use syn::{punctuated::Punctuated, spanned::Spanned, Expr, Lit, Meta, Token};
 
+/// An attribute that is accepted but has no effect, with where it was written, so the macro
+/// can warn about it.
+#[derive(Debug, Clone)]
+pub struct IneffectiveAttr {
+    /// The attribute key as written.
+    pub key: &'static str,
+    /// What to do instead.
+    pub note: &'static str,
+    /// Where the key was written.
+    pub span: proc_macro2::Span,
+}
+
+/// `#[workflow]` attributes that have no effect, with what to do instead.
+const WORKFLOW_INEFFECTIVE: &[(&str, &str)] = &[
+    (
+        "timeout",
+        "set the workflow's timeout when you start it, with \
+         StartWorkflowOptions::with_workflow_execution_timeout",
+    ),
+    (
+        "version",
+        "to tie executions to a code release, set the worker's version with \
+         WorkerBuilder::version_id or ORCHER_VERSION_ID",
+    ),
+    ("description", "describe the workflow in a doc comment"),
+    (
+        "task_queue",
+        "a workflow runs on the task queue it is started on; set it with \
+         StartWorkflowOptions::with_task_queue and serve it with WorkerBuilder::task_queue",
+    ),
+    (
+        "max_concurrent",
+        "limit how many workflows a worker runs at once with \
+         WorkerBuilder::max_concurrent_workflows",
+    ),
+    ("tags", "nothing reads the tags"),
+    (
+        "retry_policy",
+        "set the workflow's retry policy when you start it, with \
+         StartWorkflowOptions::with_retry_policy",
+    ),
+    (
+        "enabled",
+        "a registered workflow runs whenever it is started",
+    ),
+    (
+        "cron",
+        "run the workflow on a schedule by starting it with \
+         StartWorkflowOptions::with_cron_schedule",
+    ),
+    (
+        "schedule",
+        "run the workflow on a schedule by starting it with \
+         StartWorkflowOptions::with_cron_schedule",
+    ),
+];
+
+/// `#[task]` and `#[tasks]` attributes that have no effect, with what to do instead.
+const TASK_INEFFECTIVE: &[(&str, &str)] = &[
+    ("description", "describe the task in a doc comment"),
+    (
+        "version",
+        "to tie executions to a code release, set the worker's version with \
+         WorkerBuilder::version_id or ORCHER_VERSION_ID",
+    ),
+    (
+        "task_queue",
+        "a task runs on the task queue of the workflow that schedules it, so serve that \
+         queue with WorkerBuilder::task_queue",
+    ),
+    ("priority", "tasks have no priority"),
+    (
+        "max_concurrent",
+        "limit how many tasks a worker runs at once with WorkerBuilder::max_concurrent_tasks",
+    ),
+    ("rate_limit", "tasks are not rate limited"),
+    (
+        "resources",
+        "tasks are not placed by resources, so size the worker that runs them",
+    ),
+    (
+        "memory",
+        "tasks are not placed by resources, so size the worker that runs them",
+    ),
+    (
+        "idempotency_key",
+        "a scheduled task is identified by its task id; set a stable one with \
+         TaskOptions::with_task_id",
+    ),
+    (
+        "condition",
+        "decide in the workflow whether to schedule the task",
+    ),
+    (
+        "parallel",
+        "run tasks in parallel by awaiting them together in the workflow",
+    ),
+    (
+        "requires_approval",
+        "wait for an approval in the workflow, with WorkflowContext::wait_for_event",
+    ),
+    (
+        "approval_timeout",
+        "wait for an approval in the workflow, with WorkflowContext::wait_for_event",
+    ),
+    (
+        "approvers",
+        "wait for an approval in the workflow, with WorkflowContext::wait_for_event",
+    ),
+];
+
+/// Looks `key` up in `table`, returning the ineffective attribute written at `span`.
+fn ineffective_in(
+    table: &'static [(&'static str, &'static str)],
+    key: &str,
+    span: proc_macro2::Span,
+) -> Option<IneffectiveAttr> {
+    table
+        .iter()
+        .find(|(k, _)| *k == key)
+        .map(|(key, note)| IneffectiveAttr { key, note, span })
+}
+
+/// The error for `namespace` on `#[task]` or `#[tasks]`: a task belongs to no namespace of
+/// its own.
+fn task_namespace_error(item: &str, path: &syn::Path) -> darling::Error {
+    darling::Error::custom(format!(
+        "`namespace` is not a #[{item}] option: a task runs in whatever namespace its \
+         worker serves. Set it on the worker (WorkerBuilder::namespace)"
+    ))
+    .with_span(path)
+}
+
+/// Reads the keys of `#[task(...)]` or `#[tasks(...)]`: rejects `namespace` and collects
+/// the attributes that have no effect.
+fn scan_task_keys(meta: &Meta, item: &str) -> darling::Result<Vec<IneffectiveAttr>> {
+    let mut ineffective = Vec::new();
+    if let Meta::List(list) = meta {
+        for nested in list.parse_args_with(Punctuated::<Meta, Token![,]>::parse_terminated)? {
+            let path = nested.path();
+            let Some(ident) = path.get_ident() else {
+                continue;
+            };
+            let key = ident.to_string();
+            if key == "namespace" {
+                return Err(task_namespace_error(item, path));
+            }
+            ineffective.extend(ineffective_in(TASK_INEFFECTIVE, &key, path.span()));
+        }
+    }
+    Ok(ineffective)
+}
+
+/// Parses `#[task(...)]`, rejecting `namespace` and recording the attributes that have no
+/// effect.
+pub fn parse_task_attrs(meta: &Meta) -> darling::Result<TaskAttrs> {
+    let ineffective = scan_task_keys(meta, "task")?;
+    let mut attrs = TaskAttrs::from_meta(meta)?;
+    attrs.ineffective = ineffective;
+    Ok(attrs)
+}
+
+/// Parses `#[tasks(...)]`, rejecting `namespace` and recording the attributes that have no
+/// effect.
+pub fn parse_tasks_group_attrs(meta: &Meta) -> darling::Result<TasksGroupAttrs> {
+    let ineffective = scan_task_keys(meta, "tasks")?;
+    let mut attrs = TasksGroupAttrs::from_meta(meta)?;
+    attrs.ineffective = ineffective;
+    Ok(attrs)
+}
+
+/// Emits a deprecation warning, at the attribute, for each attribute on `#[item]` that is
+/// accepted but has no effect.
+///
+/// A procedural macro cannot emit a warning directly on stable Rust, so this defines a
+/// `#[deprecated]` constant carrying the note and uses it with the attribute's span; the
+/// compiler then reports the use as a `deprecated` warning. A warning rather than an
+/// error keeps code that sets these attributes compiling.
+pub fn ineffective_attr_warnings(
+    item: &str,
+    ineffective: &[IneffectiveAttr],
+) -> proc_macro2::TokenStream {
+    let warnings = ineffective.iter().map(|attr| {
+        let note = format!(
+            "`{}` on #[{item}] has no effect and will be removed; {}",
+            attr.key, attr.note
+        );
+        let name = syn::Ident::new(&format!("{}_has_no_effect_on_{item}", attr.key), attr.span);
+        quote::quote_spanned! {attr.span=>
+            const _: () = {
+                #[deprecated(note = #note)]
+                #[allow(non_upper_case_globals)]
+                const #name: () = ();
+                #name
+            };
+        }
+    });
+    quote::quote! { #(#warnings)* }
+}
+
+/// The defaults a task preset fills in: `"long-running"`, `"quick"` or `"critical"`.
+fn task_preset(name: &str) -> Result<TaskAttrs, String> {
+    match name {
+        "long-running" => Ok(TaskAttrs {
+            retry: Some(3),
+            timeout_mins: Some(30),
+            ..Default::default()
+        }),
+        // One attempt: `retry` counts attempts, the first included.
+        "quick" => Ok(TaskAttrs {
+            retry: Some(1),
+            timeout_mins: Some(1),
+            ..Default::default()
+        }),
+        "critical" => Ok(TaskAttrs {
+            retry: Some(5),
+            timeout_mins: Some(60),
+            ..Default::default()
+        }),
+        other => Err(format!(
+            "unknown preset `{other}`; use \"long-running\", \"quick\" or \"critical\""
+        )),
+    }
+}
+
+/// Expands the shortcuts of `#[task]`: `preset`, `retry`, `timeout_mins` and `memory`.
+///
+/// A preset only fills in values that are not set explicitly. `retry = N` becomes an
+/// exponential policy (1s initial, 60s max, factor 2.0) unless `retry_policy` is given,
+/// `timeout_mins` fills in `timeout`, and `memory` fills in the memory request.
+pub fn expand_task_shortcuts(attrs: &mut TaskAttrs) -> Result<(), String> {
+    if let Some(preset_name) = attrs.preset.clone() {
+        let preset = task_preset(&preset_name)?;
+        if attrs.retry.is_none() {
+            attrs.retry = preset.retry;
+        }
+        if attrs.timeout_mins.is_none() {
+            attrs.timeout_mins = preset.timeout_mins;
+        }
+    }
+
+    if let Some(max_attempts) = attrs.retry {
+        if attrs.retry_policy.is_none() {
+            attrs.retry_policy = Some(RetryPolicyAttr {
+                max_attempts,
+                initial_interval: 1,
+                max_interval: 60,
+                backoff_coefficient: 2.0,
+            });
+        }
+    }
+
+    if let Some(timeout_mins) = attrs.timeout_mins {
+        if attrs.timeout.is_none() {
+            attrs.timeout = Some(timeout_mins * 60);
+        }
+    }
+
+    if let Some(memory) = &attrs.memory {
+        match attrs.resources {
+            None => {
+                attrs.resources = Some(ResourcesAttr {
+                    cpu: None,
+                    memory: Some(memory.clone()),
+                    disk: None,
+                    cpu_limit: None,
+                    memory_limit: None,
+                    disk_limit: None,
+                    network_limit: None,
+                });
+            }
+            Some(ref mut resources) => {
+                if resources.memory.is_none() {
+                    resources.memory = Some(memory.clone());
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
 /// Retry policy arguments, such as `retry_policy(max_attempts = 5, initial_interval = 2)`.
 #[derive(Debug, Clone, FromMeta)]
 pub struct RetryPolicyAttr {
@@ -69,17 +351,14 @@ pub struct TaskAttrs {
     #[darling(default)]
     pub name: Option<String>,
 
-    /// Task description.
+    /// Task description. Has no effect; accepted so the macro can warn about it.
     #[darling(default)]
+    #[allow(dead_code)]
     pub description: Option<String>,
 
     /// Task version.
     #[darling(default)]
     pub version: Option<String>,
-
-    /// Namespace the task belongs to.
-    #[darling(default)]
-    pub namespace: Option<String>,
 
     /// Task queue used to route executions.
     #[darling(default)]
@@ -113,8 +392,10 @@ pub struct TaskAttrs {
     #[darling(default)]
     pub rate_limit: Option<u32>,
 
-    /// Template for the idempotency key used to deduplicate executions.
+    /// Template for an idempotency key. Has no effect; accepted so the macro can warn about
+    /// it.
     #[darling(default)]
+    #[allow(dead_code)]
     pub idempotency_key: Option<String>,
 
     /// Condition expression that gates execution.
@@ -161,6 +442,10 @@ pub struct TaskAttrs {
     /// `#[task(preset = "long-running")]`. Explicit arguments override the preset.
     #[darling(default)]
     pub preset: Option<String>,
+
+    /// Attributes that were set but have no effect, filled in by [`parse_task_attrs`].
+    #[darling(skip)]
+    pub ineffective: Vec<IneffectiveAttr>,
 }
 
 /// Arguments accepted by `#[tasks]`: defaults for every `#[task]` method in the impl block.
@@ -188,10 +473,6 @@ pub struct TasksGroupAttrs {
     #[darling(default)]
     pub task_queue: Option<String>,
 
-    /// Default namespace.
-    #[darling(default)]
-    pub namespace: Option<String>,
-
     /// Default version.
     #[darling(default)]
     pub version: Option<String>,
@@ -215,6 +496,11 @@ pub struct TasksGroupAttrs {
     /// Default rate limit in executions per second.
     #[darling(default)]
     pub rate_limit: Option<u32>,
+
+    /// Attributes that were set but have no effect, filled in by
+    /// [`parse_tasks_group_attrs`].
+    #[darling(skip)]
+    pub ineffective: Vec<IneffectiveAttr>,
 }
 
 impl TasksGroupAttrs {
@@ -235,9 +521,6 @@ impl TasksGroupAttrs {
         }
         if method_attrs.task_queue.is_none() {
             method_attrs.task_queue = self.task_queue.clone();
-        }
-        if method_attrs.namespace.is_none() {
-            method_attrs.namespace = self.namespace.clone();
         }
         if method_attrs.version.is_none() {
             method_attrs.version = self.version.clone();
@@ -348,32 +631,13 @@ pub struct EventAttrs {
     pub priority: Option<u8>,
 }
 
-/// A `#[workflow]` attribute that is accepted but has no effect, so the macro warns about it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum IneffectiveWorkflowAttr {
-    /// `timeout`: the execution timeout is set per start.
-    Timeout,
-    /// `version`: the code release is declared by the worker.
-    Version,
-}
-
-impl IneffectiveWorkflowAttr {
-    /// The attribute key as written.
-    pub fn key(self) -> &'static str {
-        match self {
-            Self::Timeout => "timeout",
-            Self::Version => "version",
-        }
-    }
-}
-
 /// Arguments accepted by `#[workflow]`.
 ///
 /// The parser reads `name`, `description`, `version`, `task_queue`, `timeout`,
 /// `max_concurrent`, `enabled`, `cron`, `schedule`, `tags(...)` and `retry_policy(...)`.
-/// Other keys are ignored, so the remaining fields always keep their defaults. `version`
-/// and `timeout` have no effect and are recorded in `ineffective`, so the macro can warn
-/// about them. `namespace` is rejected: the namespace belongs to the worker and the client.
+/// Other keys are ignored, so the remaining fields always keep their defaults. Every key
+/// but `name` has no effect and is recorded in `ineffective`, so the macro can warn about
+/// it. `namespace` is rejected: the namespace belongs to the worker and the client.
 #[derive(Debug, Clone)]
 pub struct WorkflowAttrs {
     /// Workflow name; defaults to the function name.
@@ -433,7 +697,7 @@ pub struct WorkflowAttrs {
     pub max_retry_attempts: Option<u32>,
 
     /// Attributes that were set but have no effect, with where each was written.
-    pub ineffective: Vec<(IneffectiveWorkflowAttr, proc_macro2::Span)>,
+    pub ineffective: Vec<IneffectiveAttr>,
 }
 
 // Defaults referenced by the darling attributes above.
@@ -546,6 +810,13 @@ impl FromMeta for WorkflowAttrs {
 
         if let Meta::List(list) = meta {
             for nested in list.parse_args_with(Punctuated::<Meta, Token![,]>::parse_terminated)? {
+                if let Some(ident) = nested.path().get_ident() {
+                    attrs.ineffective.extend(ineffective_in(
+                        WORKFLOW_INEFFECTIVE,
+                        &ident.to_string(),
+                        nested.path().span(),
+                    ));
+                }
                 match nested {
                     Meta::NameValue(nv) => {
                         let ident = nv.path.get_ident().ok_or_else(|| {
@@ -568,9 +839,6 @@ impl FromMeta for WorkflowAttrs {
                                 }
                             }
                             "version" => {
-                                attrs
-                                    .ineffective
-                                    .push((IneffectiveWorkflowAttr::Version, nv.path.span()));
                                 if let Expr::Lit(lit) = &nv.value {
                                     if let Lit::Str(s) = &lit.lit {
                                         attrs.version = s.value();
@@ -588,9 +856,6 @@ impl FromMeta for WorkflowAttrs {
                                 .with_span(&nv.path));
                             }
                             "timeout" => {
-                                attrs
-                                    .ineffective
-                                    .push((IneffectiveWorkflowAttr::Timeout, nv.path.span()));
                                 if let Expr::Lit(lit) = &nv.value {
                                     if let Lit::Int(i) = &lit.lit {
                                         attrs.timeout = Some(i.base10_parse()?);
