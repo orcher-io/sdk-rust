@@ -188,6 +188,11 @@ fn load_one(
                 End::TimedOut => inject_child_failure(ctx, workflow_id, "child workflow timed out"),
             }
         }
+        // A child history records as started: one the code started without
+        // naming keeps the id it was started under, while it still runs.
+        Some(resolution::What::ChildStarted(child)) => {
+            ctx.record_journaled_child(child.child_workflow_id.clone());
+        }
         Some(resolution::What::Timer(_)) => {
             if let Some(at_ms) = at_ms {
                 ctx.record_resolved_at(format!("timer:{step_id}"), at_ms);
@@ -630,6 +635,39 @@ mod tests {
             ]
         );
         assert_eq!(calls[1].seq, 1);
+    }
+
+    /// A child history records as started under an older SDK's default id
+    /// keeps that id while it still runs: the code that started it without
+    /// naming it gets the same id again, not a second child.
+    #[test]
+    fn a_running_child_keeps_the_id_history_holds() {
+        let activation = RunActivation {
+            run: Some(kernel::RunRef {
+                workflow_id: "order-7".into(),
+                run_id: "run-1".into(),
+                workflow_type: "checkout".into(),
+                ..Default::default()
+            }),
+            resolutions: vec![
+                Resolution {
+                    what: Some(resolution::What::Started(Default::default())),
+                    ..Default::default()
+                },
+                Resolution {
+                    step_id: "child_1".into(),
+                    what: Some(resolution::What::ChildStarted(kernel::ChildStarted {
+                        child_workflow_id: "child_1".into(),
+                        child_run_id: "run-9".into(),
+                    })),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+        let loaded = load(activation, "default").unwrap();
+        assert_eq!(loaded.ctx.default_child_workflow_id(1), "child_1");
+        assert_eq!(loaded.ctx.default_child_workflow_id(2), "order-7-child-2");
     }
 
     /// A command the kernel protocol cannot carry is a protocol error, not a
