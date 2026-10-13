@@ -481,10 +481,10 @@ impl WorkerBuilder {
                     for (operation_name, registration) in operations {
                         let mode = match registration.mode {
                             crate::actor::types::OperationMode::Exclusive => {
-                                orcher_proto::orcher::v1::OperationMode::Exclusive
+                                orcher_sdk_core::proto::orcher::v1::OperationMode::Exclusive
                             }
                             crate::actor::types::OperationMode::Shared => {
-                                orcher_proto::orcher::v1::OperationMode::Shared
+                                orcher_sdk_core::proto::orcher::v1::OperationMode::Shared
                             }
                         };
 

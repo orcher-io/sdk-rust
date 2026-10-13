@@ -57,7 +57,7 @@
 use crate::error::{Error, Result};
 use crate::workflow::command::RecordStepResultCommand;
 use crate::workflow::WorkflowContext;
-use orcher_proto::orcher::v1::StepType;
+use orcher_sdk_core::proto::orcher::v1::StepType;
 use std::collections::HashMap;
 
 /// Collects the successful closure results in `ctx` as `RecordStepResult` commands.
@@ -214,7 +214,7 @@ pub fn extract_failed_closure_commands(
     ctx: &WorkflowContext,
 ) -> Result<Vec<RecordStepResultCommand>> {
     let (pending_failures, step_attempt_counts): (
-        HashMap<String, orcher_proto::orcher::v1::Failure>,
+        HashMap<String, orcher_sdk_core::proto::orcher::v1::Failure>,
         HashMap<String, i32>,
     ) = {
         let state = ctx.state.lock().map_err(|e| {

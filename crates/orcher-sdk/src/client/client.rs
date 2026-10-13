@@ -11,8 +11,8 @@ use std::sync::Arc;
 use super::{ClientConfig, StartWorkflowOptions, WorkflowHandle};
 
 /// Converts a std `Duration` to the protobuf `Duration` used in workflow requests.
-fn proto_duration(d: std::time::Duration) -> orcher_proto::prost_types::Duration {
-    orcher_proto::prost_types::Duration {
+fn proto_duration(d: std::time::Duration) -> orcher_sdk_core::proto::prost_types::Duration {
+    orcher_sdk_core::proto::prost_types::Duration {
         seconds: d.as_secs() as i64,
         nanos: d.subsec_nanos() as i32,
     }

@@ -29,10 +29,14 @@ path = "src/bin/handle_ops.rs"
 name = "child_handle_ops"
 path = "src/bin/child_handle_ops.rs"
 
+[[bin]]
+name = "kernel_equivalence"
+path = "src/bin/kernel_equivalence.rs"
+
 [dependencies]
 orcher-sdk = { path = "../crates/orcher-sdk", features = ["auto-register"] }
 # For ListWorkflowsOptions in the tenancy check; follows the SDK's own version.
-orcher-sdk-core = "0.10"
+orcher-sdk-core = "0.13.2"
 
 
 tokio = { version = "1", features = ["full"] }

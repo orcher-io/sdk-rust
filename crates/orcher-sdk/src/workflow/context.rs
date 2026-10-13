@@ -15,6 +15,26 @@ use std::future::Future;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+/// What kind of step the code reached.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) enum StepKind {
+    /// A task, including the built-in session tasks.
+    Task,
+    /// A durable timer, including a timed wait's deadline.
+    Timer,
+    /// A child workflow, by its workflow id.
+    Child,
+}
+
+/// A step the code reached in an activation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ReachedStep {
+    /// What kind of step it is.
+    pub(crate) kind: StepKind,
+    /// Its id: a task's or timer's id, a child's workflow id.
+    pub(crate) id: String,
+}
+
 /// The context a workflow runs in.
 ///
 /// Every operation with an outside effect (tasks, closures, timers, child workflows) goes
@@ -81,7 +101,7 @@ pub(crate) struct ContextState {
     /// Attempts made so far, by step id.
     pub(crate) step_attempt_counts: HashMap<String, i32>,
     /// Recorded failures of closure steps, by step id.
-    pub(crate) pending_task_failures: HashMap<String, orcher_proto::orcher::v1::Failure>,
+    pub(crate) pending_task_failures: HashMap<String, orcher_sdk_core::proto::orcher::v1::Failure>,
     pub(crate) cached_input: Option<crate::payload::Payload>,
     /// Task queue override for session-routed tasks, set by `SessionContext` around its
     /// call to `execute_task`.
@@ -105,7 +125,7 @@ pub(crate) struct ContextState {
     /// activation, in order, whether the journal already held its outcome or its command
     /// is issued now. sdk-core checks them against the steps the journal recorded to tell
     /// code that no longer replays the run.
-    pub(crate) reached_steps: Vec<String>,
+    pub(crate) reached_steps: Vec<ReachedStep>,
     pub(crate) query_handlers: HashMap<String, QueryHandlerFn>,
     pub(crate) update_handlers: HashMap<String, ContextUpdateHandler>,
     /// Whether the journal holds a request to cancel the workflow.
@@ -253,11 +273,14 @@ impl WorkflowContext {
         std::mem::take(&mut state.commands)
     }
 
-    /// The code reached the step with this id; see
+    /// The code reached the step of this kind with this id; see
     /// [`take_reached_steps`](Self::take_reached_steps).
-    pub(crate) fn reach_step(&self, step_id: &str) {
+    pub(crate) fn reach_step(&self, kind: StepKind, step_id: &str) {
         let mut state = self.state.lock().unwrap();
-        state.reached_steps.push(step_id.to_string());
+        state.reached_steps.push(ReachedStep {
+            kind,
+            id: step_id.to_string(),
+        });
     }
 
     /// The ids of the steps the code reached in this activation, for its result.
@@ -265,7 +288,7 @@ impl WorkflowContext {
     /// sdk-core compares them with the steps the journal recorded: a recorded step left
     /// unreached by an activation that issues new work or ends the workflow is reported
     /// as non-determinism, and the activation is tried again instead of applied.
-    pub(crate) fn take_reached_steps(&self) -> Vec<String> {
+    pub(crate) fn take_reached_steps(&self) -> Vec<ReachedStep> {
         let mut state = self.state.lock().unwrap();
         std::mem::take(&mut state.reached_steps)
     }
@@ -376,7 +399,7 @@ impl WorkflowContext {
             .task_id
             .clone()
             .unwrap_or_else(|| format!("task_{}", sequence));
-        self.reach_step(&task_id);
+        self.reach_step(StepKind::Task, &task_id);
         self.cancellation_for(&task_id)?;
 
         let replaying = {
@@ -473,7 +496,7 @@ impl WorkflowContext {
     /// fired, so later ids stay the same across replays. The runtime marks a timer fired
     /// by the timer id in its FireTimer job.
     fn emit_timer(&self, timer_id: String, sequence: u64, duration: Duration) -> Result<()> {
-        self.reach_step(&timer_id);
+        self.reach_step(StepKind::Timer, &timer_id);
         let fired = {
             let state = self.state.lock().unwrap();
             state.fired_timers.contains_key(&timer_id).then(|| {
@@ -625,7 +648,7 @@ impl WorkflowContext {
             .workflow_id
             .clone()
             .unwrap_or_else(|| self.default_child_workflow_id(sequence));
-        self.reach_step(&workflow_id);
+        self.reach_step(StepKind::Child, &workflow_id);
 
         let run_id = format!("run_{}", uuid::Uuid::new_v4());
 
@@ -856,7 +879,10 @@ impl WorkflowContext {
             let timer_id = format!("event_timeout_{}_{}", event_name, n);
             // Reached on every path, whichever of the event and the deadline wins: the
             // journal holds this timer whenever an earlier activation parked here.
-            state.reached_steps.push(timer_id.clone());
+            state.reached_steps.push(ReachedStep {
+                kind: StepKind::Timer,
+                id: timer_id.clone(),
+            });
 
             // A fired marker without a position has no known order: treat it as later
             // than any event, so a buffered event still wins.
@@ -1160,7 +1186,7 @@ impl WorkflowContext {
         let sequence = self.next_sequence();
         let session_id = format!("session_{}", sequence);
         let task_id = format!("{}_{}", SESSION_CREATE_TASK, sequence);
-        self.reach_step(&task_id);
+        self.reach_step(StepKind::Task, &task_id);
         self.cancellation_for(&task_id)?;
 
         // On replay the creation task's recorded result is a serialized SessionInfo.

@@ -64,6 +64,7 @@ mod traits;
 pub mod update;
 
 pub use context::WorkflowContext;
+pub(crate) use context::{ReachedStep, StepKind};
 pub use executable::{ClosureExecution, Executable, TaskExecution};
 pub use execution::WorkflowExecution;
 pub use handle::ChildWorkflowHandle;
