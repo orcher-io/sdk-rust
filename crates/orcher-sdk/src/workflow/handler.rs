@@ -1,7 +1,7 @@
 //! Workflow handler types.
 //!
 //! The worker's `ExecutionRuntime` stores registered handlers and runs them. Polling and
-//! communication with the server go through sdk-core's `WorkflowDriver`.
+//! communication with the server go through the worker host.
 
 use crate::error::Result;
 use crate::workflow::WorkflowContext;

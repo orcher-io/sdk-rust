@@ -21,6 +21,8 @@ use orcher_sdk_core::bridge::{
     WaitForEventCommand,
 };
 use orcher_sdk_core::poller::{TaskExecutionTask, WorkflowExecutionTask};
+use orcher_sdk_core::proto::host::v1::{task_outcome, TaskAssignment, TaskOutcome};
+use orcher_sdk_core::proto::kernel::v1::{Failure as KernelFailure, Payload as KernelPayload};
 use orcher_sdk_core::proto::orcher::v1::{journal_entry::Attributes, EntryType, JournalEntry};
 
 /// A workflow task handed to the runtime, with the channel its result goes back on.
@@ -667,32 +669,76 @@ impl ExecutionRuntime {
         result
     }
 
-    /// Runs one task through its registered handler and returns its encoded output.
-    ///
-    /// `heartbeat` is the task's heartbeat handle from the driver: the handler's
-    /// `ctx.heartbeat()` records through it, and the context shares its
-    /// cancellation token.
-    ///
-    /// # Errors
-    ///
-    /// Fails if no handler is registered for the task type or the handler
-    /// returns an error. A [`TaskError::Application`](crate::error::TaskError::Application)
-    /// keeps its error type and non-retryable flag.
-    // The error type is sdk-core's, returned to its driver unchanged, so its size is not
-    // this crate's to reduce.
-    #[allow(clippy::result_large_err)]
-    pub async fn execute_task(
+    /// The workflow types registered.
+    pub(crate) async fn workflow_types(&self) -> Vec<String> {
+        self.workflow_handlers
+            .read()
+            .await
+            .keys()
+            .cloned()
+            .collect()
+    }
+
+    /// The task types registered.
+    pub(crate) async fn task_types(&self) -> Vec<String> {
+        self.task_handlers.read().await.keys().cloned().collect()
+    }
+
+    /// Runs a task the worker host handed over and returns its outcome: its
+    /// value, or its failure with the type and retryability the task gave.
+    /// Heartbeats the task records, and its cancellation, go through `host`.
+    pub async fn execute_assignment(
         &self,
-        task: TaskExecutionTask,
-        heartbeat: orcher_sdk_core::poller::TaskHeartbeat,
+        assignment: TaskAssignment,
+        host: &orcher_sdk_host::Host,
+    ) -> TaskOutcome {
+        let token = assignment.token.clone();
+        let run = assignment.run.clone().unwrap_or_default();
+        let ctx = TaskContext::with_host(
+            run.workflow_id,
+            run.run_id,
+            assignment.task_id.clone(),
+            assignment.attempt as i32,
+            assignment
+                .heartbeat_timeout
+                .as_ref()
+                .map(|d| std::time::Duration::new(d.seconds.max(0) as u64, d.nanos.max(0) as u32)),
+            host.clone(),
+            token.clone(),
+        );
+        let input = assignment
+            .input
+            .into_iter()
+            .next()
+            .map(|payload| payload.data)
+            .unwrap_or_default();
+        let result = match self.run_task(ctx, &assignment.task_type, input).await {
+            Ok(data) => task_outcome::Result::Value(KernelPayload {
+                data,
+                metadata: Default::default(),
+            }),
+            Err(error) => task_outcome::Result::Failure(reported_failure(&error)),
+        };
+        TaskOutcome {
+            token,
+            result: Some(result),
+            ..Default::default()
+        }
+    }
+
+    /// Runs a task's handler with its context and input.
+    // The error is sdk-core's own, reported as it is; its size is not this
+    // crate's to change.
+    #[allow(clippy::result_large_err)]
+    async fn run_task(
+        &self,
+        ctx: TaskContext,
+        task_type: &str,
+        input: Vec<u8>,
     ) -> orcher_sdk_core::Result<Vec<u8>> {
-        let task_id = task.task_id.clone();
-        let task_type = task.task_type.clone();
-
         self.tasks_executed.fetch_add(1, Ordering::Relaxed);
-
         tracing::info!(
-            task_id = %task_id,
+            task_id = %ctx.task_id(),
             task_type = %task_type,
             "Executing task in sdk-rust runtime"
         );
@@ -704,34 +750,17 @@ impl ExecutionRuntime {
 
         let handler = {
             let handlers = self.task_handlers.read().await;
-            handlers.get(&task_type).cloned()
+            handlers.get(task_type).cloned()
+        };
+        let Some(handler) = handler else {
+            self.tasks_failed.fetch_add(1, Ordering::Relaxed);
+            return Err(orcher_sdk_core::Error::internal(format!(
+                "No handler registered for task type: {}",
+                task_type
+            )));
         };
 
-        let handler = match handler {
-            Some(h) => h,
-            None => {
-                self.tasks_failed.fetch_add(1, Ordering::Relaxed);
-                return Err(orcher_sdk_core::Error::internal(format!(
-                    "No handler registered for task type: {}",
-                    task_type
-                )));
-            }
-        };
-
-        // The heartbeat timeout comes from the poll response, so that
-        // `ctx.heartbeat_timeout()` reports the interval the server judges the
-        // task by. A handler needs it to pace its heartbeats; missing that
-        // interval gets a healthy task killed.
-        let ctx = TaskContext::with_heartbeat(
-            task.execution.workflow_id.clone(),
-            task.execution.run_id.clone(),
-            task.task_id.clone(),
-            task.attempt,
-            task.heartbeat_timeout,
-            heartbeat,
-        );
-
-        let mut input = Payload::new_data(task.input.clone());
+        let mut input = Payload::new_data(input);
         if let Some(ref codec) = self.config.codec_chain {
             use orcher_sdk_core::codec::PayloadCodec;
             match codec.decode(&input) {
@@ -1290,6 +1319,28 @@ fn task_failure(error: crate::Error) -> orcher_sdk_core::Error {
             .with_non_retryable(non_retryable)
             .into(),
         other => orcher_sdk_core::Error::internal(other.to_string()),
+    }
+}
+
+/// A handler's error as the failure the host reports: the type and
+/// retryability a [`TaskError::Application`](crate::error::TaskError::Application)
+/// names, or only the message for any other error.
+pub(crate) fn failure_of(error: crate::Error) -> KernelFailure {
+    reported_failure(&task_failure(error))
+}
+
+fn reported_failure(error: &orcher_sdk_core::Error) -> KernelFailure {
+    match error.task_failure() {
+        Some(failure) => KernelFailure {
+            message: failure.message.clone(),
+            error_type: failure.error_type.clone().unwrap_or_default(),
+            non_retryable: failure.non_retryable,
+            ..Default::default()
+        },
+        None => KernelFailure {
+            message: error.to_string(),
+            ..Default::default()
+        },
     }
 }
 

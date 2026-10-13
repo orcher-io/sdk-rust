@@ -2,8 +2,8 @@
 //!
 //! Without `DeregisterWorker` the server keeps listing a stopped worker as
 //! connected until its registration expires. The worker runs here against a
-//! real gRPC server that serves only `WorkerService`; the polls it also makes
-//! are refused as unimplemented, which the worker tolerates.
+//! real gRPC server that serves only `WorkerService`; the task polls it also
+//! makes are refused as unimplemented, which the worker tolerates.
 
 #![allow(clippy::needless_update)]
 
@@ -115,6 +115,14 @@ async fn run_and_shut_down(hang_on_deregister: bool) -> (Arc<Mutex<Recorded>>, D
             .await
             .unwrap(),
     );
+    // A worker that runs nothing is refused at start; this one runs a task.
+    worker
+        .runtime()
+        .register_task_handler(
+            "noop",
+            Arc::new(|_ctx, input| Box::pin(async move { Ok(input) })),
+        )
+        .await;
     let running = tokio::spawn({
         let worker = worker.clone();
         async move { worker.run().await }

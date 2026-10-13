@@ -56,10 +56,9 @@ pub struct TaskContext {
     /// Canceled when the task should stop.
     cancellation_token: Arc<tokio_util::sync::CancellationToken>,
 
-    /// The task's heartbeat from the worker's task driver, which sends what
-    /// `heartbeat` records and cancels `cancellation_token` when the engine
-    /// asks the task to stop.
-    driver_heartbeat: Option<orcher_sdk_core::poller::TaskHeartbeat>,
+    /// The worker host running the task, and the task's token: `heartbeat`
+    /// reports through it.
+    host: Option<(orcher_sdk_host::Host, Vec<u8>)>,
 }
 
 /// A heartbeat sent through `heartbeat_tx`.
@@ -103,21 +102,34 @@ impl TaskContext {
             heartbeat_timeout,
             heartbeat_tx: None,
             cancellation_token: Arc::new(tokio_util::sync::CancellationToken::new()),
-            driver_heartbeat: None,
+            host: None,
         }
     }
 
-    /// Create a task context for a task the worker's driver is running, which
-    /// heartbeats it on its own: `heartbeat` sends what the task records, and
-    /// its cancellation token is the context's.
-    pub(crate) fn with_heartbeat(
+    /// Create a task context for a task the worker host is running.
+    /// `heartbeat` reports through the host, and the context is cancelled
+    /// when the engine asks the task to stop (the host learns of it from the
+    /// heartbeats it sends) or the worker stops.
+    pub(crate) fn with_host(
         workflow_id: String,
         run_id: String,
         task_id: String,
         attempt: i32,
         heartbeat_timeout: Option<Duration>,
-        heartbeat: orcher_sdk_core::poller::TaskHeartbeat,
+        host: orcher_sdk_host::Host,
+        token: Vec<u8>,
     ) -> Self {
+        let cancellation_token = tokio_util::sync::CancellationToken::new();
+        {
+            let (host, token, cancel) = (host.clone(), token.clone(), cancellation_token.clone());
+            // Ends when the task is asked to stop, or once its outcome is
+            // reported.
+            tokio::spawn(async move {
+                if host.task_cancelled(&token).await {
+                    cancel.cancel();
+                }
+            });
+        }
         Self {
             workflow_id,
             run_id,
@@ -125,8 +137,8 @@ impl TaskContext {
             attempt: counted_from_one(attempt),
             heartbeat_timeout,
             heartbeat_tx: None,
-            cancellation_token: Arc::new(heartbeat.cancellation_token()),
-            driver_heartbeat: Some(heartbeat),
+            cancellation_token: Arc::new(cancellation_token),
+            host: Some((host, token)),
         }
     }
 
@@ -149,7 +161,7 @@ impl TaskContext {
             heartbeat_timeout,
             heartbeat_tx: Some(heartbeat_tx),
             cancellation_token,
-            driver_heartbeat: None,
+            host: None,
         }
     }
 
@@ -232,8 +244,14 @@ impl TaskContext {
         };
 
         // Handed to the driver, which sends it with the next heartbeat due.
-        if let Some(heartbeat) = &self.driver_heartbeat {
-            heartbeat.record(details_bytes);
+        if let Some((host, token)) = &self.host {
+            let details = details_bytes.map(|data| orcher_sdk_core::proto::kernel::v1::Payload {
+                data,
+                metadata: [("encoding".to_string(), b"json".to_vec())].into(),
+            });
+            if host.heartbeat(token, details).cancel_requested {
+                self.cancellation_token.cancel();
+            }
         } else if let Some(tx) = &self.heartbeat_tx {
             let has_details = details_bytes.is_some();
             let message = HeartbeatMessage {

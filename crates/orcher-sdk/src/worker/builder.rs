@@ -441,7 +441,7 @@ impl WorkerBuilder {
                 #[cfg(not(feature = "auto-register"))]
                 { 0 }
             },
-            "Building ORCHER Worker (driver mode)"
+            "Building ORCHER Worker"
         );
 
         let runtime_config = RuntimeConfig {
@@ -453,79 +453,14 @@ impl WorkerBuilder {
         };
         let runtime = Arc::new(ExecutionRuntime::new(runtime_config));
 
-        // Register actors with the server.
+        // The executor that runs actor operations; the worker host registers
+        // the handlers with the server when the worker runs.
         //
         // Both the gate and the handler list must come from the handler
         // registry, which the `#[operations]` macro populates
         // (`register_actor_handler_direct`). The definitions registry
         // (`actor_count`/`get_actor`) is filled only by the manual definition
-        // APIs; gating on it would leave macro-registered actors with no server
-        // registration and no actor driver.
-        #[cfg(feature = "auto-register")]
-        let actor_client = {
-            if self.registry.actor_handler_count() > 0 {
-                tracing::info!(
-                    handlers = self.registry.actor_handler_count(),
-                    "Registering actor handlers with server"
-                );
-
-                let mut client = crate::actor::ActorClient::connect_with_tls(
-                    self.config.server_url.clone(),
-                    self.config.identity.clone(),
-                    self.config.tls.clone(),
-                )
-                .await?;
-
-                let mut handlers = Vec::new();
-                for (actor_name, operations) in self.registry.actor_handlers() {
-                    for (operation_name, registration) in operations {
-                        let mode = match registration.mode {
-                            crate::actor::types::OperationMode::Exclusive => {
-                                orcher_sdk_core::proto::orcher::v1::OperationMode::Exclusive
-                            }
-                            crate::actor::types::OperationMode::Shared => {
-                                orcher_sdk_core::proto::orcher::v1::OperationMode::Shared
-                            }
-                        };
-
-                        handlers.push(crate::actor::ActorHandlerInfo::new(
-                            actor_name.clone(),
-                            operation_name.clone(),
-                            mode,
-                        ));
-                    }
-                }
-
-                let mut metadata = std::collections::HashMap::new();
-                metadata.insert(
-                    "sdk_version".to_string(),
-                    env!("CARGO_PKG_VERSION").to_string(),
-                );
-                metadata.insert("namespace".to_string(), self.config.namespace.clone());
-                metadata.insert("task_queue".to_string(), self.config.task_queue.clone());
-
-                let response = client.register_handlers(handlers, metadata).await?;
-
-                if !response.success {
-                    return Err(Error::Worker(crate::error::WorkerError::StartupFailed(
-                        format!("Failed to register actors: {}", response.error_message),
-                    )));
-                }
-
-                tracing::info!(
-                    registration_id = %response.registration_id,
-                    handlers_registered = response.handlers_registered,
-                    "Successfully registered actors with server"
-                );
-
-                let registration_id = response.registration_id.clone();
-
-                Some((Arc::new(tokio::sync::Mutex::new(client)), registration_id))
-            } else {
-                None
-            }
-        };
-
+        // APIs; gating on it would leave macro-registered actors unserved.
         #[cfg(feature = "auto-register")]
         let actor_executor = {
             if self.registry.actor_handler_count() > 0 {
@@ -557,12 +492,6 @@ impl WorkerBuilder {
             "Worker built successfully"
         );
 
-        #[cfg(feature = "auto-register")]
-        let (actor_client, actor_registration_id) = match actor_client {
-            Some((client, reg_id)) => (Some(client), Some(reg_id)),
-            None => (None, None),
-        };
-
         let (shutdown_tx, _) = tokio::sync::broadcast::channel(1);
 
         if !self.interceptor_chain.is_empty() {
@@ -577,11 +506,7 @@ impl WorkerBuilder {
             runtime,
             registry: Arc::new(RwLock::new(self.registry)),
             #[cfg(feature = "auto-register")]
-            actor_client,
-            #[cfg(feature = "auto-register")]
             actor_executor,
-            #[cfg(feature = "auto-register")]
-            actor_registration_id,
             service_id: self.config.identity.clone(),
             shutdown_tx,
             started_at: std::time::Instant::now(),
