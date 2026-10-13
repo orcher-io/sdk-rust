@@ -9,15 +9,15 @@
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use orcher_proto::orcher::v1::journal_entry::Attributes;
-use orcher_proto::orcher::v1::{
+use orcher_sdk_core::bridge::{Command, ExecutionErrorType, ExecutionResult};
+use orcher_sdk_core::poller::WorkflowExecutionTask;
+use orcher_sdk_core::proto::orcher::v1::journal_entry::Attributes;
+use orcher_sdk_core::proto::orcher::v1::{
     ChildWorkflowExecutionCompletedEventAttributes, ChildWorkflowExecutionStartedEventAttributes,
     EntryType, JournalEntry, StepCompletedEventAttributes, TaskScheduledEventAttributes,
     TimerFiredEventAttributes, TimerStartedEventAttributes,
     WorkflowExecutionStartedEventAttributes,
 };
-use orcher_sdk_core::bridge::{Command, ExecutionErrorType, ExecutionResult};
-use orcher_sdk_core::poller::WorkflowExecutionTask;
 use orcher_sdk_core::Replayer;
 
 use crate::payload::Payload;
@@ -58,7 +58,7 @@ impl FakeEngine {
         self.clock_ms += ENTRY_GAP_MS;
         self.journal.push(JournalEntry {
             entry_id: self.journal.len() as i64 + 1,
-            timestamp: Some(orcher_proto::prost_types::Timestamp {
+            timestamp: Some(orcher_sdk_core::proto::prost_types::Timestamp {
                 seconds: at / 1000,
                 nanos: ((at % 1000) * 1_000_000) as i32,
             }),

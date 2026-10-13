@@ -39,7 +39,7 @@
 //! ```
 
 use crate::error::{Error, Result};
-use orcher_proto::orcher::v1::{
+use orcher_sdk_core::proto::orcher::v1::{
     actor_service_client::ActorServiceClient, ActorHandler, GetStateRequest, GetStateResponse,
     HeartbeatRequest, HeartbeatResponse, OperationMode, RegisterHandlersRequest,
     RegisterHandlersResponse, SetStateRequest, SetStateResponse, WorkerMetrics, WorkerStatus,
@@ -388,7 +388,7 @@ impl ActorClient {
         &mut self,
         max_operations: u32,
         timeout: std::time::Duration,
-    ) -> Result<Vec<orcher_proto::orcher::v1::ActorOperation>> {
+    ) -> Result<Vec<orcher_sdk_core::proto::orcher::v1::ActorOperation>> {
         debug!(
             service_id = %self.service_id,
             max_operations = max_operations,
@@ -396,7 +396,7 @@ impl ActorClient {
             "Polling for actor operations"
         );
 
-        let request = orcher_proto::orcher::v1::PollActorOperationRequest {
+        let request = orcher_sdk_core::proto::orcher::v1::PollActorOperationRequest {
             service_id: self.service_id.clone(),
             max_operations,
             timeout_ms: timeout.as_millis() as u64,
@@ -455,12 +455,12 @@ impl ActorClient {
             "Completing operation (success)"
         );
 
-        let request = orcher_proto::orcher::v1::CompleteActorOperationRequest {
+        let request = orcher_sdk_core::proto::orcher::v1::CompleteActorOperationRequest {
             service_id: self.service_id.clone(),
             operation_id: operation_id.clone(),
             execution_id,
             result,
-            status: orcher_proto::orcher::v1::ExecutionStatus::Success as i32,
+            status: orcher_sdk_core::proto::orcher::v1::ExecutionStatus::Success as i32,
             error_message: String::new(),
             error_code: String::new(),
             duration_ms,
@@ -530,12 +530,12 @@ impl ActorClient {
             "Completing operation (error)"
         );
 
-        let request = orcher_proto::orcher::v1::CompleteActorOperationRequest {
+        let request = orcher_sdk_core::proto::orcher::v1::CompleteActorOperationRequest {
             service_id: self.service_id.clone(),
             operation_id: operation_id.clone(),
             execution_id,
             result: Vec::new(),
-            status: orcher_proto::orcher::v1::ExecutionStatus::Error as i32,
+            status: orcher_sdk_core::proto::orcher::v1::ExecutionStatus::Error as i32,
             error_message,
             error_code,
             duration_ms,
@@ -623,7 +623,7 @@ mod tests {
         assert_eq!(info.operation, "add_item");
         assert_eq!(
             info.mode as i32,
-            orcher_proto::orcher::v1::OperationMode::Exclusive as i32
+            orcher_sdk_core::proto::orcher::v1::OperationMode::Exclusive as i32
         );
         assert!(info.metadata.is_empty());
     }

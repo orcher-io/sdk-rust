@@ -269,7 +269,8 @@ impl<'a> SessionContext<'a> {
         let input_bytes = serde_json::to_vec(&input).unwrap_or_default();
         let sequence = self.ctx.next_sequence();
         let task_id = format!("{}_{}", SESSION_COMPLETE_TASK, sequence);
-        self.ctx.reach_step(&task_id);
+        self.ctx
+            .reach_step(crate::workflow::StepKind::Task, &task_id);
 
         let command = ScheduleTaskCommand {
             sequence,

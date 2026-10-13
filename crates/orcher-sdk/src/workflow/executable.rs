@@ -132,7 +132,7 @@ where
         // long as the workflow issues its steps in the same order.
         let sequence = ctx.next_sequence();
         let task_id = format!("{}_{}", step_name, sequence);
-        ctx.reach_step(&task_id);
+        ctx.reach_step(crate::workflow::StepKind::Task, &task_id);
         ctx.cancellation_for(&task_id)?;
 
         // When replaying, the engine has sent the journaled results of completed
@@ -432,7 +432,7 @@ where
             Err(e) => {
                 // Record the failure before propagating the error, so
                 // extract_failed_closure_commands can report which step failed.
-                let failure = orcher_proto::orcher::v1::Failure {
+                let failure = orcher_sdk_core::proto::orcher::v1::Failure {
                     message: e.to_string(),
                     source: "ClosureExecution".to_string(),
                     failure_type: "ClosureError".to_string(),

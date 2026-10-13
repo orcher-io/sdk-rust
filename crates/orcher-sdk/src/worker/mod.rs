@@ -35,6 +35,7 @@
 //! Keeping the two apart lets core overhead be measured separately from
 //! handler time and lets handlers run as native Rust.
 
+mod activation;
 mod builder;
 pub mod runtime;
 pub mod session;
@@ -903,10 +904,10 @@ impl Worker {
                                     for (operation_name, registration) in operations {
                                         let mode = match registration.mode {
                                             crate::actor::types::OperationMode::Exclusive => {
-                                                orcher_proto::orcher::v1::OperationMode::Exclusive
+                                                orcher_sdk_core::proto::orcher::v1::OperationMode::Exclusive
                                             }
                                             crate::actor::types::OperationMode::Shared => {
-                                                orcher_proto::orcher::v1::OperationMode::Shared
+                                                orcher_sdk_core::proto::orcher::v1::OperationMode::Shared
                                             }
                                         };
                                         handlers.push(crate::actor::ActorHandlerInfo::new(
@@ -1186,7 +1187,7 @@ impl Worker {
     #[allow(clippy::result_large_err)]
     async fn execute_actor_op(
         actor_executor: Option<Arc<crate::actor::ActorExecutor>>,
-        operation: &orcher_proto::orcher::v1::ActorOperation,
+        operation: &orcher_sdk_core::proto::orcher::v1::ActorOperation,
         server_url: &str,
         tls: Option<crate::client::ClientTlsConfig>,
     ) -> orcher_sdk_core::error::Result<Vec<u8>> {

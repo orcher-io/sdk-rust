@@ -22,7 +22,7 @@
 
 use crate::error::{Error, Result};
 use moka::future::Cache;
-use orcher_proto::orcher::v1::{
+use orcher_sdk_core::proto::orcher::v1::{
     actor_service_client::ActorServiceClient, DeleteStateRequest, GetStateRequest,
     ListStateKeysRequest, SetStateRequest,
 };

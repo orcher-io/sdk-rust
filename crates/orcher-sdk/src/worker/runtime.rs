@@ -10,6 +10,7 @@ use crate::error::{Error, Result};
 use crate::payload::Payload;
 use crate::worker::registration::{TaskHandlerFn, WorkflowHandlerFn};
 use crate::workflow::closure_commands::extract_closure_commands;
+use crate::workflow::ReachedStep;
 use crate::workflow::{WorkflowCommand, WorkflowContext, WorkflowExecution};
 use crate::TaskContext;
 
@@ -257,6 +258,72 @@ impl ExecutionRuntime {
         self.execute_workflow_handler(task, handler).await
     }
 
+    /// Runs one activation as the kernel protocol carries it; returns what
+    /// it produced, as the journal-reading path does, with the steps the
+    /// code reached and their kinds. An activation that cannot be read is
+    /// an error, for the protocol error it answers with.
+    pub(crate) async fn execute_activation(
+        &self,
+        activation: orcher_sdk_core::proto::kernel::v1::RunActivation,
+    ) -> std::result::Result<(ExecutionResult, Vec<ReachedStep>), String> {
+        let loaded = crate::worker::activation::load(activation, &self.config.namespace)?;
+        let execution = loaded.ctx.execution().clone();
+        let run_id = execution.run_id.clone();
+        self.workflows_executed.fetch_add(1, Ordering::Relaxed);
+
+        let _permit = self
+            .workflow_semaphore
+            .acquire()
+            .await
+            .map_err(|e| format!("Failed to acquire execution permit: {e}"))?;
+        let handler = {
+            let handlers = self.workflow_handlers.read().await;
+            handlers.get(&execution.workflow_type).cloned()
+        };
+        let Some(handler) = handler else {
+            tracing::error!(
+                workflow_type = %execution.workflow_type,
+                "No handler registered for workflow type"
+            );
+            return Ok((
+                ExecutionResult::failed(
+                    run_id,
+                    orcher_sdk_core::bridge::ExecutionError {
+                        message: format!(
+                            "No handler registered for workflow type: {}",
+                            execution.workflow_type
+                        ),
+                        error_type: orcher_sdk_core::bridge::ExecutionErrorType::WorkflowCode,
+                        details: None,
+                        retryable: false,
+                    },
+                ),
+                Vec::new(),
+            ));
+        };
+        let input = self.decode_input(loaded.input.unwrap_or(serde_json::Value::Null));
+        Ok(self
+            .run_handler(loaded.ctx, input, handler, &loaded.asked)
+            .await)
+    }
+
+    /// The run's input as a payload, decoded by the codec chain when one is
+    /// set; on a decode failure, logged and passed on undecoded.
+    fn decode_input(&self, input: serde_json::Value) -> Payload {
+        let mut payload =
+            Payload::from_json(&input).unwrap_or_else(|_| Payload::new_data(Vec::new()));
+        if let Some(ref codec) = self.config.codec_chain {
+            use orcher_sdk_core::codec::PayloadCodec;
+            match codec.decode(&payload) {
+                Ok(decoded) => payload = decoded,
+                Err(e) => {
+                    tracing::warn!(error = %e, "Failed to decode workflow input with codec chain");
+                }
+            }
+        }
+        payload
+    }
+
     async fn execute_workflow_handler(
         &self,
         task: WorkflowExecutionTask,
@@ -346,16 +413,35 @@ impl ExecutionRuntime {
             }
         };
 
+        let asked = asked_in(&execution_request.jobs);
+        self.run_handler(ctx, input, handler, &asked).await.0
+    }
+
+    /// Runs the workflow's code once its context holds what history
+    /// resolved, answers the queries and updates asked of it, and returns
+    /// what the activation produced, with the steps the code reached.
+    pub(crate) async fn run_handler(
+        &self,
+        ctx: WorkflowContext,
+        input: Payload,
+        handler: WorkflowHandlerFn,
+        asked: &[Asked],
+    ) -> (ExecutionResult, Vec<ReachedStep>) {
+        let execution = ctx.execution().clone();
+        let (run_id, workflow_id, task_queue) = (
+            execution.run_id,
+            execution.workflow_id.as_str(),
+            execution.task_queue.as_str(),
+        );
         let handler_result = handler(ctx.clone(), input).await;
 
         // Queries and updates run after the handler, because the handler is
         // what registers their handlers on the context.
-        let (query_responses, update_results) = self
-            .process_query_and_update_jobs(&ctx, &execution_request.jobs)
-            .await;
+        let (query_responses, update_results) = self.answer_asked(&ctx, asked).await;
         // The steps the code reached, which sdk-core checks against the
         // journal to tell code that no longer replays the run.
-        let reached_steps = ctx.take_reached_steps();
+        let reached = ctx.take_reached_steps();
+        let reached_steps = reached.iter().map(|step| step.id.clone()).collect();
 
         let mut result = match handler_result {
             Ok(output) => {
@@ -364,7 +450,7 @@ impl ExecutionRuntime {
                     Ending::Completed(output),
                     ctx,
                     run_id,
-                    &task_queue,
+                    task_queue,
                     query_responses,
                     update_results,
                 );
@@ -385,7 +471,7 @@ impl ExecutionRuntime {
                     Ending::Cancelled,
                     ctx,
                     run_id,
-                    &task_queue,
+                    task_queue,
                     query_responses,
                     update_results,
                 )
@@ -404,7 +490,7 @@ impl ExecutionRuntime {
                 self.handle_workflow_suspension(
                     ctx,
                     run_id,
-                    &task_queue,
+                    task_queue,
                     query_responses,
                     update_results,
                 )
@@ -416,7 +502,7 @@ impl ExecutionRuntime {
             }
         };
         result.set_reached_steps(reached_steps);
-        result
+        (result, reached)
     }
 
     fn handle_workflow_completion(
@@ -773,36 +859,31 @@ impl ExecutionRuntime {
         }
     }
 
-    /// Answers the activation's queries and updates.
+    /// Answers the activation's updates, then its queries, so a query sees
+    /// what an update in the same activation changed.
     ///
     /// Must run after the workflow handler, which registers the query and
     /// update handlers on the context.
-    async fn process_query_and_update_jobs(
+    async fn answer_asked(
         &self,
         ctx: &WorkflowContext,
-        jobs: &[RequestJob],
+        asked: &[Asked],
     ) -> (Vec<QueryResponse>, Vec<UpdateResponse>) {
         let mut query_responses = Vec::new();
         let mut update_results = Vec::new();
 
-        for job in jobs {
-            match job {
-                RequestJob::ProcessQuery(query_job) => {
-                    // The client sends its arguments as one JSON payload.
-                    let args = query_job
-                        .arguments
-                        .first()
-                        .map(|payload| payload.data.as_slice())
-                        .unwrap_or_default();
-                    let response = match ctx.handle_query_request(&query_job.query_type, args) {
+        for asked in asked {
+            match asked {
+                Asked::Query { id, name, args } => {
+                    let response = match ctx.handle_query_request(name, args) {
                         Ok(output) => QueryResponse {
-                            query_id: query_job.query_id.clone(),
+                            query_id: id.clone(),
                             result: QueryResult::Success {
                                 output: Payload::new_data(output),
                             },
                         },
                         Err(e) => QueryResponse {
-                            query_id: query_job.query_id.clone(),
+                            query_id: id.clone(),
                             result: QueryResult::Failed {
                                 message: e.to_string(),
                                 details: None,
@@ -811,22 +892,16 @@ impl ExecutionRuntime {
                     };
                     query_responses.push(response);
                 }
-                RequestJob::UpdateState(update_job) => {
-                    let response = match ctx
-                        .handle_update_request(
-                            &update_job.update_name,
-                            update_job.payload.data.clone(),
-                        )
-                        .await
-                    {
+                Asked::Update { id, name, args } => {
+                    let response = match ctx.handle_update_request(name, args.clone()).await {
                         Ok(output) => UpdateResponse {
-                            update_id: update_job.update_id.clone(),
+                            update_id: id.clone(),
                             result: UpdateResult::Completed {
                                 output: Payload::new_data(output),
                             },
                         },
                         Err(e) => UpdateResponse {
-                            update_id: update_job.update_id.clone(),
+                            update_id: id.clone(),
                             result: UpdateResult::Rejected {
                                 message: e.to_string(),
                             },
@@ -834,7 +909,6 @@ impl ExecutionRuntime {
                     };
                     update_results.push(response);
                 }
-                _ => {} // Other jobs are handled before the handler runs.
             }
         }
 
@@ -1126,13 +1200,53 @@ fn journaled_child_id(entry: &JournalEntry) -> Option<String> {
 
 /// Records that a child ended without a result, so `result()` raises
 /// `ChildWorkflowFailed` with `message` on replay.
-fn inject_child_failure(ctx: &WorkflowContext, workflow_id: &str, message: &str) {
+pub(crate) fn inject_child_failure(ctx: &WorkflowContext, workflow_id: &str, message: &str) {
     let error_bytes = serde_json::to_vec(&serde_json::json!({
         "__orcher_child_failed__": true,
         "message": message
     }))
     .unwrap_or_default();
     ctx.inject_step_result(format!("child:{workflow_id}"), error_bytes);
+}
+
+/// A query or update asked of the workflow in an activation.
+pub(crate) enum Asked {
+    /// A query: read-only, answered from the workflow's state.
+    Query {
+        id: String,
+        name: String,
+        /// Its arguments, as the one JSON payload the client sends.
+        args: Vec<u8>,
+    },
+    /// An update: may change the workflow's state.
+    Update {
+        id: String,
+        name: String,
+        args: Vec<u8>,
+    },
+}
+
+/// The queries and updates among a request's jobs, in their order.
+fn asked_in(jobs: &[RequestJob]) -> Vec<Asked> {
+    jobs.iter()
+        .filter_map(|job| match job {
+            RequestJob::ProcessQuery(query) => Some(Asked::Query {
+                id: query.query_id.clone(),
+                name: query.query_type.clone(),
+                args: query
+                    .arguments
+                    .first()
+                    .map(|payload| payload.data.clone())
+                    .unwrap_or_default(),
+            }),
+            RequestJob::UpdateState(update) => Some(Asked::Update {
+                id: update.update_id.clone(),
+                name: update.update_name.clone(),
+                args: update.payload.data.clone(),
+            }),
+            _ => None,
+        })
+        .collect()
 }
 
 /// How a workflow's code ended, for the terminal command it gets.
