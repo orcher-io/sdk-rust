@@ -33,6 +33,10 @@ path = "src/bin/child_handle_ops.rs"
 name = "kernel_equivalence"
 path = "src/bin/kernel_equivalence.rs"
 
+[[bin]]
+name = "replay_check"
+path = "src/bin/replay_check.rs"
+
 [dependencies]
 orcher-sdk = { path = "../crates/orcher-sdk", features = ["auto-register"] }
 # For ListWorkflowsOptions in the tenancy check; follows the SDK's own version.

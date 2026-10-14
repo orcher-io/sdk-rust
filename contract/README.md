@@ -61,3 +61,19 @@ cargo run -p orcher-contract -- --server-url http://localhost:50051
 
 Result matching is structural: a scenario asserts only the fields it lists, and
 extra fields in the actual result are ignored.
+
+## Replay check
+
+`replay/<corpus>/` holds workflow runs recorded from this catalog against a
+real engine (`ORCHER_RECORD_ACTIVATIONS`), and `expected.json` beside each
+corpus what the SDK sent the engine for every activation. `cargo run -p
+orcher-contract --bin replay_check` replays every recorded activation through
+the SDK, with no engine, and fails on any difference; CI runs it. The
+expected results were produced while the SDK still had its journal-reading
+path, and both paths agreed on all of them.
+
+A change meant to alter what the SDK sends updates them with `replay_check
+--bless`; the diff of `expected.json` then shows exactly what changed. To add
+runs, record the contract suite with `ORCHER_RECORD_ACTIVATIONS=<dir>` and
+copy the runs in (they hold no host or user names; check before committing).
+

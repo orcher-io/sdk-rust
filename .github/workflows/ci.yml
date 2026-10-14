@@ -42,6 +42,11 @@ jobs:
       - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
       - name: Tests
         run: cargo test --workspace --all-features --lib --tests
+      # Recorded activations answered as they were when recorded: what the
+      # SDK sends the engine for each must not change unless meant to
+      # (contract/README.md, "Replay check").
+      - name: Replay check
+        run: cargo run -p orcher-contract --bin replay_check
       - name: Doc examples
         run: cargo test --workspace --all-features --doc
       - name: Docs build without warnings

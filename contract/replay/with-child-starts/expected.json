@@ -1,0 +1,2684 @@
+{
+  "0392a238-6fc8-4155-a26f-d2c77109e3d2/b9abda52-19b3-47d7-9ac0-633826b2dfcc#0": {
+    "commands": [
+      {
+        "StartTimer": {
+          "duration": {
+            "nanos": 0,
+            "secs": 1
+          },
+          "sequence": 0,
+          "timer_id": "timer_0"
+        }
+      }
+    ],
+    "error": null,
+    "query_responses": [],
+    "reached_steps": [
+      "timer_0"
+    ],
+    "restart_fresh": null,
+    "run_id": "b9abda52-19b3-47d7-9ac0-633826b2dfcc",
+    "successful": true,
+    "update_results": []
+  },
+  "0392a238-6fc8-4155-a26f-d2c77109e3d2/b9abda52-19b3-47d7-9ac0-633826b2dfcc#2": {
+    "commands": [
+      {
+        "CompleteWorkflow": {
+          "result": {
+            "data": [
+              123,
+              34,
+              115,
+              108,
+              101,
+              112,
+              116,
+              34,
+              58,
+              116,
+              114,
+              117,
+              101,
+              125
+            ],
+            "metadata": {}
+          }
+        }
+      }
+    ],
+    "error": null,
+    "query_responses": [],
+    "reached_steps": [
+      "timer_0"
+    ],
+    "restart_fresh": null,
+    "run_id": "b9abda52-19b3-47d7-9ac0-633826b2dfcc",
+    "successful": true,
+    "update_results": []
+  },
+  "096c77ff-6918-4f3a-acb0-0e88e2c07ed0/826f88c7-258d-4a88-be12-bc41ede314be#0": {
+    "commands": [
+      {
+        "ScheduleTask": {
+          "headers": [],
+          "heartbeat_timeout": null,
+          "input": [
+            {
+              "data": [
+                123,
+                34,
+                115,
+                108,
+                101,
+                101,
+                112,
+                95,
+                115,
+                101,
+                99,
+                115,
+                34,
+                58,
+                49,
+                48,
+                125
+              ],
+              "metadata": {}
+            }
+          ],
+          "queue_timeout": null,
+          "retry_policy": {
+            "backoff_coefficient": 2.0,
+            "initial_interval": {
+              "nanos": 0,
+              "secs": 1
+            },
+            "max_attempts": 3,
+            "max_interval": {
+              "nanos": 0,
+              "secs": 60
+            },
+            "non_retryable_errors": []
+          },
+          "sequence": 0,
+          "task_id": "sleep_past_heartbeat_timeout_0",
+          "task_queue": "contract",
+          "task_type": "sleep_past_heartbeat_timeout",
+          "timeout": {
+            "nanos": 0,
+            "secs": 300
+          }
+        }
+      }
+    ],
+    "error": null,
+    "query_responses": [],
+    "reached_steps": [
+      "sleep_past_heartbeat_timeout_0"
+    ],
+    "restart_fresh": null,
+    "run_id": "826f88c7-258d-4a88-be12-bc41ede314be",
+    "successful": true,
+    "update_results": []
+  },
+  "096c77ff-6918-4f3a-acb0-0e88e2c07ed0/826f88c7-258d-4a88-be12-bc41ede314be#2": {
+    "commands": [
+      {
+        "CompleteWorkflow": {
+          "result": {
+            "data": [
+              123,
+              34,
+              114,
+              117,
+              110,
+              115,
+              34,
+              58,
+              49,
+              44,
+              34,
+              104,
+              101,
+              97,
+              114,
+              116,
+              98,
+              101,
+              97,
+              116,
+              95,
+              116,
+              105,
+              109,
+              101,
+              111,
+              117,
+              116,
+              95,
+              103,
+              105,
+              118,
+              101,
+              110,
+              34,
+              58,
+              116,
+              114,
+              117,
+              101,
+              44,
+              34,
+              111,
+              117,
+              116,
+              108,
+              105,
+              118,
+              101,
+              100,
+              95,
+              104,
+              101,
+              97,
+              114,
+              116,
+              98,
+              101,
+              97,
+              116,
+              95,
+              116,
+              105,
+              109,
+              101,
+              111,
+              117,
+              116,
+              34,
+              58,
+              116,
+              114,
+              117,
+              101,
+              125
+            ],
+            "metadata": {}
+          }
+        }
+      }
+    ],
+    "error": null,
+    "query_responses": [],
+    "reached_steps": [
+      "sleep_past_heartbeat_timeout_0"
+    ],
+    "restart_fresh": null,
+    "run_id": "826f88c7-258d-4a88-be12-bc41ede314be",
+    "successful": true,
+    "update_results": []
+  },
+  "0c377bb1-ca8c-4d2e-bc3d-b20515efd139/5986a966-056b-4aa8-8aee-bbbd37dce2f7#0": {
+    "commands": [
+      {
+        "WaitForEvent": {
+          "event_name": "contract_event",
+          "step_id": "event_contract_event_0",
+          "timeout_ms": 2000
+        }
+      },
+      {
+        "StartTimer": {
+          "duration": {
+            "nanos": 0,
+            "secs": 2
+          },
+          "sequence": 0,
+          "timer_id": "event_timeout_contract_event_1"
+        }
+      }
+    ],
+    "error": null,
+    "query_responses": [],
+    "reached_steps": [
+      "event_timeout_contract_event_1"
+    ],
+    "restart_fresh": null,
+    "run_id": "5986a966-056b-4aa8-8aee-bbbd37dce2f7",
+    "successful": true,
+    "update_results": []
+  },
+  "0c377bb1-ca8c-4d2e-bc3d-b20515efd139/5986a966-056b-4aa8-8aee-bbbd37dce2f7#2": {
+    "commands": [
+      {
+        "WaitForEvent": {
+          "event_name": "contract_event",
+          "step_id": "event_contract_event_0",
+          "timeout_ms": 2000
+        }
+      },
+      {
+        "StartTimer": {
+          "duration": {
+            "nanos": 0,
+            "secs": 2
+          },
+          "sequence": 0,
+          "timer_id": "event_timeout_contract_event_1"
+        }
+      }
+    ],
+    "error": null,
+    "query_responses": [],
+    "reached_steps": [
+      "event_timeout_contract_event_1"
+    ],
+    "restart_fresh": null,
+    "run_id": "5986a966-056b-4aa8-8aee-bbbd37dce2f7",
+    "successful": true,
+    "update_results": []
+  },
+  "0c377bb1-ca8c-4d2e-bc3d-b20515efd139/5986a966-056b-4aa8-8aee-bbbd37dce2f7#4": {
+    "commands": [
+      {
+        "CompleteWorkflow": {
+          "result": {
+            "data": [
+              123,
+              34,
+              114,
+              101,
+              99,
+              101,
+              105,
+              118,
+              101,
+              100,
+              34,
+              58,
+              110,
+              117,
+              108,
+              108,
+              44,
+              34,
+              116,
+              105,
+              109,
+              101,
+              100,
+              95,
+              111,
+              117,
+              116,
+              34,
+              58,
+              116,
+              114,
+              117,
+              101,
+              125
+            ],
+            "metadata": {}
+          }
+        }
+      }
+    ],
+    "error": null,
+    "query_responses": [],
+    "reached_steps": [
+      "event_timeout_contract_event_1"
+    ],
+    "restart_fresh": null,
+    "run_id": "5986a966-056b-4aa8-8aee-bbbd37dce2f7",
+    "successful": true,
+    "update_results": []
+  },
+  "13191e24-e040-4080-ba6a-c0db3f8b415b/ea898a86-47fc-46cf-8f42-d8d2ab88a362#0": {
+    "commands": [
+      {
+        "StartTimer": {
+          "duration": {
+            "nanos": 0,
+            "secs": 1
+          },
+          "sequence": 0,
+          "timer_id": "timer_0"
+        }
+      }
+    ],
+    "error": null,
+    "query_responses": [],
+    "reached_steps": [
+      "timer_0"
+    ],
+    "restart_fresh": null,
+    "run_id": "ea898a86-47fc-46cf-8f42-d8d2ab88a362",
+    "successful": true,
+    "update_results": []
+  },
+  "13191e24-e040-4080-ba6a-c0db3f8b415b/ea898a86-47fc-46cf-8f42-d8d2ab88a362#2": {
+    "commands": [
+      {
+        "CompleteWorkflow": {
+          "result": {
+            "data": [
+              123,
+              34,
+              115,
+              108,
+              101,
+              112,
+              116,
+              34,
+              58,
+              116,
+              114,
+              117,
+              101,
+              125
+            ],
+            "metadata": {}
+          }
+        }
+      }
+    ],
+    "error": null,
+    "query_responses": [],
+    "reached_steps": [
+      "timer_0"
+    ],
+    "restart_fresh": null,
+    "run_id": "ea898a86-47fc-46cf-8f42-d8d2ab88a362",
+    "successful": true,
+    "update_results": []
+  },
+  "194a3cff-0d84-48b6-ba38-161d342375bf/fea3032a-5f3c-4ea1-bcf1-b4c8eca37d73#0": {
+    "commands": [
+      {
+        "ScheduleTask": {
+          "headers": [],
+          "heartbeat_timeout": null,
+          "input": [
+            {
+              "data": [
+                123,
+                125
+              ],
+              "metadata": {}
+            }
+          ],
+          "queue_timeout": null,
+          "retry_policy": {
+            "backoff_coefficient": 2.0,
+            "initial_interval": {
+              "nanos": 0,
+              "secs": 1
+            },
+            "max_attempts": 3,
+            "max_interval": {
+              "nanos": 0,
+              "secs": 60
+            },
+            "non_retryable_errors": [
+              "CardDeclined"
+            ]
+          },
+          "sequence": 0,
+          "task_id": "decline_card_0",
+          "task_queue": "contract",
+          "task_type": "decline_card",
+          "timeout": {
+            "nanos": 0,
+            "secs": 300
+          }
+        }
+      }
+    ],
+    "error": null,
+    "query_responses": [],
+    "reached_steps": [
+      "decline_card_0"
+    ],
+    "restart_fresh": null,
+    "run_id": "fea3032a-5f3c-4ea1-bcf1-b4c8eca37d73",
+    "successful": true,
+    "update_results": []
+  },
+  "194a3cff-0d84-48b6-ba38-161d342375bf/fea3032a-5f3c-4ea1-bcf1-b4c8eca37d73#2": {
+    "commands": [
+      {
+        "CompleteWorkflow": {
+          "result": {
+            "data": [
+              123,
+              34,
+              99,
+              97,
+              117,
+              103,
+              104,
+              116,
+              34,
+              58,
+              116,
+              114,
+              117,
+              101,
+              44,
+              34,
+              116,
+              97,
+              115,
+              107,
+              95,
+              116,
+              121,
+              112,
+              101,
+              34,
+              58,
+              34,
+              100,
+              101,
+              99,
+              108,
+              105,
+              110,
+              101,
+              95,
+              99,
+              97,
+              114,
+              100,
+              34,
+              44,
+              34,
+              97,
+              116,
+              116,
+              101,
+              109,
+              112,
+              116,
+              115,
+              34,
+              58,
+              49,
+              125
+            ],
+            "metadata": {}
+          }
+        }
+      }
+    ],
+    "error": null,
+    "query_responses": [],
+    "reached_steps": [
+      "decline_card_0"
+    ],
+    "restart_fresh": null,
+    "run_id": "fea3032a-5f3c-4ea1-bcf1-b4c8eca37d73",
+    "successful": true,
+    "update_results": []
+  },
+  "275ebdaf-8ba5-42bf-8c40-f7ccc9bfead5/2a1f15e9-2e5f-4794-a4a4-146d7168b620#0": {
+    "commands": [
+      {
+        "CompleteWorkflow": {
+          "result": {
+            "data": [
+              123,
+              34,
+              99,
+              104,
+              105,
+              108,
+              100,
+              95,
+              115,
+              97,
+              119,
+              34,
+              58,
+              49,
+              48,
+              44,
+              34,
+              100,
+              111,
+              117,
+              98,
+              108,
+              101,
+              100,
+              34,
+              58,
+              50,
+              48,
+              125
+            ],
+            "metadata": {}
+          }
+        }
+      }
+    ],
+    "error": null,
+    "query_responses": [],
+    "reached_steps": [],
+    "restart_fresh": null,
+    "run_id": "2a1f15e9-2e5f-4794-a4a4-146d7168b620",
+    "successful": true,
+    "update_results": []
+  },
+  "2d759522-cffa-4459-bf16-f378631c225c/acac12ee-69a1-4ebc-893c-462631e2aa75#0": {
+    "commands": [
+      {
+        "ScheduleTask": {
+          "headers": [],
+          "heartbeat_timeout": null,
+          "input": [
+            {
+              "data": [
+                123,
+                125
+              ],
+              "metadata": {}
+            }
+          ],
+          "queue_timeout": null,
+          "retry_policy": {
+            "backoff_coefficient": 2.0,
+            "initial_interval": {
+              "nanos": 0,
+              "secs": 1
+            },
+            "max_attempts": 3,
+            "max_interval": {
+              "nanos": 0,
+              "secs": 60
+            },
+            "non_retryable_errors": []
+          },
+          "sequence": 0,
+          "task_id": "always_fail_retried_0",
+          "task_queue": "contract",
+          "task_type": "always_fail_retried",
+          "timeout": {
+            "nanos": 0,
+            "secs": 300
+          }
+        }
+      }
+    ],
+    "error": null,
+    "query_responses": [],
+    "reached_steps": [
+      "always_fail_retried_0"
+    ],
+    "restart_fresh": null,
+    "run_id": "acac12ee-69a1-4ebc-893c-462631e2aa75",
+    "successful": true,
+    "update_results": []
+  },
+  "2d759522-cffa-4459-bf16-f378631c225c/acac12ee-69a1-4ebc-893c-462631e2aa75#2": {
+    "commands": [
+      {
+        "CompleteWorkflow": {
+          "result": {
+            "data": [
+              123,
+              34,
+              99,
+              97,
+              117,
+              103,
+              104,
+              116,
+              34,
+              58,
+              116,
+              114,
+              117,
+              101,
+              44,
+              34,
+              116,
+              97,
+              115,
+              107,
+              95,
+              116,
+              121,
+              112,
+              101,
+              34,
+              58,
+              34,
+              97,
+              108,
+              119,
+              97,
+              121,
+              115,
+              95,
+              102,
+              97,
+              105,
+              108,
+              95,
+              114,
+              101,
+              116,
+              114,
+              105,
+              101,
+              100,
+              34,
+              44,
+              34,
+              97,
+              116,
+              116,
+              101,
+              109,
+              112,
+              116,
+              115,
+              34,
+              58,
+              51,
+              125
+            ],
+            "metadata": {}
+          }
+        }
+      }
+    ],
+    "error": null,
+    "query_responses": [],
+    "reached_steps": [
+      "always_fail_retried_0"
+    ],
+    "restart_fresh": null,
+    "run_id": "acac12ee-69a1-4ebc-893c-462631e2aa75",
+    "successful": true,
+    "update_results": []
+  },
+  "31c249d4-e05a-48b8-b2fc-29bfde0f8a42/23889881-9fe4-4a23-a468-8e7eab4cff8f#0": {
+    "commands": [
+      {
+        "StartTimer": {
+          "duration": {
+            "nanos": 0,
+            "secs": 600
+          },
+          "sequence": 0,
+          "timer_id": "timer_0"
+        }
+      }
+    ],
+    "error": null,
+    "query_responses": [],
+    "reached_steps": [
+      "timer_0"
+    ],
+    "restart_fresh": null,
+    "run_id": "23889881-9fe4-4a23-a468-8e7eab4cff8f",
+    "successful": true,
+    "update_results": []
+  },
+  "31c249d4-e05a-48b8-b2fc-29bfde0f8a42/23889881-9fe4-4a23-a468-8e7eab4cff8f#2": {
+    "commands": [
+      {
+        "ScheduleTask": {
+          "headers": [],
+          "heartbeat_timeout": null,
+          "input": [
+            {
+              "data": [
+                123,
+                125
+              ],
+              "metadata": {}
+            }
+          ],
+          "queue_timeout": null,
+          "retry_policy": {
+            "backoff_coefficient": 2.0,
+            "initial_interval": {
+              "nanos": 0,
+              "secs": 1
+            },
+            "max_attempts": 1,
+            "max_interval": {
+              "nanos": 0,
+              "secs": 60
+            },
+            "non_retryable_errors": []
+          },
+          "sequence": 1,
+          "task_id": "cancel_cleanup_1",
+          "task_queue": "contract",
+          "task_type": "cancel_cleanup",
+          "timeout": {
+            "nanos": 0,
+            "secs": 300
+          }
+        }
+      }
+    ],
+    "error": null,
+    "query_responses": [],
+    "reached_steps": [
+      "timer_0",
+      "cancel_cleanup_1"
+    ],
+    "restart_fresh": null,
+    "run_id": "23889881-9fe4-4a23-a468-8e7eab4cff8f",
+    "successful": true,
+    "update_results": []
+  },
+  "31c249d4-e05a-48b8-b2fc-29bfde0f8a42/23889881-9fe4-4a23-a468-8e7eab4cff8f#4": {
+    "commands": [
+      {
+        "CompleteWorkflow": {
+          "result": {
+            "data": [
+              123,
+              34,
+              116,
+              111,
+              108,
+              100,
+              34,
+              58,
+              116,
+              114,
+              117,
+              101,
+              44,
+              34,
+              99,
+              108,
+              101,
+              97,
+              110,
+              117,
+              112,
+              34,
+              58,
+              34,
+              99,
+              108,
+              101,
+              97,
+              110,
+              101,
+              100,
+              34,
+              125
+            ],
+            "metadata": {}
+          }
+        }
+      }
+    ],
+    "error": null,
+    "query_responses": [],
+    "reached_steps": [
+      "timer_0",
+      "cancel_cleanup_1"
+    ],
+    "restart_fresh": null,
+    "run_id": "23889881-9fe4-4a23-a468-8e7eab4cff8f",
+    "successful": true,
+    "update_results": []
+  },
+  "3f91964a-bef4-4ec8-bc4d-daf023493c02/85e2c5cf-0a8c-463c-b73a-6c84f1294af4#0": {
+    "commands": [
+      {
+        "ScheduleTask": {
+          "headers": [],
+          "heartbeat_timeout": null,
+          "input": [
+            {
+              "data": [
+                123,
+                34,
+                118,
+                97,
+                108,
+                117,
+                101,
+                34,
+                58,
+                34,
+                114,
+                101,
+                115,
+                101,
+                116,
+                45,
+                109,
+                101,
+                34,
+                125
+              ],
+              "metadata": {}
+            }
+          ],
+          "queue_timeout": null,
+          "retry_policy": {
+            "backoff_coefficient": 2.0,
+            "initial_interval": {
+              "nanos": 0,
+              "secs": 1
+            },
+            "max_attempts": 3,
+            "max_interval": {
+              "nanos": 0,
+              "secs": 60
+            },
+            "non_retryable_errors": []
+          },
+          "sequence": 0,
+          "task_id": "echo_task_0",
+          "task_queue": "contract",
+          "task_type": "echo_task",
+          "timeout": {
+            "nanos": 0,
+            "secs": 300
+          }
+        }
+      }
+    ],
+    "error": null,
+    "query_responses": [],
+    "reached_steps": [
+      "echo_task_0"
+    ],
+    "restart_fresh": null,
+    "run_id": "85e2c5cf-0a8c-463c-b73a-6c84f1294af4",
+    "successful": true,
+    "update_results": []
+  },
+  "3f91964a-bef4-4ec8-bc4d-daf023493c02/85e2c5cf-0a8c-463c-b73a-6c84f1294af4#2": {
+    "commands": [
+      {
+        "CompleteWorkflow": {
+          "result": {
+            "data": [
+              123,
+              34,
+              101,
+              99,
+              104,
+              111,
+              101,
+              100,
+              34,
+              58,
+              34,
+              114,
+              101,
+              115,
+              101,
+              116,
+              45,
+              109,
+              101,
+              34,
+              125
+            ],
+            "metadata": {}
+          }
+        }
+      }
+    ],
+    "error": null,
+    "query_responses": [],
+    "reached_steps": [
+      "echo_task_0"
+    ],
+    "restart_fresh": null,
+    "run_id": "85e2c5cf-0a8c-463c-b73a-6c84f1294af4",
+    "successful": true,
+    "update_results": []
+  },
+  "43f64ffe-4f92-4f13-b9e0-be94aa866dfc/98d9e8e6-87d8-46a1-ab75-7ab2d6a9a0b9#0": {
+    "commands": [],
+    "error": {
+      "details": null,
+      "error_type": "WorkflowCode",
+      "message": "Workflow error: State error: deliberate contract failure",
+      "retryable": false
+    },
+    "query_responses": [],
+    "restart_fresh": null,
+    "run_id": "98d9e8e6-87d8-46a1-ab75-7ab2d6a9a0b9",
+    "successful": false,
+    "update_results": []
+  },
+  "45cd4df0-6bf1-4c13-8566-9f7bd91299dd/12d75e29-eac7-4255-90df-073aaf3f73f2#0": {
+    "commands": [],
+    "error": {
+      "details": null,
+      "error_type": "WorkflowCode",
+      "message": "Workflow error: Workflow panicked: intentional child failure",
+      "retryable": false
+    },
+    "query_responses": [],
+    "restart_fresh": null,
+    "run_id": "12d75e29-eac7-4255-90df-073aaf3f73f2",
+    "successful": false,
+    "update_results": []
+  },
+  "45e5abf9-719a-4228-b19a-9c28b6dd4e92/934ab14a-93fe-4482-b03c-1261437607fe#0": {
+    "commands": [
+      {
+        "StartTimer": {
+          "duration": {
+            "nanos": 0,
+            "secs": 1
+          },
+          "sequence": 0,
+          "timer_id": "timer_0"
+        }
+      }
+    ],
+    "error": null,
+    "query_responses": [],
+    "reached_steps": [
+      "timer_0"
+    ],
+    "restart_fresh": null,
+    "run_id": "934ab14a-93fe-4482-b03c-1261437607fe",
+    "successful": true,
+    "update_results": []
+  },
+  "45e5abf9-719a-4228-b19a-9c28b6dd4e92/934ab14a-93fe-4482-b03c-1261437607fe#2": {
+    "commands": [
+      {
+        "CompleteWorkflow": {
+          "result": {
+            "data": [
+              123,
+              34,
+              115,
+              108,
+              101,
+              112,
+              116,
+              34,
+              58,
+              116,
+              114,
+              117,
+              101,
+              125
+            ],
+            "metadata": {}
+          }
+        }
+      }
+    ],
+    "error": null,
+    "query_responses": [],
+    "reached_steps": [
+      "timer_0"
+    ],
+    "restart_fresh": null,
+    "run_id": "934ab14a-93fe-4482-b03c-1261437607fe",
+    "successful": true,
+    "update_results": []
+  },
+  "4de76dde-01ec-4a56-8ca1-714f0faf8709/b2e41ef8-1323-4e46-96b1-8288b88e49e8#0": {
+    "commands": [
+      {
+        "ScheduleTask": {
+          "headers": [],
+          "heartbeat_timeout": null,
+          "input": [
+            {
+              "data": [
+                123,
+                125
+              ],
+              "metadata": {}
+            }
+          ],
+          "queue_timeout": null,
+          "retry_policy": {
+            "backoff_coefficient": 2.0,
+            "initial_interval": {
+              "nanos": 0,
+              "secs": 1
+            },
+            "max_attempts": 1,
+            "max_interval": {
+              "nanos": 0,
+              "secs": 60
+            },
+            "non_retryable_errors": []
+          },
+          "sequence": 0,
+          "task_id": "always_fail_0",
+          "task_queue": "contract",
+          "task_type": "always_fail",
+          "timeout": {
+            "nanos": 0,
+            "secs": 300
+          }
+        }
+      }
+    ],
+    "error": null,
+    "query_responses": [],
+    "reached_steps": [
+      "always_fail_0"
+    ],
+    "restart_fresh": null,
+    "run_id": "b2e41ef8-1323-4e46-96b1-8288b88e49e8",
+    "successful": true,
+    "update_results": []
+  },
+  "4de76dde-01ec-4a56-8ca1-714f0faf8709/b2e41ef8-1323-4e46-96b1-8288b88e49e8#2": {
+    "commands": [
+      {
+        "CompleteWorkflow": {
+          "result": {
+            "data": [
+              123,
+              34,
+              99,
+              97,
+              117,
+              103,
+              104,
+              116,
+              34,
+              58,
+              116,
+              114,
+              117,
+              101,
+              44,
+              34,
+              116,
+              97,
+              115,
+              107,
+              95,
+              116,
+              121,
+              112,
+              101,
+              34,
+              58,
+              34,
+              97,
+              108,
+              119,
+              97,
+              121,
+              115,
+              95,
+              102,
+              97,
+              105,
+              108,
+              34,
+              44,
+              34,
+              97,
+              116,
+              116,
+              101,
+              109,
+              112,
+              116,
+              115,
+              34,
+              58,
+              49,
+              125
+            ],
+            "metadata": {}
+          }
+        }
+      }
+    ],
+    "error": null,
+    "query_responses": [],
+    "reached_steps": [
+      "always_fail_0"
+    ],
+    "restart_fresh": null,
+    "run_id": "b2e41ef8-1323-4e46-96b1-8288b88e49e8",
+    "successful": true,
+    "update_results": []
+  },
+  "72098762-dc95-404c-85bb-5ef1bd914b7f/13e75e22-460d-423d-933e-5c27b6e8e64c#0": {
+    "commands": [
+      {
+        "ScheduleTask": {
+          "headers": [],
+          "heartbeat_timeout": null,
+          "input": [
+            {
+              "data": [
+                123,
+                125
+              ],
+              "metadata": {}
+            }
+          ],
+          "queue_timeout": null,
+          "retry_policy": {
+            "backoff_coefficient": 2.0,
+            "initial_interval": {
+              "nanos": 0,
+              "secs": 1
+            },
+            "max_attempts": 3,
+            "max_interval": {
+              "nanos": 0,
+              "secs": 60
+            },
+            "non_retryable_errors": [
+              "CardDeclined"
+            ]
+          },
+          "sequence": 0,
+          "task_id": "throttle_0",
+          "task_queue": "contract",
+          "task_type": "throttle",
+          "timeout": {
+            "nanos": 0,
+            "secs": 300
+          }
+        }
+      }
+    ],
+    "error": null,
+    "query_responses": [],
+    "reached_steps": [
+      "throttle_0"
+    ],
+    "restart_fresh": null,
+    "run_id": "13e75e22-460d-423d-933e-5c27b6e8e64c",
+    "successful": true,
+    "update_results": []
+  },
+  "72098762-dc95-404c-85bb-5ef1bd914b7f/13e75e22-460d-423d-933e-5c27b6e8e64c#2": {
+    "commands": [
+      {
+        "CompleteWorkflow": {
+          "result": {
+            "data": [
+              123,
+              34,
+              99,
+              97,
+              117,
+              103,
+              104,
+              116,
+              34,
+              58,
+              116,
+              114,
+              117,
+              101,
+              44,
+              34,
+              116,
+              97,
+              115,
+              107,
+              95,
+              116,
+              121,
+              112,
+              101,
+              34,
+              58,
+              34,
+              116,
+              104,
+              114,
+              111,
+              116,
+              116,
+              108,
+              101,
+              34,
+              44,
+              34,
+              97,
+              116,
+              116,
+              101,
+              109,
+              112,
+              116,
+              115,
+              34,
+              58,
+              51,
+              125
+            ],
+            "metadata": {}
+          }
+        }
+      }
+    ],
+    "error": null,
+    "query_responses": [],
+    "reached_steps": [
+      "throttle_0"
+    ],
+    "restart_fresh": null,
+    "run_id": "13e75e22-460d-423d-933e-5c27b6e8e64c",
+    "successful": true,
+    "update_results": []
+  },
+  "793131f2-c221-458b-b4af-5a52fd782e74/823300a7-d7d1-4f12-b240-76a2f33eba0d#0": {
+    "commands": [
+      {
+        "ScheduleTask": {
+          "headers": [],
+          "heartbeat_timeout": {
+            "nanos": 0,
+            "secs": 15
+          },
+          "input": [
+            {
+              "data": [
+                123,
+                125
+              ],
+              "metadata": {}
+            }
+          ],
+          "queue_timeout": null,
+          "retry_policy": null,
+          "sequence": 0,
+          "task_id": "task_0",
+          "task_queue": "contract",
+          "task_type": "timeouts_echo_task",
+          "timeout": {
+            "nanos": 0,
+            "secs": 300
+          }
+        }
+      }
+    ],
+    "error": null,
+    "query_responses": [],
+    "reached_steps": [
+      "task_0"
+    ],
+    "restart_fresh": null,
+    "run_id": "823300a7-d7d1-4f12-b240-76a2f33eba0d",
+    "successful": true,
+    "update_results": []
+  },
+  "793131f2-c221-458b-b4af-5a52fd782e74/823300a7-d7d1-4f12-b240-76a2f33eba0d#2": {
+    "commands": [
+      {
+        "CompleteWorkflow": {
+          "result": {
+            "data": [
+              123,
+              34,
+              104,
+              101,
+              97,
+              114,
+              116,
+              98,
+              101,
+              97,
+              116,
+              95,
+              115,
+              101,
+              99,
+              115,
+              34,
+              58,
+              49,
+              53,
+              125
+            ],
+            "metadata": {}
+          }
+        }
+      }
+    ],
+    "error": null,
+    "query_responses": [],
+    "reached_steps": [
+      "task_0"
+    ],
+    "restart_fresh": null,
+    "run_id": "823300a7-d7d1-4f12-b240-76a2f33eba0d",
+    "successful": true,
+    "update_results": []
+  },
+  "7b8db277-a2b6-4116-80f8-52e17275b6e9/124b8fcf-02d7-42f1-832e-762133b9578f#0": {
+    "commands": [
+      {
+        "CompleteWorkflow": {
+          "result": {
+            "data": [
+              123,
+              34,
+              99,
+              104,
+              105,
+              108,
+              100,
+              95,
+              115,
+              97,
+              119,
+              34,
+              58,
+              50,
+              48,
+              44,
+              34,
+              100,
+              111,
+              117,
+              98,
+              108,
+              101,
+              100,
+              34,
+              58,
+              52,
+              48,
+              125
+            ],
+            "metadata": {}
+          }
+        }
+      }
+    ],
+    "error": null,
+    "query_responses": [],
+    "reached_steps": [],
+    "restart_fresh": null,
+    "run_id": "124b8fcf-02d7-42f1-832e-762133b9578f",
+    "successful": true,
+    "update_results": []
+  },
+  "7c6e4d95-cf39-46ad-8936-1970d215f70c/e2a845bc-0c4c-4bfe-8dc9-96b607d35ab2#0": {
+    "commands": [
+      {
+        "StartTimer": {
+          "duration": {
+            "nanos": 0,
+            "secs": 600
+          },
+          "sequence": 0,
+          "timer_id": "timer_0"
+        }
+      }
+    ],
+    "error": null,
+    "query_responses": [],
+    "reached_steps": [
+      "timer_0"
+    ],
+    "restart_fresh": null,
+    "run_id": "e2a845bc-0c4c-4bfe-8dc9-96b607d35ab2",
+    "successful": true,
+    "update_results": []
+  },
+  "7c6e4d95-cf39-46ad-8936-1970d215f70c/e2a845bc-0c4c-4bfe-8dc9-96b607d35ab2#2": {
+    "commands": [
+      {
+        "CancelWorkflowExecution": {
+          "details": null
+        }
+      }
+    ],
+    "error": null,
+    "query_responses": [],
+    "reached_steps": [
+      "timer_0"
+    ],
+    "restart_fresh": null,
+    "run_id": "e2a845bc-0c4c-4bfe-8dc9-96b607d35ab2",
+    "successful": true,
+    "update_results": []
+  },
+  "82704544-4cf6-4096-a686-b7e9368b936b/7acde277-a60a-4cc6-8f21-a21bb9de604f#0": {
+    "commands": [
+      {
+        "StartChildWorkflow": {
+          "input": [
+            {
+              "data": [
+                123,
+                34,
+                110,
+                34,
+                58,
+                50,
+                49,
+                125
+              ],
+              "metadata": {}
+            }
+          ],
+          "orphan_policy": "Cancel",
+          "sequence": 0,
+          "task_queue": "contract",
+          "timeout": null,
+          "workflow_id": "82704544-4cf6-4096-a686-b7e9368b936b-child-0",
+          "workflow_type": "contract_child"
+        }
+      }
+    ],
+    "error": null,
+    "query_responses": [],
+    "reached_steps": [
+      "82704544-4cf6-4096-a686-b7e9368b936b-child-0"
+    ],
+    "restart_fresh": null,
+    "run_id": "7acde277-a60a-4cc6-8f21-a21bb9de604f",
+    "successful": true,
+    "update_results": []
+  },
+  "82704544-4cf6-4096-a686-b7e9368b936b/7acde277-a60a-4cc6-8f21-a21bb9de604f#2": {
+    "commands": [
+      {
+        "CompleteWorkflow": {
+          "result": {
+            "data": [
+              123,
+              34,
+              99,
+              104,
+              105,
+              108,
+              100,
+              95,
+              115,
+              97,
+              119,
+              34,
+              58,
+              50,
+              49,
+              44,
+              34,
+              100,
+              111,
+              117,
+              98,
+              108,
+              101,
+              100,
+              34,
+              58,
+              52,
+              50,
+              125
+            ],
+            "metadata": {}
+          }
+        }
+      }
+    ],
+    "error": null,
+    "query_responses": [],
+    "reached_steps": [
+      "82704544-4cf6-4096-a686-b7e9368b936b-child-0"
+    ],
+    "restart_fresh": null,
+    "run_id": "7acde277-a60a-4cc6-8f21-a21bb9de604f",
+    "successful": true,
+    "update_results": []
+  },
+  "9dffcb3e-6808-48d8-9f63-818067b5c90a/3c2e1485-533a-4dc0-a200-567e88047fd4#0": {
+    "commands": [
+      {
+        "ScheduleTask": {
+          "headers": [],
+          "heartbeat_timeout": null,
+          "input": [
+            {
+              "data": [
+                123,
+                125
+              ],
+              "metadata": {}
+            }
+          ],
+          "queue_timeout": null,
+          "retry_policy": {
+            "backoff_coefficient": 2.0,
+            "initial_interval": {
+              "nanos": 0,
+              "secs": 1
+            },
+            "max_attempts": 1,
+            "max_interval": {
+              "nanos": 0,
+              "secs": 60
+            },
+            "non_retryable_errors": []
+          },
+          "sequence": 0,
+          "task_id": "cancel_reserve_0",
+          "task_queue": "contract",
+          "task_type": "cancel_reserve",
+          "timeout": {
+            "nanos": 0,
+            "secs": 300
+          }
+        }
+      }
+    ],
+    "error": null,
+    "query_responses": [],
+    "reached_steps": [
+      "cancel_reserve_0"
+    ],
+    "restart_fresh": null,
+    "run_id": "3c2e1485-533a-4dc0-a200-567e88047fd4",
+    "successful": true,
+    "update_results": []
+  },
+  "9dffcb3e-6808-48d8-9f63-818067b5c90a/3c2e1485-533a-4dc0-a200-567e88047fd4#2": {
+    "commands": [
+      {
+        "StartTimer": {
+          "duration": {
+            "nanos": 0,
+            "secs": 600
+          },
+          "sequence": 1,
+          "timer_id": "timer_1"
+        }
+      }
+    ],
+    "error": null,
+    "query_responses": [],
+    "reached_steps": [
+      "cancel_reserve_0",
+      "timer_1"
+    ],
+    "restart_fresh": null,
+    "run_id": "3c2e1485-533a-4dc0-a200-567e88047fd4",
+    "successful": true,
+    "update_results": []
+  },
+  "9dffcb3e-6808-48d8-9f63-818067b5c90a/3c2e1485-533a-4dc0-a200-567e88047fd4#4": {
+    "commands": [
+      {
+        "ScheduleTask": {
+          "headers": [],
+          "heartbeat_timeout": null,
+          "input": [
+            {
+              "data": [
+                123,
+                125
+              ],
+              "metadata": {}
+            }
+          ],
+          "queue_timeout": null,
+          "retry_policy": {
+            "backoff_coefficient": 2.0,
+            "initial_interval": {
+              "nanos": 0,
+              "secs": 1
+            },
+            "max_attempts": 1,
+            "max_interval": {
+              "nanos": 0,
+              "secs": 60
+            },
+            "non_retryable_errors": []
+          },
+          "sequence": 2,
+          "task_id": "cancel_release_2",
+          "task_queue": "contract",
+          "task_type": "cancel_release",
+          "timeout": {
+            "nanos": 0,
+            "secs": 300
+          }
+        }
+      }
+    ],
+    "error": null,
+    "query_responses": [],
+    "reached_steps": [
+      "cancel_reserve_0",
+      "timer_1",
+      "cancel_release_2"
+    ],
+    "restart_fresh": null,
+    "run_id": "3c2e1485-533a-4dc0-a200-567e88047fd4",
+    "successful": true,
+    "update_results": []
+  },
+  "9dffcb3e-6808-48d8-9f63-818067b5c90a/3c2e1485-533a-4dc0-a200-567e88047fd4#6": {
+    "commands": [
+      {
+        "CompleteWorkflow": {
+          "result": {
+            "data": [
+              123,
+              34,
+              99,
+              111,
+              109,
+              112,
+              101,
+              110,
+              115,
+              97,
+              116,
+              101,
+              100,
+              34,
+              58,
+              49,
+              125
+            ],
+            "metadata": {}
+          }
+        }
+      }
+    ],
+    "error": null,
+    "query_responses": [],
+    "reached_steps": [
+      "cancel_reserve_0",
+      "timer_1",
+      "cancel_release_2"
+    ],
+    "restart_fresh": null,
+    "run_id": "3c2e1485-533a-4dc0-a200-567e88047fd4",
+    "successful": true,
+    "update_results": []
+  },
+  "bc1bbf07-2976-4168-a780-89bf7d6fa37d/80ba8300-ebe2-4dbe-bd57-9a92a034390b#0": {
+    "commands": [
+      {
+        "StartChildWorkflow": {
+          "input": [
+            {
+              "data": [
+                123,
+                125
+              ],
+              "metadata": {}
+            }
+          ],
+          "orphan_policy": "Cancel",
+          "sequence": 0,
+          "task_queue": "contract",
+          "timeout": null,
+          "workflow_id": "bc1bbf07-2976-4168-a780-89bf7d6fa37d-child-0",
+          "workflow_type": "failing_child"
+        }
+      }
+    ],
+    "error": null,
+    "query_responses": [],
+    "reached_steps": [
+      "bc1bbf07-2976-4168-a780-89bf7d6fa37d-child-0"
+    ],
+    "restart_fresh": null,
+    "run_id": "80ba8300-ebe2-4dbe-bd57-9a92a034390b",
+    "successful": true,
+    "update_results": []
+  },
+  "bc1bbf07-2976-4168-a780-89bf7d6fa37d/80ba8300-ebe2-4dbe-bd57-9a92a034390b#2": {
+    "commands": [
+      {
+        "CompleteWorkflow": {
+          "result": {
+            "data": [
+              123,
+              34,
+              99,
+              104,
+              105,
+              108,
+              100,
+              95,
+              102,
+              97,
+              105,
+              108,
+              101,
+              100,
+              34,
+              58,
+              116,
+              114,
+              117,
+              101,
+              125
+            ],
+            "metadata": {}
+          }
+        }
+      }
+    ],
+    "error": null,
+    "query_responses": [],
+    "reached_steps": [
+      "bc1bbf07-2976-4168-a780-89bf7d6fa37d-child-0"
+    ],
+    "restart_fresh": null,
+    "run_id": "80ba8300-ebe2-4dbe-bd57-9a92a034390b",
+    "successful": true,
+    "update_results": []
+  },
+  "bc8feb16-e78c-4a69-8c40-b0f4a117e57c/736ba11e-66f7-4e5a-8b3c-3c10a3345bf5#0": {
+    "commands": [
+      {
+        "ScheduleTask": {
+          "headers": [],
+          "heartbeat_timeout": null,
+          "input": [
+            {
+              "data": [
+                123,
+                34,
+                118,
+                97,
+                108,
+                117,
+                101,
+                34,
+                58,
+                34,
+                114,
+                101,
+                115,
+                101,
+                116,
+                45,
+                109,
+                101,
+                34,
+                125
+              ],
+              "metadata": {}
+            }
+          ],
+          "queue_timeout": null,
+          "retry_policy": {
+            "backoff_coefficient": 2.0,
+            "initial_interval": {
+              "nanos": 0,
+              "secs": 1
+            },
+            "max_attempts": 3,
+            "max_interval": {
+              "nanos": 0,
+              "secs": 60
+            },
+            "non_retryable_errors": []
+          },
+          "sequence": 0,
+          "task_id": "echo_task_0",
+          "task_queue": "contract",
+          "task_type": "echo_task",
+          "timeout": {
+            "nanos": 0,
+            "secs": 300
+          }
+        }
+      }
+    ],
+    "error": null,
+    "query_responses": [],
+    "reached_steps": [
+      "echo_task_0"
+    ],
+    "restart_fresh": null,
+    "run_id": "736ba11e-66f7-4e5a-8b3c-3c10a3345bf5",
+    "successful": true,
+    "update_results": []
+  },
+  "bc8feb16-e78c-4a69-8c40-b0f4a117e57c/736ba11e-66f7-4e5a-8b3c-3c10a3345bf5#2": {
+    "commands": [
+      {
+        "CompleteWorkflow": {
+          "result": {
+            "data": [
+              123,
+              34,
+              101,
+              99,
+              104,
+              111,
+              101,
+              100,
+              34,
+              58,
+              34,
+              114,
+              101,
+              115,
+              101,
+              116,
+              45,
+              109,
+              101,
+              34,
+              125
+            ],
+            "metadata": {}
+          }
+        }
+      }
+    ],
+    "error": null,
+    "query_responses": [],
+    "reached_steps": [
+      "echo_task_0"
+    ],
+    "restart_fresh": null,
+    "run_id": "736ba11e-66f7-4e5a-8b3c-3c10a3345bf5",
+    "successful": true,
+    "update_results": []
+  },
+  "c0be5b99-d8e3-4b9a-9c52-c86e8194164f/b42ed788-e3b7-49a7-be92-09125813e1e6#0": {
+    "commands": [
+      {
+        "CompleteWorkflow": {
+          "result": {
+            "data": [
+              123,
+              34,
+              114,
+              101,
+              115,
+              116,
+              97,
+              114,
+              116,
+              101,
+              100,
+              34,
+              58,
+              116,
+              114,
+              117,
+              101,
+              44,
+              34,
+              99,
+              111,
+              117,
+              110,
+              116,
+              34,
+              58,
+              49,
+              125
+            ],
+            "metadata": {}
+          }
+        }
+      }
+    ],
+    "error": null,
+    "query_responses": [],
+    "reached_steps": [],
+    "restart_fresh": null,
+    "run_id": "b42ed788-e3b7-49a7-be92-09125813e1e6",
+    "successful": true,
+    "update_results": []
+  },
+  "d32e4edc-18b4-4bb5-9beb-9838b0ee8d2c/2e49823d-7574-4e71-9030-2eb5e78bb892#0": {
+    "commands": [
+      {
+        "ScheduleTask": {
+          "headers": [],
+          "heartbeat_timeout": null,
+          "input": [
+            {
+              "data": [
+                123,
+                125
+              ],
+              "metadata": {}
+            }
+          ],
+          "queue_timeout": null,
+          "retry_policy": {
+            "backoff_coefficient": 2.0,
+            "initial_interval": {
+              "nanos": 0,
+              "secs": 1
+            },
+            "max_attempts": 3,
+            "max_interval": {
+              "nanos": 0,
+              "secs": 60
+            },
+            "non_retryable_errors": []
+          },
+          "sequence": 0,
+          "task_id": "close_account_0",
+          "task_queue": "contract",
+          "task_type": "close_account",
+          "timeout": {
+            "nanos": 0,
+            "secs": 300
+          }
+        }
+      }
+    ],
+    "error": null,
+    "query_responses": [],
+    "reached_steps": [
+      "close_account_0"
+    ],
+    "restart_fresh": null,
+    "run_id": "2e49823d-7574-4e71-9030-2eb5e78bb892",
+    "successful": true,
+    "update_results": []
+  },
+  "d32e4edc-18b4-4bb5-9beb-9838b0ee8d2c/2e49823d-7574-4e71-9030-2eb5e78bb892#2": {
+    "commands": [
+      {
+        "CompleteWorkflow": {
+          "result": {
+            "data": [
+              123,
+              34,
+              99,
+              97,
+              117,
+              103,
+              104,
+              116,
+              34,
+              58,
+              116,
+              114,
+              117,
+              101,
+              44,
+              34,
+              116,
+              97,
+              115,
+              107,
+              95,
+              116,
+              121,
+              112,
+              101,
+              34,
+              58,
+              34,
+              99,
+              108,
+              111,
+              115,
+              101,
+              95,
+              97,
+              99,
+              99,
+              111,
+              117,
+              110,
+              116,
+              34,
+              44,
+              34,
+              97,
+              116,
+              116,
+              101,
+              109,
+              112,
+              116,
+              115,
+              34,
+              58,
+              49,
+              125
+            ],
+            "metadata": {}
+          }
+        }
+      }
+    ],
+    "error": null,
+    "query_responses": [],
+    "reached_steps": [
+      "close_account_0"
+    ],
+    "restart_fresh": null,
+    "run_id": "2e49823d-7574-4e71-9030-2eb5e78bb892",
+    "successful": true,
+    "update_results": []
+  },
+  "d54ec521-dcfc-43dc-b774-baf90abce807/8efba4ba-4a27-4905-b441-badc34dc3c1f#0": {
+    "commands": [
+      {
+        "StartChildWorkflow": {
+          "input": [
+            {
+              "data": [
+                123,
+                34,
+                110,
+                34,
+                58,
+                49,
+                48,
+                125
+              ],
+              "metadata": {}
+            }
+          ],
+          "orphan_policy": "Cancel",
+          "sequence": 0,
+          "task_queue": "contract",
+          "timeout": null,
+          "workflow_id": "d54ec521-dcfc-43dc-b774-baf90abce807-child-0",
+          "workflow_type": "contract_child"
+        }
+      },
+      {
+        "StartChildWorkflow": {
+          "input": [
+            {
+              "data": [
+                123,
+                34,
+                110,
+                34,
+                58,
+                50,
+                48,
+                125
+              ],
+              "metadata": {}
+            }
+          ],
+          "orphan_policy": "Cancel",
+          "sequence": 1,
+          "task_queue": "contract",
+          "timeout": null,
+          "workflow_id": "d54ec521-dcfc-43dc-b774-baf90abce807-child-1",
+          "workflow_type": "contract_child"
+        }
+      }
+    ],
+    "error": null,
+    "query_responses": [],
+    "reached_steps": [
+      "d54ec521-dcfc-43dc-b774-baf90abce807-child-0",
+      "d54ec521-dcfc-43dc-b774-baf90abce807-child-1"
+    ],
+    "restart_fresh": null,
+    "run_id": "8efba4ba-4a27-4905-b441-badc34dc3c1f",
+    "successful": true,
+    "update_results": []
+  },
+  "d54ec521-dcfc-43dc-b774-baf90abce807/8efba4ba-4a27-4905-b441-badc34dc3c1f#2": {
+    "commands": [
+      {
+        "StartChildWorkflow": {
+          "input": [
+            {
+              "data": [
+                123,
+                34,
+                110,
+                34,
+                58,
+                50,
+                48,
+                125
+              ],
+              "metadata": {}
+            }
+          ],
+          "orphan_policy": "Cancel",
+          "sequence": 1,
+          "task_queue": "contract",
+          "timeout": null,
+          "workflow_id": "d54ec521-dcfc-43dc-b774-baf90abce807-child-1",
+          "workflow_type": "contract_child"
+        }
+      }
+    ],
+    "error": null,
+    "query_responses": [],
+    "reached_steps": [
+      "d54ec521-dcfc-43dc-b774-baf90abce807-child-0",
+      "d54ec521-dcfc-43dc-b774-baf90abce807-child-1"
+    ],
+    "restart_fresh": null,
+    "run_id": "8efba4ba-4a27-4905-b441-badc34dc3c1f",
+    "successful": true,
+    "update_results": []
+  },
+  "d54ec521-dcfc-43dc-b774-baf90abce807/8efba4ba-4a27-4905-b441-badc34dc3c1f#4": {
+    "commands": [
+      {
+        "CompleteWorkflow": {
+          "result": {
+            "data": [
+              123,
+              34,
+              102,
+              105,
+              114,
+              115,
+              116,
+              34,
+              58,
+              50,
+              48,
+              44,
+              34,
+              115,
+              101,
+              99,
+              111,
+              110,
+              100,
+              34,
+              58,
+              52,
+              48,
+              125
+            ],
+            "metadata": {}
+          }
+        }
+      }
+    ],
+    "error": null,
+    "query_responses": [],
+    "reached_steps": [
+      "d54ec521-dcfc-43dc-b774-baf90abce807-child-0",
+      "d54ec521-dcfc-43dc-b774-baf90abce807-child-1"
+    ],
+    "restart_fresh": null,
+    "run_id": "8efba4ba-4a27-4905-b441-badc34dc3c1f",
+    "successful": true,
+    "update_results": []
+  },
+  "e63bab47-c445-41ef-a178-1805a763e48d/4ba1d188-6736-4736-b9cb-a5ada12644be#0": {
+    "commands": [
+      {
+        "ScheduleTask": {
+          "headers": [],
+          "heartbeat_timeout": null,
+          "input": [
+            {
+              "data": [
+                123,
+                34,
+                118,
+                97,
+                108,
+                117,
+                101,
+                34,
+                58,
+                34,
+                114,
+                111,
+                117,
+                110,
+                100,
+                116,
+                114,
+                105,
+                112,
+                45,
+                109,
+                101,
+                34,
+                125
+              ],
+              "metadata": {}
+            }
+          ],
+          "queue_timeout": null,
+          "retry_policy": {
+            "backoff_coefficient": 2.0,
+            "initial_interval": {
+              "nanos": 0,
+              "secs": 1
+            },
+            "max_attempts": 3,
+            "max_interval": {
+              "nanos": 0,
+              "secs": 60
+            },
+            "non_retryable_errors": []
+          },
+          "sequence": 0,
+          "task_id": "echo_task_0",
+          "task_queue": "contract",
+          "task_type": "echo_task",
+          "timeout": {
+            "nanos": 0,
+            "secs": 300
+          }
+        }
+      }
+    ],
+    "error": null,
+    "query_responses": [],
+    "reached_steps": [
+      "echo_task_0"
+    ],
+    "restart_fresh": null,
+    "run_id": "4ba1d188-6736-4736-b9cb-a5ada12644be",
+    "successful": true,
+    "update_results": []
+  },
+  "e63bab47-c445-41ef-a178-1805a763e48d/4ba1d188-6736-4736-b9cb-a5ada12644be#2": {
+    "commands": [
+      {
+        "CompleteWorkflow": {
+          "result": {
+            "data": [
+              123,
+              34,
+              101,
+              99,
+              104,
+              111,
+              101,
+              100,
+              34,
+              58,
+              34,
+              114,
+              111,
+              117,
+              110,
+              100,
+              116,
+              114,
+              105,
+              112,
+              45,
+              109,
+              101,
+              34,
+              125
+            ],
+            "metadata": {}
+          }
+        }
+      }
+    ],
+    "error": null,
+    "query_responses": [],
+    "reached_steps": [
+      "echo_task_0"
+    ],
+    "restart_fresh": null,
+    "run_id": "4ba1d188-6736-4736-b9cb-a5ada12644be",
+    "successful": true,
+    "update_results": []
+  },
+  "ec7f2e49-cfb6-4701-94df-8fc075334920/505c23b1-4c39-4fda-838d-3f004641ba2a#0": {
+    "commands": [
+      {
+        "WaitForEvent": {
+          "event_name": "contract_event",
+          "step_id": "event_contract_event_0",
+          "timeout_ms": null
+        }
+      }
+    ],
+    "error": null,
+    "query_responses": [],
+    "reached_steps": [],
+    "restart_fresh": null,
+    "run_id": "505c23b1-4c39-4fda-838d-3f004641ba2a",
+    "successful": true,
+    "update_results": []
+  },
+  "ec7f2e49-cfb6-4701-94df-8fc075334920/505c23b1-4c39-4fda-838d-3f004641ba2a#2": {
+    "commands": [
+      {
+        "CompleteWorkflow": {
+          "result": {
+            "data": [
+              123,
+              34,
+              114,
+              101,
+              99,
+              101,
+              105,
+              118,
+              101,
+              100,
+              34,
+              58,
+              123,
+              34,
+              97,
+              109,
+              111,
+              117,
+              110,
+              116,
+              34,
+              58,
+              52,
+              50,
+              44,
+              34,
+              115,
+              116,
+              97,
+              116,
+              117,
+              115,
+              34,
+              58,
+              34,
+              83,
+              72,
+              73,
+              80,
+              80,
+              69,
+              68,
+              34,
+              125,
+              44,
+              34,
+              97,
+              99,
+              116,
+              105,
+              118,
+              97,
+              116,
+              105,
+              111,
+              110,
+              115,
+              34,
+              58,
+              49,
+              125
+            ],
+            "metadata": {}
+          }
+        }
+      }
+    ],
+    "error": null,
+    "query_responses": [],
+    "reached_steps": [],
+    "restart_fresh": null,
+    "run_id": "505c23b1-4c39-4fda-838d-3f004641ba2a",
+    "successful": true,
+    "update_results": []
+  },
+  "eee674c3-96a4-42fb-b1ba-fe7bbbdb4543/58158249-4005-4087-aaab-a70af5b202c9#0": {
+    "commands": [
+      {
+        "ScheduleTask": {
+          "headers": [],
+          "heartbeat_timeout": null,
+          "input": [
+            {
+              "data": [
+                123,
+                125
+              ],
+              "metadata": {}
+            }
+          ],
+          "queue_timeout": null,
+          "retry_policy": {
+            "backoff_coefficient": 2.0,
+            "initial_interval": {
+              "nanos": 0,
+              "secs": 1
+            },
+            "max_attempts": 3,
+            "max_interval": {
+              "nanos": 0,
+              "secs": 60
+            },
+            "non_retryable_errors": []
+          },
+          "sequence": 0,
+          "task_id": "exit_if_worker_doomed_0",
+          "task_queue": "contract-crash-1791916532150063000",
+          "task_type": "exit_if_worker_doomed",
+          "timeout": {
+            "nanos": 0,
+            "secs": 300
+          }
+        }
+      }
+    ],
+    "error": null,
+    "query_responses": [],
+    "reached_steps": [
+      "exit_if_worker_doomed_0"
+    ],
+    "restart_fresh": null,
+    "run_id": "58158249-4005-4087-aaab-a70af5b202c9",
+    "successful": true,
+    "update_results": []
+  },
+  "eee674c3-96a4-42fb-b1ba-fe7bbbdb4543/58158249-4005-4087-aaab-a70af5b202c9#2": {
+    "commands": [
+      {
+        "CompleteWorkflow": {
+          "result": {
+            "data": [
+              123,
+              34,
+              115,
+              117,
+              114,
+              118,
+              105,
+              118,
+              101,
+              100,
+              95,
+              119,
+              111,
+              114,
+              107,
+              101,
+              114,
+              95,
+              100,
+              101,
+              97,
+              116,
+              104,
+              34,
+              58,
+              116,
+              114,
+              117,
+              101,
+              125
+            ],
+            "metadata": {}
+          }
+        }
+      }
+    ],
+    "error": null,
+    "query_responses": [],
+    "reached_steps": [
+      "exit_if_worker_doomed_0"
+    ],
+    "restart_fresh": null,
+    "run_id": "58158249-4005-4087-aaab-a70af5b202c9",
+    "successful": true,
+    "update_results": []
+  },
+  "f616bcee-34d2-40d8-a62a-a8c7650f61ca/57e84863-53a7-4309-8abd-671bc3660d85#0": {
+    "commands": [
+      {
+        "RestartFresh": {
+          "input": [
+            {
+              "data": [
+                123,
+                34,
+                99,
+                111,
+                117,
+                110,
+                116,
+                34,
+                58,
+                49,
+                125
+              ],
+              "metadata": {}
+            }
+          ],
+          "task_queue": null,
+          "timeout": null,
+          "workflow_type": ""
+        }
+      }
+    ],
+    "error": null,
+    "query_responses": [],
+    "reached_steps": [],
+    "restart_fresh": null,
+    "run_id": "57e84863-53a7-4309-8abd-671bc3660d85",
+    "successful": true,
+    "update_results": []
+  },
+  "f714de12-2a11-403f-8a90-fc2620bdc5fd/ba80571e-4158-4044-ac8e-4b2e532e33dd#0": {
+    "commands": [
+      {
+        "CompleteWorkflow": {
+          "result": {
+            "data": [
+              123,
+              34,
+              109,
+              101,
+              115,
+              115,
+              97,
+              103,
+              101,
+              34,
+              58,
+              34,
+              104,
+              101,
+              108,
+              108,
+              111,
+              45,
+              99,
+              111,
+              110,
+              116,
+              114,
+              97,
+              99,
+              116,
+              34,
+              125
+            ],
+            "metadata": {}
+          }
+        }
+      }
+    ],
+    "error": null,
+    "query_responses": [],
+    "reached_steps": [],
+    "restart_fresh": null,
+    "run_id": "ba80571e-4158-4044-ac8e-4b2e532e33dd",
+    "successful": true,
+    "update_results": []
+  },
+  "fd0612a5-2e50-4788-a97b-27907621cd77/44f6c37b-0941-4b3e-9811-52d75265d130#0": {
+    "commands": [
+      {
+        "CompleteWorkflow": {
+          "result": {
+            "data": [
+              123,
+              34,
+              99,
+              104,
+              105,
+              108,
+              100,
+              95,
+              115,
+              97,
+              119,
+              34,
+              58,
+              50,
+              49,
+              44,
+              34,
+              100,
+              111,
+              117,
+              98,
+              108,
+              101,
+              100,
+              34,
+              58,
+              52,
+              50,
+              125
+            ],
+            "metadata": {}
+          }
+        }
+      }
+    ],
+    "error": null,
+    "query_responses": [],
+    "reached_steps": [],
+    "restart_fresh": null,
+    "run_id": "44f6c37b-0941-4b3e-9811-52d75265d130",
+    "successful": true,
+    "update_results": []
+  }
+}
