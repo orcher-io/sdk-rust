@@ -1,5 +1,38 @@
 # Changelog
 
+## [0.10.0](https://github.com/orcher-io/sdk-rust/compare/v0.9.1...v0.10.0) (2026-10-14)
+
+
+### ⚠ BREAKING CHANGES
+
+* worker::session (the worker-side SessionManager) is removed; sessions run in the host. Actor handlers are registered when the worker runs, so a refusal is Worker::run's StartupFailed rather than build()'s. A worker that registered nothing to run is refused at run().
+* QueryRejectCondition and
+* a test that matched the StateError a failing mock used to stop the run with now receives WorkflowError::TaskFailed.
+* remove StartWorkflowOptions::with_idempotency_key ([#45](https://github.com/orcher-io/sdk-rust/issues/45))
+* report a compensation input that cannot be serialized ([#44](https://github.com/orcher-io/sdk-rust/issues/44))
+
+### Features
+
+* let a task body be unit-tested with TestTaskContext ([#49](https://github.com/orcher-io/sdk-rust/issues/49)) ([0ed24d2](https://github.com/orcher-io/sdk-rust/commit/0ed24d227f397d54f87e9c25b4fd0bfb2af77397)), closes [#24](https://github.com/orcher-io/sdk-rust/issues/24)
+* run the worker on the shared worker host ([#57](https://github.com/orcher-io/sdk-rust/issues/57)) ([b798e9e](https://github.com/orcher-io/sdk-rust/commit/b798e9eb3971636c840019de815761c19356ab31))
+* run workflow activations from the kernel protocol ([#55](https://github.com/orcher-io/sdk-rust/issues/55)) ([abf93c9](https://github.com/orcher-io/sdk-rust/commit/abf93c9072ffd9f164421d8bd61d34e1a13095e0))
+
+
+### Bug Fixes
+
+* deliver a mocked task failure to the workflow as TaskFailed ([#51](https://github.com/orcher-io/sdk-rust/issues/51)) ([4a31af8](https://github.com/orcher-io/sdk-rust/commit/4a31af825cfca842a2998adc7766173713d998a0)), closes [#24](https://github.com/orcher-io/sdk-rust/issues/24)
+* pass query arguments to handlers and apply query and event timeouts ([#52](https://github.com/orcher-io/sdk-rust/issues/52)) ([6fe67b9](https://github.com/orcher-io/sdk-rust/commit/6fe67b932185f53f7b81d1ceb09a2b373b8bc80b)), closes [#24](https://github.com/orcher-io/sdk-rust/issues/24)
+* remove StartWorkflowOptions::with_idempotency_key ([#45](https://github.com/orcher-io/sdk-rust/issues/45)) ([bea5fd3](https://github.com/orcher-io/sdk-rust/commit/bea5fd3181165711a4ef3fa403a8a277405cf62b)), closes [#19](https://github.com/orcher-io/sdk-rust/issues/19)
+* report a compensation input that cannot be serialized ([#44](https://github.com/orcher-io/sdk-rust/issues/44)) ([43cafdd](https://github.com/orcher-io/sdk-rust/commit/43cafdd724e0f70c98ca8295332671ee92e713b6)), closes [#39](https://github.com/orcher-io/sdk-rust/issues/39)
+* stop logging every task replay at warn level ([#48](https://github.com/orcher-io/sdk-rust/issues/48)) ([b78f856](https://github.com/orcher-io/sdk-rust/commit/b78f8560e517240581f89c9d689729c145efa348))
+* wait for a session slot and report a failed creation as TaskFailed ([#47](https://github.com/orcher-io/sdk-rust/issues/47)) ([725e369](https://github.com/orcher-io/sdk-rust/commit/725e3690020d6aa6a567b4ed33130458a7713f97)), closes [#22](https://github.com/orcher-io/sdk-rust/issues/22)
+
+
+### Documentation
+
+* say heartbeat details do not reach a retried attempt ([#53](https://github.com/orcher-io/sdk-rust/issues/53)) ([02557de](https://github.com/orcher-io/sdk-rust/commit/02557de239af35295d52f7844615f3188b94b947)), closes [#24](https://github.com/orcher-io/sdk-rust/issues/24)
+* say shared actor operations run concurrently ([#46](https://github.com/orcher-io/sdk-rust/issues/46)) ([209a5fc](https://github.com/orcher-io/sdk-rust/commit/209a5fc876c859484c0e5e2a000e66ed71a54894)), closes [#23](https://github.com/orcher-io/sdk-rust/issues/23)
+
 ## [0.9.1](https://github.com/orcher-io/sdk-rust/compare/v0.9.0...v0.9.1) (2026-10-11)
 
 
