@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.11.0](https://github.com/orcher-io/sdk-rust/compare/v0.10.0...v0.11.0) (2026-10-14)
+
+
+### ⚠ BREAKING CHANGES
+
+* ExecutionRuntime::execute_workflow is removed; run an activation with ExecutionRuntime::run_activation.
+
+### Features
+
+* remove the journal-reading workflow path ([#58](https://github.com/orcher-io/sdk-rust/issues/58)) ([90c8c7e](https://github.com/orcher-io/sdk-rust/commit/90c8c7e672033bcacbf9dbf167bf07bb082f1100))
+
 ## [0.10.0](https://github.com/orcher-io/sdk-rust/compare/v0.9.1...v0.10.0) (2026-10-14)
 
 
