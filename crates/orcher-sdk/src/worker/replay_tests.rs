@@ -1,4 +1,5 @@
-//! Replay determinism, driven through the runtime as a worker drives it.
+//! Replay determinism, driven through the runtime as the worker host drives
+//! it: each activation resolved into the kernel protocol and answered.
 //!
 //! A small in-memory engine journals what each activation asks for, resolves
 //! it, and hands the grown journal to the next activation, the way the engine
@@ -194,12 +195,22 @@ fn completion(result: &ExecutionResult) -> Option<serde_json::Value> {
     })
 }
 
+/// The runtime's answer to an activation, as the worker host hands it over:
+/// the task resolved into the kernel protocol, the answer turned into what
+/// goes to the engine.
+async fn answer(runtime: &ExecutionRuntime, task: WorkflowExecutionTask) -> ExecutionResult {
+    let run_id = task.execution.run_id.clone();
+    let activation = orcher_sdk_core::kernel::resolve(&task, "default");
+    orcher_sdk_core::kernel::execution_result(&run_id, runtime.run_activation(activation).await)
+        .expect("the kernel takes the answer")
+}
+
 /// Run one activation and hold it to what the worker's driver checks: no
 /// failure, no step id the journal recorded reissued for other work, and no
 /// recorded step left unreached by an activation that issues new work or ends
 /// the workflow.
 async fn activate(runtime: &ExecutionRuntime, engine: &FakeEngine) -> ExecutionResult {
-    let result = runtime.execute_workflow(engine.activation()).await;
+    let result = answer(runtime, engine.activation()).await;
     if let Some(error) = &result.error {
         assert_ne!(
             error.error_type,
@@ -461,7 +472,7 @@ async fn a_loop_cut_short_is_refused_where_the_journal_goes_on() {
     }
 
     let new = runtime_with(status_watch(1)).await;
-    let result = new.execute_workflow(engine.activation()).await;
+    let result = answer(&new, engine.activation()).await;
     assert_eq!(
         result.reached_steps.as_deref(),
         Some(

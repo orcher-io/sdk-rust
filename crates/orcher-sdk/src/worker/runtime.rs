@@ -11,19 +11,17 @@ use crate::payload::Payload;
 use crate::worker::registration::{TaskHandlerFn, WorkflowHandlerFn};
 use crate::workflow::closure_commands::extract_closure_commands;
 use crate::workflow::ReachedStep;
-use crate::workflow::{WorkflowCommand, WorkflowContext, WorkflowExecution};
+use crate::workflow::{WorkflowCommand, WorkflowContext};
 use crate::TaskContext;
 
 use orcher_sdk_core::bridge::{
     CancelWorkflowCommand, Command as BridgeCommand, CompleteWorkflowCommand, ExecutionResult,
-    FailWorkflowCommand, QueryResponse, QueryResult, RequestJob, ScheduleTaskCommand,
-    StartTimerCommand, TaskRetryPolicy as BridgeRetryPolicy, UpdateResponse, UpdateResult,
-    WaitForEventCommand,
+    FailWorkflowCommand, QueryResponse, QueryResult, ScheduleTaskCommand, StartTimerCommand,
+    TaskRetryPolicy as BridgeRetryPolicy, UpdateResponse, UpdateResult, WaitForEventCommand,
 };
 use orcher_sdk_core::poller::{TaskExecutionTask, WorkflowExecutionTask};
 use orcher_sdk_core::proto::host::v1::{task_outcome, TaskAssignment, TaskOutcome};
 use orcher_sdk_core::proto::kernel::v1::{Failure as KernelFailure, Payload as KernelPayload};
-use orcher_sdk_core::proto::orcher::v1::{journal_entry::Attributes, EntryType, JournalEntry};
 
 /// A workflow task handed to the runtime, with the channel its result goes back on.
 #[derive(Debug)]
@@ -114,10 +112,6 @@ pub struct ExecutionRuntime {
     task_handlers: Arc<RwLock<HashMap<String, TaskHandlerFn>>>,
     workflow_semaphore: Arc<Semaphore>,
     task_semaphore: Arc<Semaphore>,
-    /// Workflow inputs by run ID, kept across activations of a run because a
-    /// later activation may not carry the start job. Cleared when the run
-    /// completes.
-    input_cache: Arc<RwLock<HashMap<String, Payload>>>,
 
     // Counters reported by `stats()`.
     workflows_executed: AtomicU64,
@@ -141,7 +135,6 @@ impl ExecutionRuntime {
             task_handlers: Arc::new(RwLock::new(HashMap::new())),
             workflow_semaphore,
             task_semaphore,
-            input_cache: Arc::new(RwLock::new(HashMap::new())),
             workflows_executed: AtomicU64::new(0),
             workflows_succeeded: AtomicU64::new(0),
             workflows_failed: AtomicU64::new(0),
@@ -195,75 +188,10 @@ impl ExecutionRuntime {
         self.task_handlers.write().await.insert(task_type, handler);
     }
 
-    /// Runs one workflow activation through its registered handler and returns
-    /// the commands it produced.
-    ///
-    /// Failures, such as an unregistered workflow type, an unreadable input or a
-    /// handler error, are reported inside the [`ExecutionResult`].
-    pub async fn execute_workflow(&self, task: WorkflowExecutionTask) -> ExecutionResult {
-        let workflow_id = task.execution.workflow_id.clone();
-        let run_id = task.execution.run_id.clone();
-        let workflow_type = task.workflow_type.clone();
-
-        self.workflows_executed.fetch_add(1, Ordering::Relaxed);
-
-        tracing::info!(
-            workflow_id = %workflow_id,
-            run_id = %run_id,
-            workflow_type = %workflow_type,
-            "Executing workflow in sdk-rust runtime"
-        );
-
-        let _permit = match self.workflow_semaphore.acquire().await {
-            Ok(permit) => permit,
-            Err(e) => {
-                tracing::error!(error = %e, "Failed to acquire workflow semaphore");
-                return ExecutionResult::failed(
-                    run_id,
-                    orcher_sdk_core::bridge::ExecutionError {
-                        message: format!("Failed to acquire execution permit: {}", e),
-                        error_type: orcher_sdk_core::bridge::ExecutionErrorType::WorkflowCode,
-                        details: None,
-                        retryable: true,
-                    },
-                );
-            }
-        };
-
-        let handler = {
-            let handlers = self.workflow_handlers.read().await;
-            handlers.get(&workflow_type).cloned()
-        };
-
-        let handler = match handler {
-            Some(h) => h,
-            None => {
-                tracing::error!(
-                    workflow_type = %workflow_type,
-                    "No handler registered for workflow type"
-                );
-                return ExecutionResult::failed(
-                    run_id,
-                    orcher_sdk_core::bridge::ExecutionError {
-                        message: format!(
-                            "No handler registered for workflow type: {}",
-                            workflow_type
-                        ),
-                        error_type: orcher_sdk_core::bridge::ExecutionErrorType::WorkflowCode,
-                        details: None,
-                        retryable: false,
-                    },
-                );
-            }
-        };
-
-        self.execute_workflow_handler(task, handler).await
-    }
-
     /// Runs one activation as the kernel protocol carries it; returns what
-    /// it produced, as the journal-reading path does, with the steps the
-    /// code reached and their kinds. An activation that cannot be read is
-    /// an error, for the protocol error it answers with.
+    /// it produced, with the steps the code reached and their kinds. An
+    /// activation that cannot be read is an error, for the protocol error it
+    /// answers with.
     pub(crate) async fn execute_activation(
         &self,
         activation: orcher_sdk_core::proto::kernel::v1::RunActivation,
@@ -326,99 +254,6 @@ impl ExecutionRuntime {
         payload
     }
 
-    async fn execute_workflow_handler(
-        &self,
-        task: WorkflowExecutionTask,
-        handler: WorkflowHandlerFn,
-    ) -> ExecutionResult {
-        let workflow_id = task.execution.workflow_id.clone();
-        let run_id = task.execution.run_id.clone();
-        let workflow_type = task.workflow_type.clone();
-        let task_queue = task.task_queue.clone();
-
-        let execution_request =
-            match orcher_sdk_core::bridge::task_to_execution_request(task.clone()) {
-                Ok(req) => req,
-                Err(e) => {
-                    tracing::error!(error = %e, "Failed to convert task to execution request");
-                    return ExecutionResult::failed(
-                        run_id,
-                        orcher_sdk_core::bridge::ExecutionError {
-                            message: format!("Failed to convert task: {}", e),
-                            error_type: orcher_sdk_core::bridge::ExecutionErrorType::WorkflowCode,
-                            details: None,
-                            retryable: false,
-                        },
-                    );
-                }
-            };
-
-        let execution = WorkflowExecution {
-            workflow_id: workflow_id.clone(),
-            run_id: run_id.clone(),
-            workflow_type: workflow_type.clone(),
-            attempt: task.attempt,
-            namespace: self.config.namespace.clone(),
-            task_queue: task_queue.clone(),
-        };
-
-        // The workflow's clock comes from the journal, never from this
-        // machine: it starts when the engine journaled the start, and moves to
-        // when each result the workflow receives was journaled.
-        let journal_times = JournalTimes::read(&task.journal);
-        let started_at_ms = journal_times.started_at_ms.unwrap_or_else(|| {
-            tracing::warn!(
-                workflow_id = %workflow_id,
-                "The journal records no start time; workflow time starts now"
-            );
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_millis() as i64
-        });
-        let ctx = WorkflowContext::starting_at(
-            execution,
-            execution_request.is_replaying,
-            "1.0.0".to_string(),
-            started_at_ms,
-        );
-
-        // The children the journal records, so a child started without an id
-        // keeps the id the journal holds for it, whichever SDK chose it.
-        for child_id in task.journal.iter().filter_map(journaled_child_id) {
-            ctx.record_journaled_child(child_id);
-        }
-
-        // On replay, give the context the recorded results so completed steps
-        // return them instead of running again.
-        if execution_request.is_replaying {
-            self.inject_step_results(&ctx, &execution_request.jobs, journal_times)
-                .await;
-        }
-
-        let input = match self
-            .get_or_extract_input(&run_id, &execution_request.jobs)
-            .await
-        {
-            Ok(input) => input,
-            Err(e) => {
-                tracing::error!(error = %e, "Failed to get workflow input");
-                return ExecutionResult::failed(
-                    run_id,
-                    orcher_sdk_core::bridge::ExecutionError {
-                        message: format!("Failed to get workflow input: {}", e),
-                        error_type: orcher_sdk_core::bridge::ExecutionErrorType::WorkflowCode,
-                        details: None,
-                        retryable: false,
-                    },
-                );
-            }
-        };
-
-        let asked = asked_in(&execution_request.jobs);
-        self.run_handler(ctx, input, handler, &asked).await.0
-    }
-
     /// Runs the workflow's code once its context holds what history
     /// resolved, answers the queries and updates asked of it, and returns
     /// what the activation produced, with the steps the code reached.
@@ -447,7 +282,6 @@ impl ExecutionRuntime {
 
         let mut result = match handler_result {
             Ok(output) => {
-                self.cleanup_input_cache(&run_id).await;
                 let r = self.handle_workflow_completion(
                     Ending::Completed(output),
                     ctx,
@@ -467,7 +301,6 @@ impl ExecutionRuntime {
             Err(Error::Workflow(crate::error::WorkflowError::Canceled))
                 if ctx.is_cancel_requested() =>
             {
-                self.cleanup_input_cache(&run_id).await;
                 tracing::info!(workflow_id = %workflow_id, "Workflow ended as cancelled");
                 self.handle_workflow_completion(
                     Ending::Cancelled,
@@ -785,109 +618,6 @@ impl ExecutionRuntime {
         }
     }
 
-    async fn inject_step_results(
-        &self,
-        ctx: &WorkflowContext,
-        jobs: &[RequestJob],
-        mut times: JournalTimes,
-    ) {
-        // Jobs arrive in journal order. The position is recorded so that a wait
-        // with a timeout can tell whether its event or its deadline came first.
-        for (position, job) in jobs.iter().enumerate() {
-            if let Some(key) = result_key(job) {
-                if let Some(at_ms) = times.resolved_at.get(&key) {
-                    ctx.record_resolved_at(key, *at_ms);
-                }
-            }
-            match job {
-                RequestJob::CompleteTask(complete_task) => {
-                    if let orcher_sdk_core::bridge::TaskExecutionResult::Success { output } =
-                        &complete_task.result
-                    {
-                        ctx.inject_step_result(complete_task.task_id.clone(), output.data.clone());
-                    }
-                }
-                RequestJob::CompleteStep(complete_step) => {
-                    if let Some(failure) = &complete_step.failure {
-                        // A terminal task or step failure reported by the server. Inject a
-                        // sentinel keyed by step_name so that execute_task/execute decode it on
-                        // replay and raise a catchable error, as the ChildWorkflowFailed arm
-                        // does. Dropping the failure would leave replay with no result, and the
-                        // task would be re-executed forever.
-                        // `attempts` is how many times the task actually ran. The decode
-                        // side falls back to 1 when it is missing, which would report a
-                        // task that exhausted its retries as having run once.
-                        let error_bytes = crate::workflow::executable::encode_task_failure(
-                            &failure.message,
-                            &failure.failure_type,
-                            complete_step.execution_attempt,
-                        );
-                        ctx.inject_step_result(complete_step.step_name.clone(), error_bytes);
-                    } else {
-                        ctx.inject_step_result(
-                            complete_step.step_name.clone(),
-                            complete_step.result.clone(),
-                        );
-                    }
-                }
-                RequestJob::HandleEvent(event_job) => {
-                    // The n-th event of a name is the n-th journaled under it.
-                    let at_ms = times
-                        .events
-                        .get_mut(&event_job.event_name)
-                        .and_then(|times| times.pop_front());
-                    ctx.buffer_journaled_event(
-                        event_job.event_name.clone(),
-                        event_job.payload.data.clone(),
-                        Some(position),
-                        at_ms,
-                    );
-                }
-                RequestJob::ChildWorkflowCompleted(job) => {
-                    ctx.inject_step_result(
-                        format!("child:{}", job.workflow_id),
-                        job.result.data.clone(),
-                    );
-                }
-                RequestJob::ChildWorkflowFailed(job) => {
-                    inject_child_failure(ctx, &job.workflow_id, &job.failure.message);
-                }
-                // A child that did not complete failed as far as its parent is
-                // concerned: `result()` raises `ChildWorkflowFailed` with the reason.
-                // Without these the parent would wait on the child forever.
-                RequestJob::ChildWorkflowCanceled(job) => {
-                    inject_child_failure(ctx, &job.workflow_id, "child workflow was canceled");
-                }
-                RequestJob::ChildWorkflowTerminated(job) => {
-                    let message = if job.reason.is_empty() {
-                        "child workflow was terminated".to_string()
-                    } else {
-                        format!("child workflow was terminated: {}", job.reason)
-                    };
-                    inject_child_failure(ctx, &job.workflow_id, &message);
-                }
-                RequestJob::ChildWorkflowTimedOut(job) => {
-                    inject_child_failure(ctx, &job.workflow_id, "child workflow timed out");
-                }
-                RequestJob::CancelWorkflow(_) => {
-                    // The workflow is asked to cancel. It learns of it at its first wait
-                    // whose result the journal did not record before this, and may
-                    // clean up after. Compared by the journal's times, not by place in
-                    // this list: the engine adds step results after the journal's own
-                    // entries, so their place says nothing about when they happened.
-                    ctx.note_cancel_requested(times.cancel_requested_at);
-                }
-                RequestJob::FireTimer(job) => {
-                    // A durable timer fired. Mark it, keyed by the user-facing timer id,
-                    // so sleep()/sleep_with_id() return on replay instead of
-                    // emitting StartTimer again.
-                    ctx.mark_timer_fired_at(job.timer_id.clone(), Some(position));
-                }
-                _ => {}
-            }
-        }
-    }
-
     /// Answers the activation's updates, then its queries, so a query sees
     /// what an update in the same activation changed.
     ///
@@ -942,53 +672,6 @@ impl ExecutionRuntime {
         }
 
         (query_responses, update_results)
-    }
-
-    async fn get_or_extract_input(&self, run_id: &str, jobs: &[RequestJob]) -> Result<Payload> {
-        // A later activation may not carry the start job, so prefer the cache.
-        {
-            let cache = self.input_cache.read().await;
-            if let Some(payload) = cache.get(run_id) {
-                return Ok(payload.clone());
-            }
-        }
-
-        for job in jobs {
-            if let RequestJob::StartWorkflow(start) = job {
-                let mut payload = Payload::from_json(&start.input)
-                    .unwrap_or_else(|_| Payload::new_data(Vec::new()));
-
-                // On a decode failure, log and pass the input on undecoded.
-                if let Some(ref codec) = self.config.codec_chain {
-                    use orcher_sdk_core::codec::PayloadCodec;
-                    match codec.decode(&payload) {
-                        Ok(decoded) => {
-                            payload = decoded;
-                        }
-                        Err(e) => {
-                            tracing::warn!(error = %e, "Failed to decode workflow input with codec chain");
-                        }
-                    }
-                }
-
-                self.input_cache
-                    .write()
-                    .await
-                    .insert(run_id.to_string(), payload.clone());
-
-                return Ok(payload);
-            }
-        }
-
-        Err(Error::Worker(
-            crate::error::WorkerError::InvalidConfiguration(
-                "No workflow input available".to_string(),
-            ),
-        ))
-    }
-
-    async fn cleanup_input_cache(&self, run_id: &str) {
-        self.input_cache.write().await.remove(run_id);
     }
 
     fn convert_command(
@@ -1147,86 +830,6 @@ impl ExecutionRuntime {
     }
 }
 
-/// When the engine journaled what an activation can hand its workflow, read
-/// from the journal itself: the jobs derived from it carry no times.
-#[derive(Debug, Default)]
-struct JournalTimes {
-    /// When the workflow's start was journaled, ms since the epoch.
-    started_at_ms: Option<i64>,
-    /// When each result was journaled, keyed as the context holds it: a
-    /// step's name, `timer:{id}`, `child:{workflow id}`.
-    resolved_at: HashMap<String, i64>,
-    /// When each event was journaled, per name, in journal order.
-    events: HashMap<String, std::collections::VecDeque<i64>>,
-    /// When a request to cancel the workflow was journaled, ms since the epoch.
-    cancel_requested_at: Option<i64>,
-}
-
-impl JournalTimes {
-    fn read(journal: &[JournalEntry]) -> Self {
-        let mut times = Self::default();
-        for entry in journal {
-            let Some(at_ms) = entry.timestamp.as_ref().map(|t| {
-                t.seconds
-                    .saturating_mul(1000)
-                    .saturating_add(i64::from(t.nanos) / 1_000_000)
-            }) else {
-                continue;
-            };
-            if entry.entry_type == EntryType::WorkflowExecutionStarted as i32 {
-                times.started_at_ms.get_or_insert(at_ms);
-            }
-            if entry.entry_type == EntryType::WorkflowExecutionCancelRequested as i32 {
-                times.cancel_requested_at.get_or_insert(at_ms);
-            }
-            let key = match &entry.attributes {
-                Some(Attributes::StepCompleted(a)) => a.step_name.clone(),
-                Some(Attributes::TimerFired(a)) => format!("timer:{}", a.timer_id),
-                Some(Attributes::ChildWorkflowExecutionCompleted(a)) => {
-                    format!("child:{}", a.workflow_id)
-                }
-                Some(Attributes::ChildWorkflowExecutionFailed(a)) => {
-                    format!("child:{}", a.workflow_id)
-                }
-                Some(Attributes::ChildWorkflowExecutionCanceled(a)) => {
-                    format!("child:{}", a.workflow_id)
-                }
-                Some(Attributes::ChildWorkflowExecutionTerminated(a)) => {
-                    format!("child:{}", a.workflow_id)
-                }
-                Some(Attributes::ChildWorkflowExecutionTimedOut(a)) => {
-                    format!("child:{}", a.workflow_id)
-                }
-                Some(Attributes::EventReceived(a)) => {
-                    times
-                        .events
-                        .entry(a.event_name.clone())
-                        .or_default()
-                        .push_back(at_ms);
-                    continue;
-                }
-                _ => continue,
-            };
-            times.resolved_at.entry(key).or_insert(at_ms);
-        }
-        times
-    }
-}
-
-/// The id of the child a journal entry is about, if it is about one.
-fn journaled_child_id(entry: &JournalEntry) -> Option<String> {
-    let id = match entry.attributes.as_ref()? {
-        Attributes::ChildWorkflowExecutionStarted(a) => &a.workflow_id,
-        Attributes::ChildWorkflowExecutionCompleted(a) => &a.workflow_id,
-        Attributes::ChildWorkflowExecutionFailed(a) => &a.workflow_id,
-        Attributes::ChildWorkflowExecutionCanceled(a) => &a.workflow_id,
-        Attributes::ChildWorkflowExecutionTerminated(a) => &a.workflow_id,
-        Attributes::ChildWorkflowExecutionTimedOut(a) => &a.workflow_id,
-        _ => return None,
-    };
-    (!id.is_empty()).then(|| id.clone())
-}
-
 /// Records that a child ended without a result, so `result()` raises
 /// `ChildWorkflowFailed` with `message` on replay.
 pub(crate) fn inject_child_failure(ctx: &WorkflowContext, workflow_id: &str, message: &str) {
@@ -1255,50 +858,12 @@ pub(crate) enum Asked {
     },
 }
 
-/// The queries and updates among a request's jobs, in their order.
-fn asked_in(jobs: &[RequestJob]) -> Vec<Asked> {
-    jobs.iter()
-        .filter_map(|job| match job {
-            RequestJob::ProcessQuery(query) => Some(Asked::Query {
-                id: query.query_id.clone(),
-                name: query.query_type.clone(),
-                args: query
-                    .arguments
-                    .first()
-                    .map(|payload| payload.data.clone())
-                    .unwrap_or_default(),
-            }),
-            RequestJob::UpdateState(update) => Some(Asked::Update {
-                id: update.update_id.clone(),
-                name: update.update_name.clone(),
-                args: update.payload.data.clone(),
-            }),
-            _ => None,
-        })
-        .collect()
-}
-
 /// How a workflow's code ended, for the terminal command it gets.
 enum Ending {
     /// It returned this output.
     Completed(Payload),
     /// It gave up on a cancellation request it had been told of.
     Cancelled,
-}
-
-/// The key a job's result is held under in the workflow context.
-fn result_key(job: &RequestJob) -> Option<String> {
-    match job {
-        RequestJob::CompleteTask(job) => Some(job.task_id.clone()),
-        RequestJob::CompleteStep(job) => Some(job.step_name.clone()),
-        RequestJob::ChildWorkflowCompleted(job) => Some(format!("child:{}", job.workflow_id)),
-        RequestJob::ChildWorkflowFailed(job) => Some(format!("child:{}", job.workflow_id)),
-        RequestJob::ChildWorkflowCanceled(job) => Some(format!("child:{}", job.workflow_id)),
-        RequestJob::ChildWorkflowTerminated(job) => Some(format!("child:{}", job.workflow_id)),
-        RequestJob::ChildWorkflowTimedOut(job) => Some(format!("child:{}", job.workflow_id)),
-        RequestJob::FireTimer(job) => Some(format!("timer:{}", job.timer_id)),
-        _ => None,
-    }
 }
 
 /// Converts a task's error into the failure reported to the server.

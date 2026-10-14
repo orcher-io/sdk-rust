@@ -30,8 +30,8 @@ name = "child_handle_ops"
 path = "src/bin/child_handle_ops.rs"
 
 [[bin]]
-name = "kernel_equivalence"
-path = "src/bin/kernel_equivalence.rs"
+name = "replay_check"
+path = "src/bin/replay_check.rs"
 
 [dependencies]
 orcher-sdk = { path = "../crates/orcher-sdk", features = ["auto-register"] }

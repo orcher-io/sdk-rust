@@ -55,7 +55,7 @@ impl ExecutionRuntime {
 }
 
 /// Loads an activation's resolutions into a context for its run, as the
-/// journal-reading path loads the jobs it derives from the journal.
+/// history holds them.
 pub(crate) fn load(activation: RunActivation, namespace: &str) -> Result<Loaded, String> {
     let run = activation
         .run
