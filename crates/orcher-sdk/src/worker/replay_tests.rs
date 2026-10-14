@@ -320,6 +320,46 @@ async fn a_replayed_workflow_issues_every_step_under_the_id_it_first_had() {
     assert_eq!(completion(&replay), Some(output));
 }
 
+/// A saga whose steps all succeed never compensates. Each step suspends the
+/// workflow the first time it runs (its task is scheduled and the activation
+/// ends); a suspension is control flow, not a failure, and must not trigger
+/// the compensations of the steps before it (orcher#4).
+#[tokio::test]
+async fn a_healthy_saga_completes_without_compensating() {
+    let handler: WorkflowHandlerFn = Arc::new(|ctx: WorkflowContext, _input| {
+        Box::pin(async move {
+            let mut saga = crate::workflow::Saga::new();
+            let charged: String = saga
+                .add_step(&ctx, "charge_payment", 10u32)
+                .with_compensation("refund_payment")
+                .execute()
+                .await?;
+            let reserved: String = saga
+                .add_step(&ctx, "reserve_stock", 1u32)
+                .with_compensation("release_stock")
+                .execute()
+                .await?;
+            saga.commit();
+            output_of(vec![charged, reserved])
+        })
+    });
+    let runtime = runtime_with(handler).await;
+    let mut engine = FakeEngine::new();
+
+    let (issued, _output) = run_to_completion(&runtime, &mut engine).await;
+
+    let task_types: Vec<&str> = issued
+        .iter()
+        .filter(|(kind, _, _)| *kind == "task")
+        .map(|(_, _, task_type)| task_type.as_str())
+        .collect();
+    assert_eq!(
+        task_types,
+        ["charge_payment", "reserve_stock"],
+        "a healthy saga ran a compensation"
+    );
+}
+
 #[tokio::test]
 async fn workflow_time_comes_from_the_journal_and_is_the_same_on_every_replay() {
     let readings: Arc<Mutex<Vec<(&'static str, i64)>>> = Arc::default();
