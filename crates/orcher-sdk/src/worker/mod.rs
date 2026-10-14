@@ -30,15 +30,16 @@
 //!
 //! ## Architecture
 //!
-//! Polling and all gRPC traffic live in sdk-core's drivers (`WorkflowDriver`,
-//! `TaskDriver`). This crate only runs handlers, through [`ExecutionRuntime`].
-//! Keeping the two apart lets core overhead be measured separately from
-//! handler time and lets handlers run as native Rust.
+//! The worker host (`orcher-sdk-host`, shared with the Python and TypeScript
+//! SDKs) does the polling and all gRPC traffic, worker registration,
+//! sessions, actor registration and shutdown; it hands work over by pull.
+//! This crate runs the handlers, through [`ExecutionRuntime`]: workflow
+//! activations as the kernel protocol carries them, tasks and actor
+//! operations as host messages.
 
 mod activation;
 mod builder;
 pub mod runtime;
-pub mod session;
 
 #[cfg(test)]
 mod replay_tests;
@@ -64,44 +65,9 @@ use crate::interceptor::InterceptorChain;
 
 use crate::error::{Error, Result};
 
-/// How long [`Worker::run`] waits for the workflow and task drivers to stop
-/// once asked.
-///
-/// Each driver sends the results it already holds and, by default, gives
-/// completions still being retried five more seconds, so it normally stops well
-/// within this bound. The bound exists for a driver stuck elsewhere: shutdown
-/// must return even then.
-const DRIVER_STOP_TIMEOUT: Duration = Duration::from_secs(10);
-
-/// How long [`Worker::run`] waits for the worker to deregister on shutdown.
-///
-/// Deregistration is a courtesy: the server drops a registration that stops
-/// heartbeating anyway. So a slow or unreachable server must not hold up
-/// shutdown for longer than this; past it the attempt is abandoned and logged.
-const REGISTRATION_STOP_TIMEOUT: Duration = Duration::from_secs(5);
-
-/// Waits up to [`DRIVER_STOP_TIMEOUT`] for a driver that has been asked to
-/// stop, and aborts it if it has not stopped by then.
-async fn stop_driver(driver: &str, handle: &mut tokio::task::JoinHandle<()>) {
-    match tokio::time::timeout(DRIVER_STOP_TIMEOUT, &mut *handle).await {
-        Ok(_) => tracing::debug!("{driver} driver stopped"),
-        Err(_) => {
-            tracing::warn!(
-                timeout_ms = DRIVER_STOP_TIMEOUT.as_millis() as u64,
-                "{driver} driver did not stop in time; abandoning it"
-            );
-            handle.abort();
-        }
-    }
-}
-
-use orcher_sdk_core::poller::{
-    TaskDriver, TaskDriverConfig, TaskWorkResult, WorkerRegistrationConfig,
-    WorkerRegistrationDriver, WorkflowDriver, WorkflowDriverConfig, WorkflowWorkResult,
-};
-
-#[cfg(feature = "auto-register")]
-use orcher_sdk_core::poller::{ActorDriver, ActorDriverConfig, ActorDriverEvent, ActorWorkResult};
+use orcher_sdk_core::proto::host::v1::{actor_result, ActorMode, ActorOperation, ActorResult};
+use orcher_sdk_core::proto::kernel::v1::{run_activation_result, Payload as KernelPayload};
+use orcher_sdk_host::{Host, HostConfig, Registrations};
 
 /// Health status of a worker, as reported by [`Worker::get_health`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -137,10 +103,9 @@ pub struct HealthReport {
 
 /// Runs workflows and tasks for one task queue.
 ///
-/// A worker polls the orchestrator for work, executes the registered workflow
-/// and task handlers, and reports results back. sdk-core's `WorkflowDriver` and
-/// `TaskDriver` do the polling and gRPC; [`ExecutionRuntime`] stores and runs
-/// the handlers.
+/// A worker polls the orchestrator for work, executes the registered workflow,
+/// task and actor handlers, and reports results back. The worker host does the
+/// polling and gRPC; [`ExecutionRuntime`] stores and runs the handlers.
 ///
 /// Create one with [`WorkerBuilder`], start it with [`run()`](Worker::run), and
 /// stop it gracefully with [`shutdown()`](Worker::shutdown).
@@ -170,19 +135,9 @@ pub struct Worker {
     /// Workflow, task and actor handlers registered with this worker.
     registry: Arc<RwLock<Registry>>,
 
-    /// Actor client that registers (and re-registers) actor handlers.
-    /// Heartbeats are sent by the `ActorDriver`.
-    #[cfg(feature = "auto-register")]
-    actor_client: Option<Arc<tokio::sync::Mutex<crate::actor::ActorClient>>>,
-
     /// Invokes actor operation handlers.
     #[cfg(feature = "auto-register")]
     actor_executor: Option<Arc<crate::actor::ActorExecutor>>,
-
-    /// Registration ID returned when actor handlers were registered; the
-    /// actor driver's heartbeat refers to it.
-    #[cfg(feature = "auto-register")]
-    actor_registration_id: Option<String>,
 
     /// ID of this worker instance, sent at worker registration.
     #[allow(dead_code)]
@@ -478,655 +433,148 @@ impl Worker {
             .map(|tls| crate::tls::to_core(&tls))
     }
 
-    /// Runs the worker until shutdown is requested or a driver or execution
-    /// loop stops.
+    /// The worker host's configuration, from this worker's.
+    fn host_config(&self) -> HostConfig {
+        let c = &self.config;
+        let mut config = HostConfig::new(&c.server_url, &c.task_queue)
+            .with_namespace(&c.namespace)
+            .with_identity(&c.identity)
+            .with_concurrency(
+                c.max_concurrent_workflows as u32,
+                c.max_concurrent_tasks as u32,
+                c.max_concurrent_actor_operations as u32,
+            )
+            .with_pollers(
+                c.workflow_poller_count,
+                c.task_poller_count,
+                c.actor_poller_count,
+            )
+            .with_heartbeat_interval(c.heartbeat_interval)
+            .with_max_sessions(c.max_sessions)
+            .with_sdk("rust", env!("CARGO_PKG_VERSION"));
+        if let Some(api_key) = &c.api_key {
+            config = config.with_api_key(api_key);
+        }
+        if let Some(organization_id) = &c.organization_id {
+            config = config.with_organization_id(organization_id);
+        }
+        if let Some(version_id) = &c.version_id {
+            config = config.with_version_id(version_id);
+        }
+        if let Some(tls) = self.core_tls() {
+            config = config.with_tls(tls);
+        }
+        config
+    }
+
+    /// What the worker runs: the workflows and tasks in its runtime, and the
+    /// actor operations in its registry.
+    async fn registrations(&self) -> Registrations {
+        #[allow(unused_mut)]
+        let mut registrations = Registrations::new(
+            self.runtime.workflow_types().await,
+            self.runtime.task_types().await,
+            [] as [&str; 0],
+        );
+        #[cfg(feature = "auto-register")]
+        {
+            let registry = self.registry.read().await;
+            let mut handlers = Vec::new();
+            for (actor, operations) in registry.actor_handlers() {
+                for (operation, registration) in operations {
+                    handlers.push(match registration.mode {
+                        crate::actor::types::OperationMode::Shared => {
+                            orcher_sdk_host::ActorHandler::shared(actor, operation)
+                        }
+                        crate::actor::types::OperationMode::Exclusive => {
+                            orcher_sdk_host::ActorHandler::exclusive(actor, operation)
+                        }
+                    });
+                }
+            }
+            registrations = registrations.with_actor_handlers(handlers);
+        }
+        registrations
+    }
+
+    /// Runs the worker until shutdown is requested.
     ///
-    /// Polls for workflow and task work, executes the registered handlers,
-    /// reports results, registers the worker and sends its heartbeats, and
-    /// serves actor operations when actors are registered. On the way out the
-    /// drivers are stopped first, so the results they hold are delivered before
-    /// the execution loops end.
+    /// The worker host (`orcher-sdk-host`) polls for work, reports results,
+    /// registers the worker and its actor handlers, and runs sessions; this
+    /// runs the handlers for the work it hands over, as many at a time as
+    /// the worker is configured for. On [`shutdown()`](Self::shutdown) the
+    /// host stops claiming work, gives the work running its shutdown grace,
+    /// hands back workflow activations still unanswered, and deregisters the
+    /// worker.
     ///
     /// # Errors
     ///
-    /// Returns [`WorkerError::StartupFailed`] if a driver cannot be created.
+    /// Returns [`WorkerError::StartupFailed`] if the worker cannot start:
+    /// nothing is registered, the engine cannot be reached, or the actor
+    /// service refuses the worker's actor handlers.
     ///
     /// [`WorkerError::StartupFailed`]: crate::error::WorkerError::StartupFailed
     pub async fn run(&self) -> Result<()> {
         // Listen before anything else: a shutdown asked for while the worker is
-        // still starting (registering, say) would otherwise go unheard, and the
-        // worker would run on.
+        // still starting would otherwise go unheard, and the worker would run on.
         let mut shutdown_rx = self.shutdown_tx.subscribe();
 
         tracing::info!(
             identity = %self.config.identity,
             namespace = %self.config.namespace,
             task_queue = %self.config.task_queue,
-            "Starting ORCHER Worker (driver mode)"
+            "Starting ORCHER Worker"
         );
 
         self.register_handlers_from_registry().await?;
 
-        // Every driver gets the same TLS settings; see `core_tls`.
-        let core_tls = self.core_tls();
-
-        let mut workflow_driver_config = WorkflowDriverConfig::default();
-        // This SDK hands a cancellation request to workflow code (see
-        // `WorkflowContext::is_cancel_requested`), so the engine may wait for the
-        // workflow to clean up and end itself.
-        workflow_driver_config.protocol_version = orcher_sdk_core::worker_protocol::CANCEL_REQUEST;
-        workflow_driver_config.server_url = self.config.server_url.clone();
-        workflow_driver_config.namespace = self.config.namespace.clone();
-        workflow_driver_config.task_queue = self.config.task_queue.clone();
-        workflow_driver_config.max_concurrent_executions = self.config.max_concurrent_workflows;
-        workflow_driver_config.identity = self.config.identity.clone();
-        workflow_driver_config.poll_timeout = Duration::from_secs(60);
-        workflow_driver_config.cache_capacity = 1000;
-        workflow_driver_config.strict_determinism = false;
-        workflow_driver_config.poller_count = self.config.workflow_poller_count;
-        workflow_driver_config.organization_id = self.config.organization_id.clone();
-        workflow_driver_config.api_key = self.config.api_key.clone();
-        workflow_driver_config.tls_config = core_tls.clone();
-        workflow_driver_config.version_id = self.config.version_id.clone();
-
-        let (workflow_driver, mut workflow_work_rx, workflow_result_tx) =
-            WorkflowDriver::new(workflow_driver_config)
-                .await
-                .map_err(|e| {
-                    Error::Worker(crate::error::WorkerError::StartupFailed(format!(
-                        "Failed to create workflow driver: {}",
-                        e
-                    )))
-                })?;
-
-        let mut task_driver_config = TaskDriverConfig::default();
-        task_driver_config.server_url = self.config.server_url.clone();
-        task_driver_config.namespace = self.config.namespace.clone();
-        task_driver_config.task_queue = self.config.task_queue.clone();
-        task_driver_config.max_concurrent_executions = self.config.max_concurrent_tasks;
-        task_driver_config.identity = self.config.identity.clone();
-        task_driver_config.poll_timeout = Duration::from_secs(60);
-        task_driver_config.enable_heartbeat = true;
-        task_driver_config.heartbeat_interval = Duration::from_secs(30);
-        task_driver_config.poller_count = self.config.task_poller_count;
-        task_driver_config.organization_id = self.config.organization_id.clone();
-        task_driver_config.api_key = self.config.api_key.clone();
-        task_driver_config.tls_config = core_tls.clone();
-        task_driver_config.version_id = self.config.version_id.clone();
-        // Heartbeat every task while it runs, whatever its code does, so a
-        // task whose worker dies is retried instead of staying started.
-        task_driver_config.auto_heartbeat = true;
-
-        let (mut task_driver, mut task_work_rx, task_result_tx, session_queue_tx) =
-            TaskDriver::new(task_driver_config).await.map_err(|e| {
-                Error::Worker(crate::error::WorkerError::StartupFailed(format!(
-                    "Failed to create task driver: {}",
-                    e
-                )))
-            })?;
-
-        let workflow_runtime = Arc::clone(&self.runtime);
-        let task_runtime = Arc::clone(&self.runtime);
-        let workflow_interceptors = Arc::clone(&self.interceptor_chain);
-        let task_interceptors = Arc::clone(&self.interceptor_chain);
-
-        // The actor driver also sends the actor registration heartbeat.
-        #[cfg(feature = "auto-register")]
-        let actor_driver_parts = if self.actor_client.is_some() {
-            let mut actor_driver_config = ActorDriverConfig::default();
-            actor_driver_config.server_url = self.config.server_url.clone();
-            actor_driver_config.namespace = self.config.namespace.clone();
-            actor_driver_config.service_id = self.config.identity.clone();
-            actor_driver_config.max_concurrent_executions =
-                self.config.max_concurrent_actor_operations;
-            actor_driver_config.identity = self.config.identity.clone();
-            actor_driver_config.poll_timeout = Duration::from_secs(30);
-            actor_driver_config.poller_count = self.config.actor_poller_count;
-            actor_driver_config.organization_id = self.config.organization_id.clone();
-            actor_driver_config.api_key = self.config.api_key.clone();
-            actor_driver_config.enable_heartbeat = true;
-            actor_driver_config.heartbeat_interval = self.config.heartbeat_interval;
-            actor_driver_config.registration_id = self.actor_registration_id.clone();
-            actor_driver_config.tls_config = core_tls.clone();
-
-            let (driver, work_rx, result_tx, event_rx) =
-                ActorDriver::new(actor_driver_config).await.map_err(|e| {
-                    Error::Worker(crate::error::WorkerError::StartupFailed(format!(
-                        "Failed to create actor driver: {}",
-                        e
-                    )))
-                })?;
-
-            Some((driver, work_rx, result_tx, event_rx))
-        } else {
-            None
-        };
-
-        // Eager task injection: tasks scheduled by a workflow completion go
-        // straight into the task driver's work channel, skipping a poll round
-        // trip. They are heartbeated like polled tasks.
-        let mut workflow_driver =
-            workflow_driver.with_eager_task_injector(task_driver.eager_task_injector());
-
-        // Sessions are served by two built-in task handlers.
-        let session_manager = Arc::new(session::SessionManager::new(
-            session::SessionManagerConfig {
-                max_sessions: self.config.max_sessions,
-            },
-            session_queue_tx,
-        ));
-
-        {
-            let sm = Arc::clone(&session_manager);
-            let task_queue = self.config.task_queue.clone();
-            let handler: crate::worker::registration::TaskHandlerFn = Arc::new(
-                move |_ctx: crate::TaskContext,
-                      input: crate::payload::Payload|
-                      -> std::pin::Pin<
-                    Box<
-                        dyn std::future::Future<
-                                Output = std::result::Result<
-                                    crate::payload::Payload,
-                                    crate::error::Error,
-                                >,
-                            > + Send,
-                    >,
-                > {
-                    let sm = Arc::clone(&sm);
-                    let task_queue = task_queue.clone();
-                    Box::pin(async move {
-                        let create_input: crate::workflow::session::CreateSessionInput =
-                            serde_json::from_slice(&input.data).map_err(|e| {
-                                crate::error::Error::Serialization(format!(
-                                    "Failed to deserialize CreateSessionInput: {}",
-                                    e
-                                ))
-                            })?;
-
-                        let info = sm
-                            .handle_create_session(create_input, &task_queue, None)
-                            .await?;
-
-                        let result_bytes = serde_json::to_vec(&info).map_err(|e| {
-                            crate::error::Error::Serialization(format!(
-                                "Failed to serialize SessionInfo: {}",
-                                e
-                            ))
-                        })?;
-
-                        Ok(crate::payload::Payload {
-                            data: result_bytes,
-                            metadata: std::collections::HashMap::new(),
-                        })
-                    })
-                },
-            );
-
-            self.runtime
-                .register_task_handler(crate::workflow::session::SESSION_CREATE_TASK, handler)
-                .await;
-        }
-
-        {
-            let sm = Arc::clone(&session_manager);
-            let handler: crate::worker::registration::TaskHandlerFn = Arc::new(
-                move |_ctx: crate::TaskContext,
-                      input: crate::payload::Payload|
-                      -> std::pin::Pin<
-                    Box<
-                        dyn std::future::Future<
-                                Output = std::result::Result<
-                                    crate::payload::Payload,
-                                    crate::error::Error,
-                                >,
-                            > + Send,
-                    >,
-                > {
-                    let sm = Arc::clone(&sm);
-                    Box::pin(async move {
-                        let complete_input: crate::workflow::session::CompleteSessionInput =
-                            serde_json::from_slice(&input.data).map_err(|e| {
-                                crate::error::Error::Serialization(format!(
-                                    "Failed to deserialize CompleteSessionInput: {}",
-                                    e
-                                ))
-                            })?;
-
-                        sm.handle_complete_session(complete_input).await?;
-
-                        Ok(crate::payload::Payload {
-                            data: b"null".to_vec(),
-                            metadata: std::collections::HashMap::new(),
-                        })
-                    })
-                },
-            );
-
-            self.runtime
-                .register_task_handler(crate::workflow::session::SESSION_COMPLETE_TASK, handler)
-                .await;
-        }
-
-        tracing::info!(
-            resource_id = %session_manager.resource_id(),
-            "Session manager initialized with built-in task handlers"
-        );
-
-        // Take the stop handles before the drivers move into their tasks. `run`
-        // borrows a driver while it runs, and stopping it through the handle
-        // lets it send the results it holds instead of dropping them.
-        let wf_stop = workflow_driver.shutdown_handle();
-        let task_stop = task_driver.shutdown_handle();
-
-        let mut workflow_driver_handle = tokio::spawn(async move {
-            if let Err(e) = workflow_driver.run().await {
-                tracing::error!(error = %e, "Workflow driver error");
-            }
-        });
-
-        let mut task_driver_handle = tokio::spawn(async move {
-            if let Err(e) = task_driver.run().await {
-                tracing::error!(error = %e, "Task driver error");
-            }
-        });
-
-        // Workflow execution loop: one spawned task per activation.
-        let mut workflow_exec_handle = tokio::spawn(async move {
-            while let Some(work) = workflow_work_rx.recv().await {
-                let runtime = Arc::clone(&workflow_runtime);
-                let result_tx = workflow_result_tx.clone();
-                let interceptors = Arc::clone(&workflow_interceptors);
-
-                tokio::spawn(async move {
-                    let task = work.task;
-                    let workflow_id = task.execution.workflow_id.clone();
-                    let run_id = task.execution.run_id.clone();
-                    let workflow_type = task.workflow_type.clone();
-                    let task_token = task.task_token.clone();
-                    let task_queue = task.task_queue.clone();
-                    let attempt = task.attempt;
-                    let stream_entry_id = work.stream_entry_id;
-
-                    let ictx = orcher_sdk_core::interceptor::InterceptorContext::workflow(
-                        &workflow_id,
-                        &workflow_type,
-                        attempt as u32,
-                        "default",
-                        &task_queue,
-                    );
-                    interceptors.before_execution(&ictx);
-
-                    let start = std::time::Instant::now();
-                    let execution_result = runtime.execute_workflow(task).await;
-                    let duration_ms = start.elapsed().as_millis() as u64;
-
-                    if execution_result.successful {
-                        interceptors.after_execution(&ictx, duration_ms);
-                    } else {
-                        let err_msg = execution_result
-                            .error
-                            .as_ref()
-                            .map(|e| e.message.as_str())
-                            .unwrap_or("unknown error");
-                        interceptors.on_error(&ictx, err_msg, duration_ms);
-                    }
-
-                    let result = WorkflowWorkResult {
-                        workflow_id,
-                        run_id,
-                        task_token,
-                        stream_entry_id,
-                        result: Ok(execution_result),
-                    };
-
-                    if let Err(e) = result_tx.send(result).await {
-                        tracing::error!(error = %e, "Failed to send workflow result to driver");
-                    }
-                });
-            }
-        });
-
-        // Task execution loop: one spawned task per task.
-        let mut task_exec_handle = tokio::spawn(async move {
-            while let Some(work) = task_work_rx.recv().await {
-                let runtime = Arc::clone(&task_runtime);
-                let result_tx = task_result_tx.clone();
-                let interceptors = Arc::clone(&task_interceptors);
-
-                tokio::spawn(async move {
-                    let task = work.task;
-                    // Hold this until the result is handed back: dropping it
-                    // stops the task's heartbeats.
-                    let heartbeat = work.heartbeat;
-                    let task_id = task.task_id.clone();
-                    let task_type = task.task_type.clone();
-                    let task_queue = task.task_queue.clone();
-                    // Counted from 1, as the task's context reports it.
-                    let attempt = task.attempt.max(1);
-                    let task_token = task.task_token.clone();
-
-                    let ictx = orcher_sdk_core::interceptor::InterceptorContext::task(
-                        &task_id,
-                        &task_type,
-                        attempt as u32,
-                        "default",
-                        &task_queue,
-                    );
-                    interceptors.before_execution(&ictx);
-
-                    let start = std::time::Instant::now();
-                    let execution_result = runtime.execute_task(task, heartbeat.clone()).await;
-                    let duration_ms = start.elapsed().as_millis() as u64;
-
-                    match &execution_result {
-                        Ok(_) => interceptors.after_execution(&ictx, duration_ms),
-                        Err(e) => interceptors.on_error(&ictx, &e.to_string(), duration_ms),
-                    }
-
-                    let result = TaskWorkResult {
-                        task_token,
-                        result: execution_result,
-                    };
-
-                    if let Err(e) = result_tx.send(result).await {
-                        tracing::error!(error = %e, "Failed to send task result to driver");
-                    }
-                    drop(heartbeat);
-                });
-            }
-        });
-
-        #[cfg(feature = "auto-register")]
-        let (actor_driver_handle, actor_exec_handle, actor_event_handle) = if let Some((
-            mut driver,
-            mut work_rx,
-            result_tx,
-            mut event_rx,
-        )) =
-            actor_driver_parts
-        {
-            let actor_executor = self.actor_executor.clone();
-            let server_url = self.config.server_url.clone();
-            let tls = self.config.tls.clone();
-
-            let driver_handle = tokio::spawn(async move {
-                if let Err(e) = driver.run().await {
-                    tracing::error!(error = %e, "Actor driver error");
-                }
-            });
-
-            let exec_handle = tokio::spawn(async move {
-                while let Some(work) = work_rx.recv().await {
-                    let result_tx = result_tx.clone();
-                    let executor = actor_executor.clone();
-                    let server_url = server_url.clone();
-                    let tls = tls.clone();
-
-                    tokio::spawn(async move {
-                        let operation = work.operation;
-                        let operation_id = operation.operation_id.clone();
-                        let execution_id = operation.execution_id.clone();
-
-                        let result =
-                            Self::execute_actor_op(executor, &operation, &server_url, tls).await;
-
-                        let work_result = ActorWorkResult {
-                            operation_id,
-                            execution_id,
-                            result,
-                        };
-
-                        if let Err(e) = result_tx.send(work_result).await {
-                            tracing::error!(error = %e, "Failed to send actor result to driver");
-                        }
-                    });
-                }
-            });
-
-            // React to driver events, such as a server request to re-register.
-            let actor_client_for_events = self.actor_client.clone();
-            let registry_for_events = self.registry.clone();
-            let config_for_events = self.config.clone();
-            let event_handle = tokio::spawn(async move {
-                while let Some(event) = event_rx.recv().await {
-                    match event {
-                        ActorDriverEvent::ReRegistrationRequired => {
-                            tracing::warn!("Re-registration requested by server, re-registering actor handlers");
-                            if let Some(ref actor_client) = actor_client_for_events {
-                                let mut client = actor_client.lock().await;
-                                let registry = registry_for_events.read().await;
-
-                                // Re-register from the handler registry, which
-                                // the #[operations] macro populates, the same way
-                                // build() registers initially.
-                                let mut handlers = Vec::new();
-                                for (actor_name, operations) in registry.actor_handlers() {
-                                    for (operation_name, registration) in operations {
-                                        let mode = match registration.mode {
-                                            crate::actor::types::OperationMode::Exclusive => {
-                                                orcher_sdk_core::proto::orcher::v1::OperationMode::Exclusive
-                                            }
-                                            crate::actor::types::OperationMode::Shared => {
-                                                orcher_sdk_core::proto::orcher::v1::OperationMode::Shared
-                                            }
-                                        };
-                                        handlers.push(crate::actor::ActorHandlerInfo::new(
-                                            actor_name.clone(),
-                                            operation_name.clone(),
-                                            mode,
-                                        ));
-                                    }
-                                }
-
-                                let mut metadata = std::collections::HashMap::new();
-                                metadata.insert(
-                                    "sdk_version".to_string(),
-                                    env!("CARGO_PKG_VERSION").to_string(),
-                                );
-                                metadata.insert(
-                                    "namespace".to_string(),
-                                    config_for_events.namespace.clone(),
-                                );
-
-                                match client.register_handlers(handlers, metadata).await {
-                                    Ok(response) if response.success => {
-                                        tracing::info!(
-                                            registration_id = %response.registration_id,
-                                            "Successfully re-registered actor handlers"
-                                        );
-                                    }
-                                    Ok(response) => {
-                                        tracing::error!(
-                                            error = %response.error_message,
-                                            "Re-registration failed"
-                                        );
-                                    }
-                                    Err(e) => {
-                                        tracing::error!(error = %e, "Re-registration RPC failed");
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            });
-
-            (Some(driver_handle), Some(exec_handle), Some(event_handle))
-        } else {
-            (None, None, None)
-        };
-
-        // Worker registration driver: registers once, then heartbeats.
-        let worker_reg_handle = {
-            let registry = self.registry.read().await;
-            #[cfg(feature = "auto-register")]
-            let workflow_types: Vec<String> = registry
-                .workflow_names()
-                .into_iter()
-                .map(|s| s.to_string())
-                .collect();
-            #[cfg(not(feature = "auto-register"))]
-            let workflow_types: Vec<String> = Vec::new();
-
-            #[cfg(feature = "auto-register")]
-            let task_types: Vec<String> = registry
-                .task_names()
-                .into_iter()
-                .map(|s| s.to_string())
-                .collect();
-            #[cfg(not(feature = "auto-register"))]
-            let task_types: Vec<String> = Vec::new();
-
-            #[cfg(not(feature = "auto-register"))]
-            let _ = &registry;
-
-            drop(registry);
-
-            let mut metadata = std::collections::HashMap::new();
-            metadata.insert("sdk".to_string(), "rust".to_string());
-            metadata.insert(
-                "sdk_version".to_string(),
-                env!("CARGO_PKG_VERSION").to_string(),
-            );
-
-            let mut reg_config = WorkerRegistrationConfig::default();
-            reg_config.server_url = self.config.server_url.clone();
-            reg_config.service_id = self.service_id.clone();
-            reg_config.identity = self.config.identity.clone();
-            reg_config.task_queue = self.config.task_queue.clone();
-            reg_config.namespace = self.config.namespace.clone();
-            reg_config.workflow_types = workflow_types;
-            reg_config.protocol_version = orcher_sdk_core::worker_protocol::CANCEL_REQUEST;
-            reg_config.task_types = task_types;
-            reg_config.max_concurrent_workflows = self.config.max_concurrent_workflows as u32;
-            reg_config.max_concurrent_tasks = self.config.max_concurrent_tasks as u32;
-            reg_config.heartbeat_interval = self.config.heartbeat_interval;
-            reg_config.metadata = metadata;
-            reg_config.tls_config = self.core_tls();
-            reg_config.version_id = self.config.version_id.clone();
-            // Registration must authenticate like polling does; otherwise a
-            // server that requires credentials rejects it and the worker never
-            // appears in the workers list.
-            reg_config.api_key = self.config.api_key.clone();
-            reg_config.organization_id = self.config.organization_id.clone();
-
-            match WorkerRegistrationDriver::new(reg_config).await {
-                Ok(mut driver) => {
-                    tracing::info!("Worker registration driver started");
-                    // `run` borrows the driver until it returns, and returns, after
-                    // deregistering the worker, only once the driver's own shutdown
-                    // is signaled. So on `stop`, drop the running loop, signal, and
-                    // run it again: with the signal already set it goes straight to
-                    // deregistration. A dropped `stop` (the worker future itself was
-                    // dropped) deregisters too.
-                    let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
-                    let handle = tokio::spawn(async move {
-                        tokio::select! {
-                            result = driver.run() => {
-                                if let Err(e) = result {
-                                    tracing::error!(error = %e, "Worker registration driver error");
-                                }
-                                return;
-                            }
-                            _ = stopped => {}
-                        }
-                        driver.shutdown();
-                        if let Err(e) = driver.run().await {
-                            tracing::warn!(error = %e, "Worker deregistration failed");
-                        }
-                    });
-                    Some((stop, handle))
-                }
-                Err(e) => {
-                    tracing::warn!(error = %e, "Failed to create worker registration driver — continuing without registration");
-                    None
-                }
-            }
-        };
-
-        tracing::info!(
-            identity = %self.service_id,
-            "Worker started successfully"
-        );
-
-        // Run until any driver or loop ends, or shutdown is requested.
-        let (mut workflow_driver_stopped, mut task_driver_stopped) = (false, false);
-        tokio::select! {
-            _ = &mut workflow_driver_handle => {
-                tracing::info!("Workflow driver completed");
-                workflow_driver_stopped = true;
-            }
-            _ = &mut task_driver_handle => {
-                tracing::info!("Task driver completed");
-                task_driver_stopped = true;
-            }
-            _ = &mut workflow_exec_handle => {
-                tracing::info!("Workflow execution loop completed");
-            }
-            _ = &mut task_exec_handle => {
-                tracing::info!("Task execution loop completed");
+        let host = tokio::select! {
+            started = Host::start(self.host_config(), self.registrations().await) => {
+                started.map_err(|e| {
+                    Error::Worker(crate::error::WorkerError::StartupFailed(e.to_string()))
+                })?
             }
             _ = shutdown_rx.recv() => {
-                tracing::info!("Shutdown signal received");
-            }
-        }
-
-        // Stop both drivers and wait for them while the execution loops keep
-        // taking work and returning results. A driver left running, or dropped
-        // mid-run, would abandon the results it had been handed, and each of
-        // those activations or tasks would stay claimed on the server until its
-        // timeout before another worker could run it. Signaling both first lets
-        // their shutdown grace periods overlap.
-        wf_stop.shutdown();
-        task_stop.shutdown();
-        let stop_workflow_driver = async {
-            if !workflow_driver_stopped {
-                stop_driver("Workflow", &mut workflow_driver_handle).await;
+                tracing::info!("Shutdown requested while the worker was starting");
+                return Ok(());
             }
         };
-        let stop_task_driver = async {
-            if !task_driver_stopped {
-                stop_driver("Task", &mut task_driver_handle).await;
-            }
-        };
-        tokio::join!(stop_workflow_driver, stop_task_driver);
 
-        // Neither driver hands over more work, so the execution loops can stop.
-        workflow_exec_handle.abort();
-        task_exec_handle.abort();
-
+        let workflows = tokio::spawn(run_workflows(
+            host.clone(),
+            Arc::clone(&self.runtime),
+            Arc::clone(&self.interceptor_chain),
+            self.config.max_concurrent_workflows,
+            self.config.namespace.clone(),
+        ));
+        let tasks = tokio::spawn(run_tasks(
+            host.clone(),
+            Arc::clone(&self.runtime),
+            Arc::clone(&self.interceptor_chain),
+            self.config.max_concurrent_tasks,
+            self.config.namespace.clone(),
+        ));
         #[cfg(feature = "auto-register")]
-        {
-            if let Some(handle) = actor_driver_handle {
-                tracing::debug!("Stopping actor driver");
-                handle.abort();
-            }
-            if let Some(handle) = actor_exec_handle {
-                tracing::debug!("Stopping actor execution loop");
-                handle.abort();
-            }
-            if let Some(handle) = actor_event_handle {
-                tracing::debug!("Stopping actor event listener");
-                handle.abort();
-            }
-        }
+        let actors = self.actor_executor.clone().map(|executor| {
+            tokio::spawn(run_actors(
+                host.clone(),
+                executor,
+                self.config.max_concurrent_actor_operations,
+            ))
+        });
 
-        // Last, so the worker stays listed as live while it still finishes work.
-        // Stopping the driver, rather than aborting it, deregisters the worker;
-        // otherwise the server keeps listing it until the registration expires.
-        if let Some((stop, mut handle)) = worker_reg_handle {
-            tracing::debug!("Stopping worker registration driver");
-            let _ = stop.send(());
-            match tokio::time::timeout(REGISTRATION_STOP_TIMEOUT, &mut handle).await {
-                Ok(_) => tracing::debug!("Worker registration driver stopped"),
-                Err(_) => {
-                    tracing::warn!(
-                        timeout_secs = REGISTRATION_STOP_TIMEOUT.as_secs(),
-                        "Worker registration driver did not stop in time; the worker may stay listed until its registration expires"
-                    );
-                    handle.abort();
-                }
-            }
+        tracing::info!(identity = %self.config.identity, "Worker started");
+        let _ = shutdown_rx.recv().await;
+        tracing::info!("Shutdown signal received");
+
+        // Drains: the pulls end once the host has handed over what it had and
+        // the work running has had its grace.
+        host.shutdown().await;
+        let _ = workflows.await;
+        let _ = tasks.await;
+        #[cfg(feature = "auto-register")]
+        if let Some(actors) = actors {
+            let _ = actors.await;
         }
 
         tracing::info!("Worker stopped");
@@ -1175,70 +623,188 @@ impl Worker {
 
         Ok(())
     }
+}
 
-    /// Executes one actor operation and returns its result bytes.
-    ///
-    /// The caller reports completion to the `ActorDriver` through the result
-    /// channel. Without an executor, the operation is not run and a fixed
-    /// placeholder result is returned.
-    #[cfg(feature = "auto-register")]
-    // The error is sdk-core's own, handed to its driver as it is; its size is
-    // not this crate's to change.
-    #[allow(clippy::result_large_err)]
-    async fn execute_actor_op(
-        actor_executor: Option<Arc<crate::actor::ActorExecutor>>,
-        operation: &orcher_sdk_core::proto::orcher::v1::ActorOperation,
-        server_url: &str,
-        tls: Option<crate::client::ClientTlsConfig>,
-    ) -> orcher_sdk_core::error::Result<Vec<u8>> {
-        tracing::info!(
-            actor = %operation.actor_name,
-            key = %operation.key,
-            operation = %operation.operation,
-            operation_id = %operation.operation_id,
-            "Executing actor operation"
+/// Runs the workflow activations the host hands over, at most `limit` at a
+/// time: a pull is made only with room to run what it brings.
+async fn run_workflows(
+    host: Host,
+    runtime: Arc<ExecutionRuntime>,
+    interceptors: Arc<InterceptorChain>,
+    limit: usize,
+    namespace: String,
+) {
+    let room = Arc::new(tokio::sync::Semaphore::new(limit.max(1)));
+    loop {
+        let Ok(permit) = Arc::clone(&room).acquire_owned().await else {
+            return;
+        };
+        let Some(activation) = host.next_activation().await else {
+            return;
+        };
+        let (host, runtime, interceptors, namespace) = (
+            host.clone(),
+            Arc::clone(&runtime),
+            Arc::clone(&interceptors),
+            namespace.clone(),
         );
+        tokio::spawn(async move {
+            let run = activation.run.clone().unwrap_or_default();
+            let ictx = orcher_sdk_core::interceptor::InterceptorContext::workflow(
+                &run.workflow_id,
+                &run.workflow_type,
+                1,
+                &namespace,
+                &run.task_queue,
+            );
+            interceptors.before_execution(&ictx);
+            let start = std::time::Instant::now();
+            let answer = runtime.run_activation(activation).await;
+            let duration_ms = start.elapsed().as_millis() as u64;
+            match &answer.outcome {
+                Some(run_activation_result::Outcome::Commands(_)) => {
+                    interceptors.after_execution(&ictx, duration_ms)
+                }
+                Some(run_activation_result::Outcome::WorkflowFailed(failure)) => {
+                    interceptors.on_error(&ictx, &failure.message, duration_ms)
+                }
+                Some(run_activation_result::Outcome::ProtocolError(error)) => {
+                    interceptors.on_error(&ictx, &error.message, duration_ms)
+                }
+                None => interceptors.on_error(&ictx, "no outcome", duration_ms),
+            }
+            if let Err(e) = host.complete_activation(answer).await {
+                tracing::error!(error = %e, "Failed to hand the workflow activation's answer back");
+            }
+            drop(permit);
+        });
+    }
+}
 
-        let Some(executor) = actor_executor else {
-            return Ok(serde_json::to_vec(&serde_json::json!({
-                "status": "executed",
-                "message": "Actor handler executed (placeholder)"
-            }))
-            .unwrap_or_default());
+/// Runs the tasks the host hands over, at most `limit` at a time.
+async fn run_tasks(
+    host: Host,
+    runtime: Arc<ExecutionRuntime>,
+    interceptors: Arc<InterceptorChain>,
+    limit: usize,
+    namespace: String,
+) {
+    let room = Arc::new(tokio::sync::Semaphore::new(limit.max(1)));
+    loop {
+        let Ok(permit) = Arc::clone(&room).acquire_owned().await else {
+            return;
         };
-
-        let actor_key =
-            crate::actor::ActorKey::new(operation.actor_name.clone(), operation.key.clone());
-
-        let state_client_config = crate::actor::ActorStateClientConfig {
-            server_url: server_url.to_string(),
-            tls,
-            ..Default::default()
+        let Some(assignment) = host.next_task().await else {
+            return;
         };
+        let (host, runtime, interceptors, namespace) = (
+            host.clone(),
+            Arc::clone(&runtime),
+            Arc::clone(&interceptors),
+            namespace.clone(),
+        );
+        tokio::spawn(async move {
+            let task_queue = assignment
+                .run
+                .as_ref()
+                .map(|run| run.task_queue.clone())
+                .unwrap_or_default();
+            let ictx = orcher_sdk_core::interceptor::InterceptorContext::task(
+                &assignment.task_id,
+                &assignment.task_type,
+                assignment.attempt.max(1),
+                &namespace,
+                &task_queue,
+            );
+            interceptors.before_execution(&ictx);
+            let start = std::time::Instant::now();
+            let outcome = runtime.execute_assignment(assignment, &host).await;
+            let duration_ms = start.elapsed().as_millis() as u64;
+            match &outcome.result {
+                Some(orcher_sdk_core::proto::host::v1::task_outcome::Result::Failure(failure)) => {
+                    interceptors.on_error(&ictx, &failure.message, duration_ms)
+                }
+                _ => interceptors.after_execution(&ictx, duration_ms),
+            }
+            if let Err(e) = host.complete_task(outcome).await {
+                tracing::error!(error = %e, "Failed to report the task's outcome");
+            }
+            drop(permit);
+        });
+    }
+}
 
-        let state_client = crate::actor::ActorStateClient::new(state_client_config)
-            .await
-            .map_err(|e| {
-                orcher_sdk_core::error::Error::Internal(format!(
-                    "Failed to create state client: {}",
-                    e
-                ))
-            })?;
+/// Runs the actor operations the host hands over, at most `limit` at a time.
+/// State is read and written through the host.
+#[cfg(feature = "auto-register")]
+async fn run_actors(host: Host, executor: Arc<crate::actor::ActorExecutor>, limit: usize) {
+    let room = Arc::new(tokio::sync::Semaphore::new(limit.max(1)));
+    loop {
+        let Ok(permit) = Arc::clone(&room).acquire_owned().await else {
+            return;
+        };
+        let Some(operation) = host.next_actor_operation().await else {
+            return;
+        };
+        let (host, executor) = (host.clone(), Arc::clone(&executor));
+        tokio::spawn(async move {
+            let result = run_actor_operation(&host, &executor, &operation).await;
+            if let Err(e) = host
+                .complete_actor_operation(ActorResult {
+                    operation_id: operation.operation_id,
+                    execution_id: operation.execution_id,
+                    result: Some(result),
+                })
+                .await
+            {
+                tracing::error!(error = %e, "Failed to report the actor operation's result");
+            }
+            drop(permit);
+        });
+    }
+}
 
-        let context = crate::actor::ActorContextBuilder::new(actor_key, Arc::new(state_client))
-            .execution_id(&operation.execution_id)
-            .build();
-
-        executor
-            .execute(
-                &operation.actor_name,
-                &operation.key,
-                &operation.operation,
-                operation.payload.clone(),
-                context,
-            )
-            .await
-            .map_err(|e| orcher_sdk_core::error::Error::Internal(e.to_string()))
+#[cfg(feature = "auto-register")]
+async fn run_actor_operation(
+    host: &Host,
+    executor: &crate::actor::ActorExecutor,
+    operation: &ActorOperation,
+) -> actor_result::Result {
+    tracing::info!(
+        actor = %operation.actor_name,
+        key = %operation.key,
+        operation = %operation.operation,
+        operation_id = %operation.operation_id,
+        shared = operation.mode == ActorMode::Shared as i32,
+        "Executing actor operation"
+    );
+    let state = Arc::new(crate::actor::ActorStateClient::from_host(host.clone()));
+    let context = crate::actor::ActorContextBuilder::new(
+        crate::actor::ActorKey::new(operation.actor_name.clone(), operation.key.clone()),
+        state,
+    )
+    .execution_id(&operation.execution_id)
+    .build();
+    let payload = operation
+        .payload
+        .as_ref()
+        .map(|payload| payload.data.clone())
+        .unwrap_or_default();
+    match executor
+        .execute(
+            &operation.actor_name,
+            &operation.key,
+            &operation.operation,
+            payload,
+            context,
+        )
+        .await
+    {
+        Ok(data) => actor_result::Result::Value(KernelPayload {
+            data,
+            metadata: Default::default(),
+        }),
+        Err(error) => actor_result::Result::Failure(runtime::failure_of(error)),
     }
 }
 

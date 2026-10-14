@@ -124,6 +124,9 @@ enum StateBackend {
 
     /// In-memory storage for tests.
     Mock(MockStateBackend),
+
+    /// The worker host, on its connection, with the worker's credentials.
+    Host(orcher_sdk_host::Host),
 }
 
 impl ActorStateClient {
@@ -195,6 +198,27 @@ impl ActorStateClient {
             backend: StateBackend::Mock(MockStateBackend::new()),
             config: ActorStateClientConfig::default(),
             cache: None, // Cache disabled so tests always observe the backend.
+        }
+    }
+
+    /// A client that reads and writes state through the worker host, on its
+    /// connection and with the worker's TLS and credentials. One is made for
+    /// each actor operation the worker runs, so its cache lives as long as
+    /// the operation.
+    pub(crate) fn from_host(host: orcher_sdk_host::Host) -> Self {
+        let config = ActorStateClientConfig::default();
+        let cache = config.enable_cache.then(|| {
+            Arc::new(
+                Cache::builder()
+                    .max_capacity(config.max_cache_size)
+                    .time_to_live(config.cache_ttl)
+                    .build(),
+            )
+        });
+        Self {
+            backend: StateBackend::Host(host),
+            config,
+            cache,
         }
     }
 
@@ -274,6 +298,18 @@ impl ActorStateClient {
                     None => return Ok(None),
                 }
             }
+            StateBackend::Host(host) => {
+                let scope = orcher_sdk_host::StateScope::new(actor_name, key, execution_id);
+                match host
+                    .get_actor_state(&scope, state_key)
+                    .await
+                    .map_err(|e| Error::Network(format!("GetState failed: {e}")))?
+                {
+                    // An empty value is treated as absent.
+                    Some(stored) if !stored.value.is_empty() => stored.value,
+                    _ => return Ok(None),
+                }
+            }
         };
 
         if let Some(cache) = &self.cache {
@@ -346,6 +382,23 @@ impl ActorStateClient {
                     None => Ok((None, String::new())),
                 }
             }
+            StateBackend::Host(host) => {
+                let scope = orcher_sdk_host::StateScope::new(actor_name, key, execution_id);
+                match host
+                    .get_actor_state(&scope, state_key)
+                    .await
+                    .map_err(|e| Error::Network(format!("GetState failed: {e}")))?
+                {
+                    Some(stored) if !stored.value.is_empty() => {
+                        let value = serde_json::from_slice(&stored.value).map_err(|e| {
+                            Error::Serialization(format!("Failed to deserialize state: {}", e))
+                        })?;
+                        Ok((Some(value), stored.version))
+                    }
+                    Some(stored) => Ok((None, stored.version)),
+                    None => Ok((None, String::new())),
+                }
+            }
         }
     }
 
@@ -405,6 +458,12 @@ impl ActorStateClient {
                 let storage_key = format!("actor:{}:{}:{}", actor_name, key, state_key);
                 mock.set(&storage_key, value_bytes.clone()).await;
             }
+            StateBackend::Host(host) => {
+                let scope = orcher_sdk_host::StateScope::new(actor_name, key, execution_id);
+                host.set_actor_state(&scope, state_key, value_bytes.clone(), expected_version)
+                    .await
+                    .map_err(|e| Error::Actor(format!("Failed to set state: {e}")))?;
+            }
         }
 
         if let Some(cache) = &self.cache {
@@ -457,6 +516,12 @@ impl ActorStateClient {
             StateBackend::Mock(mock) => {
                 let storage_key = format!("actor:{}:{}:{}", actor_name, key, state_key);
                 Ok(mock.delete(&storage_key).await)
+            }
+            StateBackend::Host(host) => {
+                let scope = orcher_sdk_host::StateScope::new(actor_name, key, execution_id);
+                host.delete_actor_state(&scope, state_key)
+                    .await
+                    .map_err(|e| Error::Network(format!("DeleteState failed: {e}")))
             }
         }
     }
@@ -512,6 +577,12 @@ impl ActorStateClient {
 
                 Ok(state_keys)
             }
+            StateBackend::Host(host) => {
+                let scope = orcher_sdk_host::StateScope::new(actor_name, key, execution_id);
+                host.actor_state_keys(&scope, prefix.unwrap_or_default())
+                    .await
+                    .map_err(|e| Error::Network(format!("ListStateKeys failed: {e}")))
+            }
         }
     }
 
@@ -537,6 +608,7 @@ impl Clone for ActorStateClient {
             backend: match &self.backend {
                 StateBackend::Grpc(client) => StateBackend::Grpc(client.clone()),
                 StateBackend::Mock(mock) => StateBackend::Mock(mock.clone()),
+                StateBackend::Host(host) => StateBackend::Host(host.clone()),
             },
             config: self.config.clone(),
             cache: self.cache.clone(),
