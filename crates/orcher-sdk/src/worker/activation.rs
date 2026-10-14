@@ -517,6 +517,7 @@ fn kernel_command(command: &BridgeCommand) -> Result<Command, String> {
                 workflow_type: restart.workflow_type.clone(),
                 task_queue: restart.task_queue.clone().unwrap_or_default(),
                 input: restart.input.iter().map(payload).collect(),
+                execution_timeout: restart.timeout.map(duration),
             }),
         ),
         other => {
@@ -668,6 +669,27 @@ mod tests {
         let loaded = load(activation, "default").unwrap();
         assert_eq!(loaded.ctx.default_child_workflow_id(1), "child_1");
         assert_eq!(loaded.ctx.default_child_workflow_id(2), "order-7-child-2");
+    }
+
+    /// A restart keeps the execution timeout the workflow asked for.
+    #[test]
+    fn a_restart_carries_its_execution_timeout() {
+        let issued = vec![BridgeCommand::RestartFresh(
+            orcher_sdk_core::bridge::RestartFreshCommand {
+                workflow_type: "checkout".into(),
+                input: vec![],
+                task_queue: None,
+                timeout: Some(Duration::from_secs(3600)),
+            },
+        )];
+        let calls = commands(&issued, vec![]).unwrap();
+        let Some(command::What::RestartFresh(restart)) = &calls[0].what else {
+            panic!("{calls:?}");
+        };
+        assert_eq!(
+            restart.execution_timeout,
+            Some(duration(Duration::from_secs(3600)))
+        );
     }
 
     /// A command the kernel protocol cannot carry is a protocol error, not a
