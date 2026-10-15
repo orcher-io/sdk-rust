@@ -798,3 +798,125 @@ pub async fn cancel_saga(ctx: WorkflowContext, input: KeyedInput) -> Result<Comp
         Err(other) => Err(other),
     }
 }
+
+// ---------------------------------------------------------------------------
+// A cancellation ends the tasks the workflow had queued: a task scheduled
+// before the request, that no worker had started, never starts.
+// ---------------------------------------------------------------------------
+
+/// Keys whose queued task's handler ran. It must never run: the harness
+/// starts a worker able to run it only after the cancellation.
+pub static QUEUED_TASK_RAN: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::HashSet<String>>,
+> = std::sync::LazyLock::new(Default::default);
+
+/// Keys whose cleanup task ran.
+pub static CLEANUP_RAN: std::sync::LazyLock<std::sync::Mutex<std::collections::HashSet<String>>> =
+    std::sync::LazyLock::new(Default::default);
+
+/// How the workflow's wait on its queued task ended, by key.
+pub static QUEUED_TASK_WAIT: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::HashMap<String, String>>,
+> = std::sync::LazyLock::new(Default::default);
+
+/// The task the workflow queues before it is cancelled. Retries are allowed,
+/// so only the cancellation can be what keeps it from running.
+#[task(retry = 3)]
+pub async fn cancel_queued(_ctx: TaskContext, input: KeyedInput) -> Result<String> {
+    QUEUED_TASK_RAN.lock().unwrap().insert(input.key);
+    Ok("ran".to_string())
+}
+
+/// The cleanup the workflow runs once told it is cancelled.
+#[task(retry = 1)]
+pub async fn cancel_queued_cleanup(_ctx: TaskContext, input: KeyedInput) -> Result<String> {
+    CLEANUP_RAN.lock().unwrap().insert(input.key);
+    Ok("cleaned".to_string())
+}
+
+/// Parks on a task no worker can start yet; when the wait ends, records how,
+/// runs cleanup, and lets the cancellation end the run.
+#[workflow(name = "cancel_queued_task")]
+pub async fn cancel_queued_task(ctx: WorkflowContext, input: KeyedInput) -> Result<String> {
+    mark_parked(&input.key);
+    let queued: Result<String> = ctx
+        .execute_task(
+            cancel_queued,
+            KeyedInput {
+                key: input.key.clone(),
+            },
+        )
+        .await;
+    let wait = match queued {
+        Ok(_) => "completed".to_string(),
+        Err(Error::Workflow(WorkflowError::Canceled)) => "cancellation".to_string(),
+        Err(Error::Workflow(WorkflowError::TaskFailed { reason, .. })) => {
+            format!("task_failed: {reason}")
+        }
+        // Suspension, while the task is queued, passes through.
+        Err(other) => return Err(other),
+    };
+    QUEUED_TASK_WAIT
+        .lock()
+        .unwrap()
+        .insert(input.key.clone(), wait);
+    let _: String = ctx
+        .execute_task(cancel_queued_cleanup, KeyedInput { key: input.key })
+        .await?;
+    Err(Error::Workflow(WorkflowError::Canceled))
+}
+
+// ---------------------------------------------------------------------------
+// A task timing out on its last attempt reaches its workflow.
+// ---------------------------------------------------------------------------
+
+/// What the workflow saw of a task that timed out on its only attempt.
+#[derive(Serialize, Deserialize)]
+pub struct TerminalTimeoutResult {
+    pub caught: bool,
+    pub task_type: String,
+    pub timed_out: bool,
+}
+
+/// As `exit_if_worker_doomed`, with a single attempt: the timeout that ends
+/// it is its last.
+#[task(retry = 1)]
+pub async fn exit_if_worker_doomed_once(
+    _ctx: TaskContext,
+    _input: Empty,
+) -> Result<SurvivedWorkerDeath> {
+    if std::env::var_os("ORCHER_CONTRACT_DOOMED_WORKER").is_some() {
+        eprintln!("contract: exit_if_worker_doomed_once is taking its worker down");
+        std::process::exit(3);
+    }
+    Ok(SurvivedWorkerDeath {
+        survived_worker_death: true,
+    })
+}
+
+/// Runs a task that takes its worker down on its only attempt, catches the
+/// failure its timeout ends in, and reports it.
+#[workflow(name = "task_timeout_terminal")]
+pub async fn task_timeout_terminal(
+    ctx: WorkflowContext,
+    _input: Empty,
+) -> Result<TerminalTimeoutResult> {
+    let outcome: Result<SurvivedWorkerDeath> = ctx
+        .execute_task(exit_if_worker_doomed_once, Empty::default())
+        .await;
+    match outcome {
+        Ok(_) => Ok(TerminalTimeoutResult {
+            caught: false,
+            task_type: String::new(),
+            timed_out: false,
+        }),
+        Err(Error::Workflow(WorkflowError::TaskFailed {
+            task_type, reason, ..
+        })) => Ok(TerminalTimeoutResult {
+            caught: true,
+            task_type,
+            timed_out: reason.to_lowercase().contains("timed out"),
+        }),
+        Err(other) => Err(other),
+    }
+}
