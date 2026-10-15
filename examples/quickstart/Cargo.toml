@@ -1,0 +1,18 @@
+[package]
+name = "orcher-example-quickstart"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+# `auto-register` lets the #[task]/#[workflow] macros register handlers with
+# the worker automatically.
+orcher-sdk = { path = "../../crates/orcher-sdk", features = ["auto-register"] }
+
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+
+[[bin]]
+name = "quickstart"
+path = "src/main.rs"
