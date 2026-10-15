@@ -754,6 +754,7 @@ async fn run_actors(host: Host, executor: Arc<crate::actor::ActorExecutor>, limi
                     operation_id: operation.operation_id,
                     execution_id: operation.execution_id,
                     result: Some(result),
+                    ..Default::default()
                 })
                 .await
             {
@@ -802,7 +803,7 @@ async fn run_actor_operation(
     {
         Ok(data) => actor_result::Result::Value(KernelPayload {
             data,
-            metadata: Default::default(),
+            ..Default::default()
         }),
         Err(error) => actor_result::Result::Failure(runtime::failure_of(error)),
     }

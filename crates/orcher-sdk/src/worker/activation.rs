@@ -13,7 +13,7 @@ use std::time::Duration;
 
 use orcher_sdk_core::bridge::{
     Command as BridgeCommand, ExecutionResult, OrphanPolicy, QueryResult, TaskRetryPolicy,
-    UpdateResult,
+    UpdateResult, WorkflowRetryPolicy,
 };
 use orcher_sdk_core::proto::kernel::v1::{
     self as kernel, command, outcome, query_answer, resolution, run_activation_result,
@@ -279,6 +279,7 @@ pub(crate) fn answer(
                     ..Default::default()
                 }),
             }),
+            ..Default::default()
         })
         .collect();
     let updates = result
@@ -297,6 +298,7 @@ pub(crate) fn answer(
                     ..Default::default()
                 }),
             }),
+            ..Default::default()
         })
         .collect();
 
@@ -322,7 +324,10 @@ pub(crate) fn answer(
         })
     } else {
         match commands(&result.commands, reached) {
-            Ok(commands) => run_activation_result::Outcome::Commands(Commands { commands }),
+            Ok(commands) => run_activation_result::Outcome::Commands(Commands {
+                commands,
+                ..Default::default()
+            }),
             Err(message) => run_activation_result::Outcome::ProtocolError(ProtocolError {
                 message,
                 ..Default::default()
@@ -334,6 +339,7 @@ pub(crate) fn answer(
         outcome: Some(outcome),
         queries,
         updates,
+        ..Default::default()
     }
 }
 
@@ -431,6 +437,7 @@ fn kernel_command(command: &BridgeCommand) -> Result<Command, String> {
             timer.timer_id.clone(),
             command::What::StartTimer(kernel::StartTimer {
                 duration: Some(duration(timer.duration)),
+                ..Default::default()
             }),
         ),
         BridgeCommand::CancelTimer(cancel) => (
@@ -438,6 +445,7 @@ fn kernel_command(command: &BridgeCommand) -> Result<Command, String> {
             String::new(),
             command::What::CancelTimer(kernel::CancelTimer {
                 step_id: cancel.timer_id.clone(),
+                ..Default::default()
             }),
         ),
         BridgeCommand::StartChildWorkflow(child) => (
@@ -454,6 +462,7 @@ fn kernel_command(command: &BridgeCommand) -> Result<Command, String> {
                     OrphanPolicy::Cancel => kernel::OrphanPolicy::Cancel,
                     OrphanPolicy::Abandon => kernel::OrphanPolicy::Abandon,
                 } as i32,
+                retry_policy: child.retry_policy.as_ref().map(workflow_retry_policy),
                 ..Default::default()
             }),
         ),
@@ -462,6 +471,7 @@ fn kernel_command(command: &BridgeCommand) -> Result<Command, String> {
             String::new(),
             command::What::CancelChild(kernel::CancelChild {
                 step_id: cancel.workflow_id.clone(),
+                ..Default::default()
             }),
         ),
         BridgeCommand::SendEvent(event) => (
@@ -477,6 +487,7 @@ fn kernel_command(command: &BridgeCommand) -> Result<Command, String> {
                     .iter()
                     .map(|(name, value)| (name.clone(), payload(value)))
                     .collect(),
+                ..Default::default()
             }),
         ),
         BridgeCommand::RecordStepResult(record) => (
@@ -492,12 +503,13 @@ fn kernel_command(command: &BridgeCommand) -> Result<Command, String> {
                         }),
                         None => outcome::Result::Value(kernel::Payload {
                             data: record.result.clone(),
-                            metadata: Default::default(),
+                            ..Default::default()
                         }),
                     }),
                     attempts: record.execution_attempt.max(0) as u32,
                     ..Default::default()
                 }),
+                ..Default::default()
             }),
         ),
         BridgeCommand::WaitForEvent(wait) => (
@@ -508,6 +520,7 @@ fn kernel_command(command: &BridgeCommand) -> Result<Command, String> {
                 timeout: wait
                     .timeout_ms
                     .map(|ms| duration(Duration::from_millis(ms.max(0) as u64))),
+                ..Default::default()
             }),
         ),
         BridgeCommand::CompleteWorkflow(complete) => (
@@ -515,6 +528,7 @@ fn kernel_command(command: &BridgeCommand) -> Result<Command, String> {
             String::new(),
             command::What::CompleteRun(kernel::CompleteRun {
                 result: Some(payload(&complete.result)),
+                ..Default::default()
             }),
         ),
         BridgeCommand::FailWorkflow(fail) => (
@@ -531,6 +545,7 @@ fn kernel_command(command: &BridgeCommand) -> Result<Command, String> {
                         .unwrap_or_default(),
                     ..Default::default()
                 }),
+                ..Default::default()
             }),
         ),
         BridgeCommand::CancelWorkflowExecution(cancel) => (
@@ -542,6 +557,7 @@ fn kernel_command(command: &BridgeCommand) -> Result<Command, String> {
                     .as_ref()
                     .map(|details| String::from_utf8_lossy(&details.data).into_owned())
                     .unwrap_or_default(),
+                ..Default::default()
             }),
         ),
         BridgeCommand::RestartFresh(restart) => (
@@ -552,6 +568,8 @@ fn kernel_command(command: &BridgeCommand) -> Result<Command, String> {
                 task_queue: restart.task_queue.clone().unwrap_or_default(),
                 input: restart.input.iter().map(payload).collect(),
                 execution_timeout: restart.timeout.map(duration),
+                retry_policy: restart.retry_policy.as_ref().map(workflow_retry_policy),
+                ..Default::default()
             }),
         ),
         other => {
@@ -565,6 +583,7 @@ fn kernel_command(command: &BridgeCommand) -> Result<Command, String> {
         satisfied: false,
         step_id,
         what: Some(what),
+        ..Default::default()
     })
 }
 
@@ -576,6 +595,7 @@ fn payload(payload: &orcher_sdk_core::Payload) -> kernel::Payload {
             .iter()
             .map(|(name, value)| (name.clone(), value.clone()))
             .collect(),
+        ..Default::default()
     }
 }
 
@@ -586,6 +606,20 @@ fn retry_policy(policy: &TaskRetryPolicy) -> kernel::RetryPolicy {
         max_delay: Some(duration(policy.max_interval)),
         max_attempts: policy.max_attempts,
         never_retry_types: policy.non_retryable_errors.clone(),
+        ..Default::default()
+    }
+}
+
+/// A child's or a fresh run's retry policy, its unset fields left unset for
+/// the engine's workflow-retry defaults.
+fn workflow_retry_policy(policy: &WorkflowRetryPolicy) -> kernel::RetryPolicy {
+    kernel::RetryPolicy {
+        first_delay: policy.initial_interval.map(duration),
+        delay_multiplier: policy.backoff_coefficient,
+        max_delay: policy.max_interval.map(duration),
+        max_attempts: policy.max_attempts,
+        never_retry_types: policy.non_retryable_errors.clone(),
+        ..Default::default()
     }
 }
 
@@ -637,6 +671,7 @@ mod tests {
                 workflow_type: "checkout".into(),
                 task_queue: "orders".into(),
                 namespace: "contract".into(),
+                ..Default::default()
             }),
             resolutions: vec![kernel::Resolution {
                 what: Some(resolution::What::Started(kernel::RunStarted {
@@ -692,10 +727,13 @@ mod tests {
                             non_retryable: true,
                             code: FailureCode::Cancelled as i32,
                             details: vec![],
+                            ..Default::default()
                         })),
                         end: End::Cancelled as i32,
                         attempts: 1,
+                        ..Default::default()
                     }),
+                    ..Default::default()
                 })),
                 ..Default::default()
             },
@@ -705,6 +743,7 @@ mod tests {
                 what: Some(resolution::What::Cancel(kernel::CancelAsked {
                     reason: "user".into(),
                     requested_at: at,
+                    ..Default::default()
                 })),
                 ..Default::default()
             },
@@ -824,6 +863,7 @@ mod tests {
                     what: Some(resolution::What::ChildStarted(kernel::ChildStarted {
                         child_workflow_id: "child_1".into(),
                         child_run_id: "run-9".into(),
+                        ..Default::default()
                     })),
                     ..Default::default()
                 },
@@ -1021,6 +1061,7 @@ mod tests {
                 input: vec![],
                 task_queue: None,
                 timeout: Some(Duration::from_secs(3600)),
+                ..Default::default()
             },
         )];
         let calls = commands(&issued, vec![]).unwrap();
@@ -1031,6 +1072,57 @@ mod tests {
             restart.execution_timeout,
             Some(duration(Duration::from_secs(3600)))
         );
+    }
+
+    /// A child's and a restart's retry policies reach the kernel commands,
+    /// unset delays unset; without one, none is sent.
+    #[test]
+    fn child_and_restart_retry_policies_reach_the_kernel() {
+        let policy = WorkflowRetryPolicy {
+            max_attempts: 3,
+            initial_interval: Some(Duration::from_secs(5)),
+            max_interval: None,
+            backoff_coefficient: 1.5,
+            non_retryable_errors: vec!["Declined".into()],
+        };
+        let expected = kernel::RetryPolicy {
+            max_attempts: 3,
+            first_delay: Some(duration(Duration::from_secs(5))),
+            max_delay: None,
+            delay_multiplier: 1.5,
+            never_retry_types: vec!["Declined".into()],
+            ..Default::default()
+        };
+        let child = |retry_policy| {
+            BridgeCommand::StartChildWorkflow(orcher_sdk_core::bridge::StartChildWorkflowCommand {
+                sequence: 1,
+                workflow_id: "order-7-child-1".into(),
+                workflow_type: "ship".into(),
+                retry_policy,
+                ..Default::default()
+            })
+        };
+        let restart = |retry_policy| {
+            BridgeCommand::RestartFresh(orcher_sdk_core::bridge::RestartFreshCommand {
+                retry_policy,
+                ..Default::default()
+            })
+        };
+        let child_policy = |command: &BridgeCommand| match kernel_command(command).unwrap().what {
+            Some(command::What::StartChild(child)) => child.retry_policy,
+            other => panic!("{other:?}"),
+        };
+        let restart_policy = |command: &BridgeCommand| match kernel_command(command).unwrap().what {
+            Some(command::What::RestartFresh(restart)) => restart.retry_policy,
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(
+            child_policy(&child(Some(policy.clone()))),
+            Some(expected.clone())
+        );
+        assert_eq!(child_policy(&child(None)), None);
+        assert_eq!(restart_policy(&restart(Some(policy))), Some(expected));
+        assert_eq!(restart_policy(&restart(None)), None);
     }
 
     /// A command the kernel protocol cannot carry is a protocol error, not a

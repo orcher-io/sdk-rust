@@ -548,7 +548,7 @@ impl ExecutionRuntime {
         let result = match self.run_task(ctx, &assignment.task_type, input).await {
             Ok(data) => task_outcome::Result::Value(KernelPayload {
                 data,
-                metadata: Default::default(),
+                ..Default::default()
             }),
             Err(error) => task_outcome::Result::Failure(reported_failure(&error)),
         };
@@ -787,6 +787,7 @@ impl ExecutionRuntime {
                         input: vec![Payload::new_data(child.input)],
                         timeout: child.timeout,
                         orphan_policy,
+                        ..Default::default()
                     },
                 ))
             }
@@ -824,6 +825,7 @@ impl ExecutionRuntime {
                     task_queue: restart.task_queue,
                     input: vec![Payload::new_data(restart.input)],
                     timeout: restart.timeout,
+                    ..Default::default()
                 },
             )),
         }
