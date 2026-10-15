@@ -58,6 +58,20 @@
       }
     },
     {
+      "id": "task-failure-carries-its-type",
+      "description": "A task fails with a typed error; the workflow catches the task failure and reports the error type it carries and whether it reads as a cancellation. Guards that the type the engine recorded reaches workflow code, which before carried only the task type, attempts and reason.",
+      "workflow": "task_failure_type",
+      "input": {},
+      "expect": {
+        "status": "completed",
+        "result": {
+          "caught": true,
+          "error_type": "CardDeclined",
+          "cancelled": false
+        }
+      }
+    },
+    {
       "id": "task-non-retryable-marked",
       "description": "A task declared with three attempts fails with an error raised as non-retryable, under a type its policy does not list. The mark alone stops the retries, so the task runs once.",
       "workflow": "task_non_retryable_marked",

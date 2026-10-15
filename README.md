@@ -218,6 +218,22 @@ async fn charge(_ctx: TaskContext, order_id: String) -> Result<String> {
 Any other error is retried. `RetryPolicy::with_non_retryable_errors` sets the
 same list on a policy built in code.
 
+A workflow that catches the failure reads its type and whether the task was
+cancelled from the `TaskFailed` error:
+
+```rust
+match ctx.execute_task(charge, order_id).await {
+    Err(Error::Workflow(failure @ WorkflowError::TaskFailed { .. })) => {
+        if failure.is_task_cancelled() {
+            // the task was cancelled
+        } else if failure.task_failure_type() == Some("CardDeclined") {
+            // ask for another card
+        }
+    }
+    other => { /* ... */ }
+}
+```
+
 </details>
 
 <details>

@@ -269,7 +269,9 @@ impl MockTaskBuilder {
     /// workflow sees the failure as it would from an engine, as a
     /// `WorkflowError::TaskFailed` whose `reason` is `message`, so a test can check
     /// how the workflow handles it: catching it, falling back, or compensating. The
-    /// executor does not retry, so `attempts` is 1.
+    /// executor does not retry, so `attempts` is 1. Its `error_type` is
+    /// `MockFailure` and its `code` is
+    /// [`TaskFailureCode::Application`](crate::error::TaskFailureCode::Application).
     ///
     /// # Example
     ///

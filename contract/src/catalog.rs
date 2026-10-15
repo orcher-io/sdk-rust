@@ -131,6 +131,34 @@ pub async fn task_non_retryable_listed(ctx: WorkflowContext, _input: Empty) -> R
     attempts_until_failure(&ctx, decline_card).await
 }
 
+/// What a workflow saw of a task failure's type.
+#[derive(Serialize, Deserialize)]
+pub struct FailureTypeResult {
+    pub caught: bool,
+    pub error_type: String,
+    pub cancelled: bool,
+}
+
+/// Catches a task that fails with a typed error and reports the type the failure
+/// carries and whether it reads as a cancellation.
+#[workflow(name = "task_failure_type")]
+pub async fn task_failure_type(ctx: WorkflowContext, _input: Empty) -> Result<FailureTypeResult> {
+    let outcome: Result<Empty> = ctx.execute_task(decline_card, Empty::default()).await;
+    match outcome {
+        Ok(_) => Ok(FailureTypeResult {
+            caught: false,
+            error_type: String::new(),
+            cancelled: false,
+        }),
+        Err(Error::Workflow(failure @ WorkflowError::TaskFailed { .. })) => Ok(FailureTypeResult {
+            caught: true,
+            error_type: failure.task_failure_type().unwrap_or_default().to_string(),
+            cancelled: failure.is_task_cancelled(),
+        }),
+        Err(other) => Err(other),
+    }
+}
+
 /// A failure raised as non-retryable is not retried.
 #[workflow(name = "task_non_retryable_marked")]
 pub async fn task_non_retryable_marked(ctx: WorkflowContext, _input: Empty) -> Result<CatchResult> {

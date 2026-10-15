@@ -156,6 +156,7 @@ fn load_one(
                     let error = crate::workflow::executable::encode_task_failure(
                         &failure.message,
                         &failure.error_type,
+                        task_failure_code(failure.code, outcome.end),
                         outcome.attempts.max(1) as i32,
                     );
                     ctx.inject_step_result(step_id.clone(), error);
@@ -230,6 +231,22 @@ fn load_one(
         Some(resolution::What::Cancel(cancel)) => {
             ctx.note_cancel_requested(cancel.requested_at.as_ref().map(millis).or(at_ms));
         }
+    }
+}
+
+/// The category of a task step's failure, from the kernel protocol's code. A
+/// failure with no code (or one this SDK does not know) takes it from how its
+/// step ended, when that was a cancellation or a timeout, and is otherwise
+/// uncategorized.
+fn task_failure_code(code: i32, end: i32) -> crate::error::TaskFailureCode {
+    use crate::error::TaskFailureCode;
+    match FailureCode::try_from(code).map(TaskFailureCode::from) {
+        Ok(code) if code != TaskFailureCode::Unspecified => code,
+        _ => match End::try_from(end) {
+            Ok(End::Cancelled) => TaskFailureCode::Cancelled,
+            Ok(End::TimedOut) => TaskFailureCode::TimedOut,
+            _ => TaskFailureCode::Unspecified,
+        },
     }
 }
 
@@ -716,6 +733,183 @@ mod tests {
         let loaded = load(activation, "default").unwrap();
         assert_eq!(loaded.ctx.default_child_workflow_id(1), "child_1");
         assert_eq!(loaded.ctx.default_child_workflow_id(2), "order-7-child-2");
+    }
+
+    /// An activation whose history holds one settled `charge` task step,
+    /// failed with `failure` after `attempts` attempts and ending as `end`.
+    fn failed_step(failure: Failure, end: End, attempts: u32) -> RunActivation {
+        let mut activation = started_as(1);
+        activation.resolutions.push(Resolution {
+            step_id: "charge_0".into(),
+            what: Some(resolution::What::Step(kernel::StepSettled {
+                outcome: Some(Outcome {
+                    result: Some(outcome::Result::Failure(failure)),
+                    end: end as i32,
+                    attempts,
+                }),
+            })),
+            ..Default::default()
+        });
+        activation
+    }
+
+    /// What the workflow's code sees when it runs the failed `charge` step.
+    async fn task_failure_seen(activation: RunActivation) -> crate::error::WorkflowError {
+        let ctx = load(activation, "contract").unwrap().ctx;
+        match ctx.execute_task::<_, _, String>("charge", 5u32).await {
+            Err(crate::Error::Workflow(error)) => error,
+            other => panic!("expected a workflow error, got {other:?}"),
+        }
+    }
+
+    /// A cancelled task step reaches the workflow's code as `TaskFailed`
+    /// carrying its type and the cancelled category, so the code can tell a
+    /// cancellation from a failure of the task's own.
+    #[tokio::test]
+    async fn a_cancelled_task_step_carries_its_type_and_category() {
+        let error = task_failure_seen(failed_step(
+            Failure {
+                message: "task was cancelled".into(),
+                error_type: "Cancelled".into(),
+                code: FailureCode::Cancelled as i32,
+                ..Default::default()
+            },
+            End::Cancelled,
+            1,
+        ))
+        .await;
+
+        assert!(error.is_task_cancelled(), "{error:?}");
+        assert_eq!(
+            error.task_failure_code(),
+            Some(crate::error::TaskFailureCode::Cancelled)
+        );
+        assert_eq!(error.task_failure_type(), Some("Cancelled"));
+        match error {
+            crate::error::WorkflowError::TaskFailed {
+                task_type, reason, ..
+            } => {
+                assert_eq!(task_type, "charge");
+                assert_eq!(reason, "task was cancelled");
+            }
+            other => panic!("expected TaskFailed, got {other:?}"),
+        }
+    }
+
+    /// A cancellation recorded only by its type, as sdk-core 0.15.0 records
+    /// it (code `Application`), still reads as cancelled.
+    #[tokio::test]
+    async fn a_failure_of_type_cancelled_reads_as_cancelled() {
+        let error = task_failure_seen(failed_step(
+            Failure {
+                message: "task was cancelled".into(),
+                error_type: "Cancelled".into(),
+                code: FailureCode::Application as i32,
+                ..Default::default()
+            },
+            End::Failed,
+            1,
+        ))
+        .await;
+
+        assert!(error.is_task_cancelled(), "{error:?}");
+        assert_eq!(
+            error.task_failure_code(),
+            Some(crate::error::TaskFailureCode::Application)
+        );
+        assert_eq!(error.task_failure_type(), Some("Cancelled"));
+    }
+
+    /// A task's own failure reaches the workflow's code with the type the
+    /// task raised it under and the application category.
+    #[tokio::test]
+    async fn an_application_failure_carries_the_type_the_task_raised() {
+        let error = task_failure_seen(failed_step(
+            Failure {
+                message: "card declined".into(),
+                error_type: "CardDeclined".into(),
+                code: FailureCode::Application as i32,
+                ..Default::default()
+            },
+            End::Failed,
+            3,
+        ))
+        .await;
+
+        assert!(!error.is_task_cancelled(), "{error:?}");
+        match error {
+            crate::error::WorkflowError::TaskFailed {
+                attempts,
+                reason,
+                error_type,
+                code,
+                ..
+            } => {
+                assert_eq!(attempts, 3);
+                assert_eq!(reason, "card declined");
+                assert_eq!(error_type, "CardDeclined");
+                assert_eq!(code, crate::error::TaskFailureCode::Application);
+            }
+            other => panic!("expected TaskFailed, got {other:?}"),
+        }
+    }
+
+    /// Every kernel failure code maps to its own category, and a code this
+    /// SDK does not know is uncategorized rather than refused.
+    #[test]
+    fn every_failure_code_maps_to_its_category() {
+        use crate::error::TaskFailureCode as Code;
+        let cases = [
+            (FailureCode::Unspecified, Code::Unspecified),
+            (FailureCode::Application, Code::Application),
+            (FailureCode::TimedOut, Code::TimedOut),
+            (FailureCode::Cancelled, Code::Cancelled),
+            (FailureCode::Terminated, Code::Terminated),
+            (FailureCode::NonDeterminism, Code::NonDeterminism),
+            (FailureCode::PayloadTooLarge, Code::PayloadTooLarge),
+            (FailureCode::InvalidCommand, Code::InvalidCommand),
+        ];
+        for (wire, code) in cases {
+            assert_eq!(
+                task_failure_code(wire as i32, End::Failed as i32),
+                code,
+                "{wire:?}"
+            );
+            // The category survives the journaled sentinel's round trip.
+            assert_eq!(Code::from_name(code.as_str()), code, "{code}");
+        }
+        assert_eq!(
+            task_failure_code(9_999, End::Failed as i32),
+            Code::Unspecified
+        );
+    }
+
+    /// A failure with no code takes a cancellation or a timeout from how its
+    /// step ended; a code, when there is one, wins.
+    #[test]
+    fn a_failure_with_no_code_takes_it_from_how_the_step_ended() {
+        use crate::error::TaskFailureCode as Code;
+        let unspecified = FailureCode::Unspecified as i32;
+        assert_eq!(
+            task_failure_code(unspecified, End::Cancelled as i32),
+            Code::Cancelled
+        );
+        assert_eq!(
+            task_failure_code(unspecified, End::TimedOut as i32),
+            Code::TimedOut
+        );
+        assert_eq!(
+            task_failure_code(unspecified, End::Failed as i32),
+            Code::Unspecified
+        );
+        assert_eq!(
+            task_failure_code(9_999, End::Cancelled as i32),
+            Code::Cancelled
+        );
+        assert_eq!(
+            task_failure_code(FailureCode::Application as i32, End::Cancelled as i32),
+            Code::Application
+        );
     }
 
     /// A restart keeps the execution timeout the workflow asked for.

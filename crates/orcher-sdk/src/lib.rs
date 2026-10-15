@@ -99,7 +99,7 @@ pub mod testing;
 
 pub use actor::{ActorContext, ActorKey, SharedActorContext};
 pub use client::Client;
-pub use error::{Error, ErrorCode, Result, Severity};
+pub use error::{Error, ErrorCode, Result, Severity, TaskFailureCode};
 pub use payload::{Payload, PayloadCodec};
 pub use task::{Task, TaskContext};
 pub use worker::{HealthReport, HealthStatus, RuntimeStats, Worker, WorkerBuilder};

@@ -486,12 +486,19 @@ where
 /// Encodes a terminal task failure the way it is journaled: the JSON sentinel
 /// that [`decode_task_result`] raises as `TaskFailed`.
 ///
-/// `attempts` is how many times the task ran; the decode side reports it.
-pub(crate) fn encode_task_failure(message: &str, error_type: &str, attempts: i32) -> Vec<u8> {
+/// `attempts` is how many times the task ran; the decode side reports it, with
+/// the failure's `error_type` and `code`.
+pub(crate) fn encode_task_failure(
+    message: &str,
+    error_type: &str,
+    code: crate::error::TaskFailureCode,
+    attempts: i32,
+) -> Vec<u8> {
     serde_json::to_vec(&serde_json::json!({
         crate::error::TASK_FAILED_SENTINEL_KEY: true,
         "message": message,
         "error_type": error_type,
+        "code": code.as_str(),
         "attempts": attempts,
     }))
     // A JSON object of strings and a number always serializes.
@@ -542,10 +549,24 @@ pub(crate) fn decode_task_result<O: DeserializeOwned>(
                 reason = %reason,
                 "Replaying terminal task failure from journal"
             );
+            // A sentinel written before failures carried a type and category
+            // decodes with neither.
+            let error_type = v
+                .get("error_type")
+                .and_then(|t| t.as_str())
+                .unwrap_or_default()
+                .to_string();
+            let code = v
+                .get("code")
+                .and_then(|c| c.as_str())
+                .map(crate::error::TaskFailureCode::from_name)
+                .unwrap_or_default();
             return Err(Error::Workflow(crate::error::WorkflowError::TaskFailed {
                 task_type: task_type.to_string(),
                 attempts: v.get("attempts").and_then(|a| a.as_u64()).unwrap_or(1) as u32,
                 reason,
+                error_type,
+                code,
             }));
         }
     }
