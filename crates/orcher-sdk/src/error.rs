@@ -263,6 +263,105 @@ pub enum Error {
     Other(String),
 }
 
+/// The failure type a cancelled task's failure is recorded under.
+const CANCELLED_FAILURE_TYPE: &str = "Cancelled";
+
+/// The category of a task failure that reached the workflow, as
+/// [`WorkflowError::TaskFailed`] carries it.
+///
+/// It mirrors the kernel protocol's failure code. New categories may be added,
+/// so match with a wildcard arm.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[non_exhaustive]
+pub enum TaskFailureCode {
+    /// Not categorized, for example a failure journaled before failures
+    /// carried a category, or one of a category this SDK does not know.
+    #[default]
+    Unspecified,
+    /// The task's code raised it.
+    Application,
+    /// A timeout expired.
+    TimedOut,
+    /// The task was cancelled.
+    Cancelled,
+    /// The task was terminated, without cleanup.
+    Terminated,
+    /// The workflow's code no longer replays its history.
+    NonDeterminism,
+    /// A payload was over the engine's size limit.
+    PayloadTooLarge,
+    /// A command was malformed or not allowed.
+    InvalidCommand,
+}
+
+impl TaskFailureCode {
+    /// Whether the task was cancelled rather than failing on its own.
+    pub fn is_cancelled(self) -> bool {
+        self == Self::Cancelled
+    }
+
+    /// Whether a timeout expired.
+    pub fn is_timed_out(self) -> bool {
+        self == Self::TimedOut
+    }
+
+    /// Whether the task's code raised it.
+    pub fn is_application(self) -> bool {
+        self == Self::Application
+    }
+
+    /// The category's stable name, for example `cancelled`.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Unspecified => "unspecified",
+            Self::Application => "application",
+            Self::TimedOut => "timed_out",
+            Self::Cancelled => "cancelled",
+            Self::Terminated => "terminated",
+            Self::NonDeterminism => "non_determinism",
+            Self::PayloadTooLarge => "payload_too_large",
+            Self::InvalidCommand => "invalid_command",
+        }
+    }
+
+    /// The category named `name` by [`as_str`](Self::as_str); an unknown name
+    /// is [`Unspecified`](Self::Unspecified).
+    pub(crate) fn from_name(name: &str) -> Self {
+        match name {
+            "application" => Self::Application,
+            "timed_out" => Self::TimedOut,
+            "cancelled" => Self::Cancelled,
+            "terminated" => Self::Terminated,
+            "non_determinism" => Self::NonDeterminism,
+            "payload_too_large" => Self::PayloadTooLarge,
+            "invalid_command" => Self::InvalidCommand,
+            _ => Self::Unspecified,
+        }
+    }
+}
+
+impl std::fmt::Display for TaskFailureCode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl From<orcher_sdk_core::proto::kernel::v1::FailureCode> for TaskFailureCode {
+    fn from(code: orcher_sdk_core::proto::kernel::v1::FailureCode) -> Self {
+        use orcher_sdk_core::proto::kernel::v1::FailureCode;
+        match code {
+            FailureCode::Unspecified => Self::Unspecified,
+            FailureCode::Application => Self::Application,
+            FailureCode::TimedOut => Self::TimedOut,
+            FailureCode::Cancelled => Self::Cancelled,
+            FailureCode::Terminated => Self::Terminated,
+            FailureCode::NonDeterminism => Self::NonDeterminism,
+            FailureCode::PayloadTooLarge => Self::PayloadTooLarge,
+            FailureCode::InvalidCommand => Self::InvalidCommand,
+        }
+    }
+}
+
 /// Errors that can occur during workflow execution.
 #[derive(Debug, Clone, thiserror::Error)]
 #[non_exhaustive]
@@ -277,6 +376,13 @@ pub enum WorkflowError {
         attempts: u32,
         /// The reason for the failure
         reason: String,
+        /// The failure's type, as a retry policy's non-retryable list names it:
+        /// the `error_type` of a [`TaskError::application`] failure, for
+        /// example. Empty for a failure of no particular type.
+        error_type: String,
+        /// The failure's category: whether the task's code raised it, it was
+        /// cancelled, or it timed out.
+        code: TaskFailureCode,
     },
 
     /// A timer operation failed
@@ -1158,6 +1264,59 @@ impl WorkflowError {
             task_type: task_type.into(),
             attempts,
             reason: reason.into(),
+            error_type: String::new(),
+            code: TaskFailureCode::Unspecified,
+        }
+    }
+
+    /// Sets a [`TaskFailed`](Self::TaskFailed) error's type and category; any
+    /// other error is returned as it is.
+    pub fn with_failure_type(self, error_type: impl Into<String>, code: TaskFailureCode) -> Self {
+        match self {
+            Self::TaskFailed {
+                task_type,
+                attempts,
+                reason,
+                ..
+            } => Self::TaskFailed {
+                task_type,
+                attempts,
+                reason,
+                error_type: error_type.into(),
+                code,
+            },
+            other => other,
+        }
+    }
+
+    /// The category of a [`TaskFailed`](Self::TaskFailed) error, or `None` for
+    /// any other error.
+    pub fn task_failure_code(&self) -> Option<TaskFailureCode> {
+        match self {
+            Self::TaskFailed { code, .. } => Some(*code),
+            _ => None,
+        }
+    }
+
+    /// The type of a [`TaskFailed`](Self::TaskFailed) error, or `None` for any
+    /// other error. Empty for a failure of no particular type.
+    pub fn task_failure_type(&self) -> Option<&str> {
+        match self {
+            Self::TaskFailed { error_type, .. } => Some(error_type),
+            _ => None,
+        }
+    }
+
+    /// Whether this is a [`TaskFailed`](Self::TaskFailed) error for a task that
+    /// was cancelled: its category is [`TaskFailureCode::Cancelled`], or its
+    /// type is `Cancelled`, which is how an engine that does not categorize
+    /// failures records a cancellation.
+    pub fn is_task_cancelled(&self) -> bool {
+        match self {
+            Self::TaskFailed {
+                error_type, code, ..
+            } => code.is_cancelled() || error_type == CANCELLED_FAILURE_TYPE,
+            _ => false,
         }
     }
 
@@ -1433,6 +1592,44 @@ mod tests {
 
         let other = Error::Serialization("bad json".to_string());
         assert!(!other.is_suspend());
+    }
+
+    /// A task failure carries the type and category it is given; other errors
+    /// have neither.
+    #[test]
+    fn a_task_failure_carries_its_type_and_category() {
+        let plain = WorkflowError::task_failed("charge", 1, "declined");
+        assert_eq!(
+            plain.task_failure_code(),
+            Some(TaskFailureCode::Unspecified)
+        );
+        assert_eq!(plain.task_failure_type(), Some(""));
+        assert!(!plain.is_task_cancelled());
+
+        let cancelled = plain
+            .clone()
+            .with_failure_type("Cancelled", TaskFailureCode::Cancelled);
+        assert!(cancelled.is_task_cancelled());
+        assert_eq!(cancelled.task_failure_type(), Some("Cancelled"));
+
+        // Either the category or the type alone marks a cancellation.
+        assert!(plain
+            .clone()
+            .with_failure_type("", TaskFailureCode::Cancelled)
+            .is_task_cancelled());
+        assert!(plain
+            .clone()
+            .with_failure_type("Cancelled", TaskFailureCode::Application)
+            .is_task_cancelled());
+        assert!(!plain
+            .with_failure_type("CardDeclined", TaskFailureCode::Application)
+            .is_task_cancelled());
+
+        let other = WorkflowError::timer_failed("t", "boom")
+            .with_failure_type("Cancelled", TaskFailureCode::Cancelled);
+        assert_eq!(other.task_failure_code(), None);
+        assert_eq!(other.task_failure_type(), None);
+        assert!(!other.is_task_cancelled());
     }
 
     #[test]

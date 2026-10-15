@@ -306,6 +306,7 @@ impl TestWorkflowExecutor {
                 return Ok(crate::workflow::executable::encode_task_failure(
                     &message,
                     "MockFailure",
+                    crate::error::TaskFailureCode::Application,
                     1,
                 ));
             }

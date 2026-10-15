@@ -34,8 +34,15 @@ async fn a_workflow_catches_a_mocked_task_failure() {
             .await
         {
             Ok(id) => Ok(id),
-            Err(Error::Workflow(WorkflowError::TaskFailed { reason, .. })) => {
+            Err(Error::Workflow(WorkflowError::TaskFailed {
+                reason,
+                error_type,
+                code,
+                ..
+            })) => {
                 assert_eq!(reason, "card declined");
+                assert_eq!(error_type, "MockFailure");
+                assert_eq!(code, orcher_sdk::TaskFailureCode::Application);
                 ctx.execute_task::<_, _, String>("charge_paypal", order)
                     .await
             }

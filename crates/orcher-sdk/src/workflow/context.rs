@@ -2009,6 +2009,7 @@ mod tests {
                 task_type,
                 attempts,
                 reason,
+                ..
             })) => (task_type, attempts, reason),
             other => panic!("expected TaskFailed, got {other:?}"),
         }
@@ -2037,6 +2038,30 @@ mod tests {
             }
             Err(other) => panic!("expected TaskFailed, got {other:?}"),
             Ok(_) => panic!("expected TaskFailed, got a session"),
+        }
+    }
+
+    /// A sentinel journaled before failures carried a category still decodes,
+    /// keeping its type and leaving the category unspecified.
+    #[tokio::test]
+    async fn a_sentinel_without_a_category_decodes_as_unspecified() {
+        let ctx = create_test_context();
+        ctx.set_replaying_for_test(true);
+        ctx.inject_step_result(
+            "charge_0".to_string(),
+            task_failure_sentinel("card declined", 1),
+        );
+
+        match ctx.execute_task::<_, _, String>("charge", 5u32).await {
+            Err(Error::Workflow(crate::error::WorkflowError::TaskFailed {
+                error_type,
+                code,
+                ..
+            })) => {
+                assert_eq!(error_type, "TaskError");
+                assert_eq!(code, crate::error::TaskFailureCode::Unspecified);
+            }
+            other => panic!("expected TaskFailed, got {other:?}"),
         }
     }
 
