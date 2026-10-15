@@ -64,15 +64,19 @@ pub struct ChargeResult {
     pub amount: f64,
     /// Charge status (succeeded, failed, etc.)
     pub status: String,
+    /// How many times this worker has called Stripe for this workflow,
+    /// counting this call: 1 unless the charge ran more than once
+    pub stripe_calls: usize,
 }
 
 impl ChargeResult {
     /// Create a new charge result
-    pub fn new(charge_id: String, amount: f64, status: String) -> Self {
+    pub fn new(charge_id: String, amount: f64, status: String, stripe_calls: usize) -> Self {
         Self {
             charge_id,
             amount,
             status,
+            stripe_calls,
         }
     }
 }
@@ -84,14 +88,18 @@ pub struct InventoryResult {
     pub reserved: bool,
     /// Unique reservation identifier
     pub reservation_id: String,
+    /// How many times this worker has updated inventory for this workflow,
+    /// counting this update
+    pub inventory_calls: usize,
 }
 
 impl InventoryResult {
     /// Create a new inventory result
-    pub fn new(reserved: bool, reservation_id: String) -> Self {
+    pub fn new(reserved: bool, reservation_id: String, inventory_calls: usize) -> Self {
         Self {
             reserved,
             reservation_id,
+            inventory_calls,
         }
     }
 }
@@ -103,14 +111,18 @@ pub struct NotificationResult {
     pub sent: bool,
     /// Notification identifier
     pub notification_id: String,
+    /// How many times this worker has sent the email for this workflow,
+    /// counting this send
+    pub email_calls: usize,
 }
 
 impl NotificationResult {
     /// Create a new notification result
-    pub fn new(sent: bool, notification_id: String) -> Self {
+    pub fn new(sent: bool, notification_id: String, email_calls: usize) -> Self {
         Self {
             sent,
             notification_id,
+            email_calls,
         }
     }
 }
@@ -147,7 +159,7 @@ mod tests {
 
     #[test]
     fn test_charge_result_creation() {
-        let charge = ChargeResult::new("ch_123".to_string(), 99.99, "succeeded".to_string());
+        let charge = ChargeResult::new("ch_123".to_string(), 99.99, "succeeded".to_string(), 1);
 
         assert_eq!(charge.charge_id, "ch_123");
         assert_eq!(charge.amount, 99.99);
@@ -156,7 +168,7 @@ mod tests {
 
     #[test]
     fn test_inventory_result_creation() {
-        let result = InventoryResult::new(true, "rsv_123".to_string());
+        let result = InventoryResult::new(true, "rsv_123".to_string(), 1);
 
         assert!(result.reserved);
         assert_eq!(result.reservation_id, "rsv_123");
@@ -164,7 +176,7 @@ mod tests {
 
     #[test]
     fn test_notification_result_creation() {
-        let result = NotificationResult::new(true, "notif_123".to_string());
+        let result = NotificationResult::new(true, "notif_123".to_string(), 1);
 
         assert!(result.sent);
         assert_eq!(result.notification_id, "notif_123");

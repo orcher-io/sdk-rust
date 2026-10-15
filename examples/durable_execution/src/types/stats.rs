@@ -4,6 +4,11 @@
 //! idempotency in concurrent workflow scenarios. Each workflow has its own
 //! set of counters, so running 5 concurrent workflows will show each workflow
 //! made exactly 1 API call (not 5 total across all workflows).
+//!
+//! Only tasks touch these counters. Each task returns its count in its result
+//! and the workflow combines those results: workflow code must not read state
+//! in the worker process, which differs between workers and between a run and
+//! its replay.
 
 use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
@@ -54,20 +59,6 @@ pub struct ApiCallStats {
 }
 
 impl ApiCallStats {
-    /// Collect API call statistics for a specific workflow
-    pub fn collect_for_workflow(workflow_id: &str) -> Self {
-        let map = WORKFLOW_API_CALLS.read().unwrap();
-        if let Some(calls) = map.get(workflow_id) {
-            Self {
-                stripe_calls: calls.stripe_calls,
-                email_calls: calls.email_calls,
-                inventory_calls: calls.inventory_calls,
-            }
-        } else {
-            Self::default()
-        }
-    }
-
     /// Verify that each API was called exactly once
     pub fn verify_idempotency(&self) -> bool {
         self.stripe_calls == 1 && self.email_calls == 1 && self.inventory_calls == 1
@@ -79,7 +70,7 @@ impl ApiCallStats {
 // ============================================================================
 
 /// Increment Stripe API call counter for a workflow
-pub fn increment_stripe_for_workflow(workflow_id: &str) {
+pub fn increment_stripe_for_workflow(workflow_id: &str) -> usize {
     let mut map = WORKFLOW_API_CALLS.write().unwrap();
     let entry = map.entry(workflow_id.to_string()).or_default();
     entry.stripe_calls += 1;
@@ -88,10 +79,11 @@ pub fn increment_stripe_for_workflow(workflow_id: &str) {
         stripe_calls = entry.stripe_calls,
         "Incremented Stripe API call counter for workflow"
     );
+    entry.stripe_calls
 }
 
 /// Increment Email API call counter for a workflow
-pub fn increment_email_for_workflow(workflow_id: &str) {
+pub fn increment_email_for_workflow(workflow_id: &str) -> usize {
     let mut map = WORKFLOW_API_CALLS.write().unwrap();
     let entry = map.entry(workflow_id.to_string()).or_default();
     entry.email_calls += 1;
@@ -100,10 +92,11 @@ pub fn increment_email_for_workflow(workflow_id: &str) {
         email_calls = entry.email_calls,
         "Incremented Email API call counter for workflow"
     );
+    entry.email_calls
 }
 
 /// Increment Inventory API call counter for a workflow
-pub fn increment_inventory_for_workflow(workflow_id: &str) {
+pub fn increment_inventory_for_workflow(workflow_id: &str) -> usize {
     let mut map = WORKFLOW_API_CALLS.write().unwrap();
     let entry = map.entry(workflow_id.to_string()).or_default();
     entry.inventory_calls += 1;
@@ -112,6 +105,7 @@ pub fn increment_inventory_for_workflow(workflow_id: &str) {
         inventory_calls = entry.inventory_calls,
         "Incremented Inventory API call counter for workflow"
     );
+    entry.inventory_calls
 }
 
 // ============================================================================
@@ -141,7 +135,7 @@ mod tests {
     use super::*;
 
     // Tests run in parallel and share the process-wide counters, so each one
-    // uses its own workflow id and never resets the counters.
+    // uses its own workflow id.
 
     #[test]
     fn test_verify_idempotency() {
@@ -160,22 +154,10 @@ mod tests {
     }
 
     #[test]
-    fn test_collect_for_workflow() {
-        increment_stripe_for_workflow("test-collect");
-        increment_stripe_for_workflow("test-collect");
-        increment_email_for_workflow("test-collect");
-
-        let stats = ApiCallStats::collect_for_workflow("test-collect");
-        assert_eq!(stats.stripe_calls, 2);
-        assert_eq!(stats.email_calls, 1);
-        assert_eq!(stats.inventory_calls, 0);
-    }
-
-    #[test]
-    fn test_collect_for_nonexistent_workflow() {
-        let stats = ApiCallStats::collect_for_workflow("nonexistent");
-        assert_eq!(stats.stripe_calls, 0);
-        assert_eq!(stats.email_calls, 0);
-        assert_eq!(stats.inventory_calls, 0);
+    fn test_increment_returns_the_workflow_count() {
+        assert_eq!(increment_stripe_for_workflow("test-increment"), 1);
+        assert_eq!(increment_stripe_for_workflow("test-increment"), 2);
+        assert_eq!(increment_email_for_workflow("test-increment"), 1);
+        assert_eq!(increment_inventory_for_workflow("test-increment"), 1);
     }
 }

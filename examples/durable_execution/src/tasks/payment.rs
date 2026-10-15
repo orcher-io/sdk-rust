@@ -99,7 +99,7 @@ pub async fn charge_card(ctx: TaskContext, input: ChargeInput) -> Result<ChargeR
 
     // Track this actual API call (both global and per-workflow)
     let call_count = STRIPE_API_CALLS.fetch_add(1, Ordering::Relaxed) + 1;
-    increment_stripe_for_workflow(workflow_id);
+    let stripe_calls = increment_stripe_for_workflow(workflow_id);
 
     info!(
         "   ⚠️  ACTUAL API CALL #{} to Stripe (workflow: {})",
@@ -116,9 +116,12 @@ pub async fn charge_card(ctx: TaskContext, input: ChargeInput) -> Result<ChargeR
 
     info!("✅ Stripe charge successful: {}", charge_id);
 
+    // The count travels in the task's result: the workflow may only use what
+    // its tasks return, never state in this process.
     Ok(ChargeResult::new(
         charge_id,
         amount,
         "succeeded".to_string(),
+        stripe_calls,
     ))
 }

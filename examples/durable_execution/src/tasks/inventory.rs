@@ -37,7 +37,7 @@ pub async fn reserve_inventory(ctx: TaskContext, order_id: String) -> Result<Inv
 
     // Track this actual database update (both global and per-workflow)
     let call_count = INVENTORY_API_CALLS.fetch_add(1, Ordering::Relaxed) + 1;
-    increment_inventory_for_workflow(workflow_id);
+    let inventory_calls = increment_inventory_for_workflow(workflow_id);
 
     info!(
         "   ⚠️  ACTUAL DATABASE UPDATE #{} (workflow: {})",
@@ -54,5 +54,5 @@ pub async fn reserve_inventory(ctx: TaskContext, order_id: String) -> Result<Inv
 
     info!("✅ Inventory reserved: {}", reservation_id);
 
-    Ok(InventoryResult::new(true, reservation_id))
+    Ok(InventoryResult::new(true, reservation_id, inventory_calls))
 }

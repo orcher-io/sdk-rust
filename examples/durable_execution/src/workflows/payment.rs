@@ -73,16 +73,20 @@ pub async fn payment_workflow(
         .await?;
     info!("✅ Step 3 complete: Email sent = {}", notification.sent);
 
-    // Collect stats for this specific workflow (not global counters)
-    // This ensures correct verification when running concurrent workflows
-    let workflow_id = ctx.workflow_id();
-    let api_calls = ApiCallStats::collect_for_workflow(workflow_id);
+    // Each task reports how often it ran in its result. The workflow builds
+    // its stats from those results only: reading the worker's counters here
+    // would make the workflow depend on which process runs or replays it.
+    let api_calls = ApiCallStats {
+        stripe_calls: charge.stripe_calls,
+        email_calls: notification.email_calls,
+        inventory_calls: inventory.inventory_calls,
+    };
 
     let output = PaymentOutput::new(
         input.order_id,
         charge.charge_id,
         inventory.reserved,
-        true,
+        notification.sent,
         "completed".to_string(),
         api_calls.clone(),
     );
@@ -106,6 +110,10 @@ pub async fn payment_workflow(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::types::{
+        increment_email_for_workflow, increment_inventory_for_workflow,
+        increment_stripe_for_workflow,
+    };
     use orcher_sdk::testing::{MockRegistry, MockTaskBuilder, TestWorkflowExecutor};
     use orcher_sdk::workflow::WorkflowExecution;
     use std::sync::{Arc, RwLock};
@@ -114,17 +122,26 @@ mod tests {
     // the task's name. A task body needs a worker to run, so the tasks
     // themselves are exercised by the live `--e2e` mode instead.
     #[tokio::test]
-    async fn completes_the_payment() -> orcher_sdk::Result<()> {
+    async fn completes_the_payment_from_task_results_only() -> orcher_sdk::Result<()> {
+        // This process's counters say the workflow already made calls; the
+        // mocked tasks say otherwise. The output must follow the tasks.
+        for _ in 0..5 {
+            increment_stripe_for_workflow("payment-test");
+            increment_email_for_workflow("payment-test");
+            increment_inventory_for_workflow("payment-test");
+        }
+
         let mocks = Arc::new(RwLock::new(MockRegistry::new()));
         MockTaskBuilder::new("charge_card".to_string(), mocks.clone()).returns(ChargeResult::new(
             "ch_test".to_string(),
             99.99,
             "succeeded".to_string(),
+            1,
         ));
         MockTaskBuilder::new("reserve_inventory".to_string(), mocks.clone())
-            .returns(InventoryResult::new(true, "rsv_test".to_string()));
+            .returns(InventoryResult::new(true, "rsv_test".to_string(), 2));
         MockTaskBuilder::new("send_confirmation_email".to_string(), mocks.clone())
-            .returns(NotificationResult::new(true, "notif_test".to_string()));
+            .returns(NotificationResult::new(true, "notif_test".to_string(), 3));
 
         let execution = WorkflowExecution::new(
             "payment-test".to_string(),
@@ -146,6 +163,9 @@ mod tests {
         assert!(output.is_successful());
         assert_eq!(output.order_id, "ord_123");
         assert_eq!(output.charge_id, "ch_test");
+        assert_eq!(output.api_calls_made.stripe_calls, 1);
+        assert_eq!(output.api_calls_made.inventory_calls, 2);
+        assert_eq!(output.api_calls_made.email_calls, 3);
         Ok(())
     }
 }

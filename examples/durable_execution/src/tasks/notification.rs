@@ -42,7 +42,7 @@ pub async fn send_confirmation_email(
 
     // Track this actual API call (both global and per-workflow)
     let call_count = EMAIL_API_CALLS.fetch_add(1, Ordering::Relaxed) + 1;
-    increment_email_for_workflow(workflow_id);
+    let email_calls = increment_email_for_workflow(workflow_id);
 
     info!(
         "   ⚠️  ACTUAL API CALL #{} to email service (workflow: {})",
@@ -64,5 +64,5 @@ pub async fn send_confirmation_email(
         charge_id, notification_id
     );
 
-    Ok(NotificationResult::new(true, notification_id))
+    Ok(NotificationResult::new(true, notification_id, email_calls))
 }
