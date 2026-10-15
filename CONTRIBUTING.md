@@ -37,6 +37,9 @@ cargo test --workspace --all-features --doc
 RUSTDOCFLAGS="-D warnings" cargo doc --workspace --all-features --no-deps
 ```
 
+The programs in [`examples/`](examples/README.md) are workspace members, so
+these checks build, lint and test them against the SDK in this checkout.
+
 Documentation examples are tests. Make a new one compile and, where it can,
 run; mark it `no_run` only when it needs a running engine.
 

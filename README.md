@@ -108,6 +108,9 @@ let receipt: String = handle.result().await?;
 > be deterministic. Do I/O and anything else that touches the outside world in
 > tasks, and use `ctx.time()`, `ctx.rand()` and `ctx.sleep()` in workflows.
 
+Complete programs to run against a local engine are in
+[`examples/`](examples/README.md).
+
 <br />
 
 ### <img height="16" src="https://octicons-col.vercel.app/book/38BDF0"> Guide

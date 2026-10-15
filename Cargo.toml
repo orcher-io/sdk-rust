@@ -1,9 +1,13 @@
 [workspace]
 resolver = "2"
+# The examples are members so every CI run compiles them against this SDK.
 members = [
     "crates/orcher-sdk",
     "crates/orcher-sdk-macros",
     "contract",
+    "examples/actors",
+    "examples/durable_execution",
+    "examples/quickstart",
 ]
 
 [workspace.package]
