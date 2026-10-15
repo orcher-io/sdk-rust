@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.11.1](https://github.com/orcher-io/sdk-rust/compare/v0.11.0...v0.11.1) (2026-10-15)
+
+
+### Features
+
+* add runnable examples built against the current SDK ([#64](https://github.com/orcher-io/sdk-rust/issues/64)) ([fa10602](https://github.com/orcher-io/sdk-rust/commit/fa10602adcb8a4f10a2d3507922c8bf9d67aaa86))
+
+
+### Bug Fixes
+
+* keep a restart's execution timeout on the worker host ([#62](https://github.com/orcher-io/sdk-rust/issues/62)) ([b5bea62](https://github.com/orcher-io/sdk-rust/commit/b5bea62f0bf83775f1cf8657371cc59e86b85b02))
+* read a workflow run's attempt as the engine numbers it ([#66](https://github.com/orcher-io/sdk-rust/issues/66)) ([eb5b6e4](https://github.com/orcher-io/sdk-rust/commit/eb5b6e494cacf29bbd33a36a8d2da63dff3f0851))
+* send a workflow retry policy's non-retryable errors on start ([#68](https://github.com/orcher-io/sdk-rust/issues/68)) ([7e09b5f](https://github.com/orcher-io/sdk-rust/commit/7e09b5f5797c5cd2effc4cda2f43defdb9f9a3b0))
+
 ## [0.11.0](https://github.com/orcher-io/sdk-rust/compare/v0.10.0...v0.11.0) (2026-10-14)
 
 
