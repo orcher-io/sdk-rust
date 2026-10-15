@@ -19,6 +19,10 @@ fn proto_duration(d: std::time::Duration) -> orcher_sdk_core::proto::prost_types
 }
 
 /// Converts an SDK `RetryPolicy` to the protobuf form sent with a start request.
+///
+/// `max_attempts` is sent as given: the first run included, 0 for unlimited. A
+/// policy built from [`RetryPolicy::default`](crate::task::RetryPolicy::default)
+/// that leaves it alone sends the default of 3.
 fn proto_retry_policy(
     p: &crate::task::RetryPolicy,
 ) -> orcher_sdk_core::proto::orcher::v1::RetryPolicy {
@@ -27,7 +31,7 @@ fn proto_retry_policy(
         backoff_coefficient: p.backoff_coefficient,
         maximum_interval: Some(proto_duration(p.max_interval)),
         maximum_attempts: p.max_attempts as i32,
-        non_retryable_error_types: Vec::new(),
+        non_retryable_error_types: p.non_retryable_errors.clone(),
         ..Default::default()
     }
 }
@@ -782,6 +786,35 @@ impl std::fmt::Debug for Client {
 mod tests {
     use super::*;
     use std::time::Duration;
+
+    #[test]
+    fn a_workflow_retry_policy_left_at_its_count_sends_the_default() {
+        let policy =
+            crate::task::RetryPolicy::default().with_initial_interval(Duration::from_secs(2));
+        assert_eq!(proto_retry_policy(&policy).maximum_attempts, 3);
+    }
+
+    #[test]
+    fn a_workflow_retry_policy_sends_zero_as_unlimited() {
+        let policy = crate::task::RetryPolicy::default().with_max_attempts(0);
+        assert_eq!(proto_retry_policy(&policy).maximum_attempts, 0);
+    }
+
+    #[test]
+    fn a_workflow_retry_policy_sends_its_count_as_given() {
+        let policy = crate::task::RetryPolicy::default().with_max_attempts(5);
+        assert_eq!(proto_retry_policy(&policy).maximum_attempts, 5);
+    }
+
+    #[test]
+    fn a_workflow_retry_policy_sends_its_non_retryable_errors() {
+        let policy = crate::task::RetryPolicy::default()
+            .with_non_retryable_errors(["InvalidInput", "Fraud"]);
+        assert_eq!(
+            proto_retry_policy(&policy).non_retryable_error_types,
+            vec!["InvalidInput".to_string(), "Fraud".to_string()]
+        );
+    }
 
     #[test]
     fn test_client_debug() {

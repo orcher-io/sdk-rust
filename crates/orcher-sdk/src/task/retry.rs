@@ -52,7 +52,10 @@ pub enum JitterStrategy {
 pub struct RetryPolicy {
     /// Maximum number of attempts, the first one included.
     ///
-    /// A value of 1 means no retries.
+    /// A value of 1 means no retries, and the default of 3 allows two. When the
+    /// engine applies the policy (to a task or a workflow), 0 retries without
+    /// limit. [`retry_with_policy`] runs in process and treats 0 differently: it
+    /// never calls the operation.
     pub max_attempts: u32,
 
     /// Wait before the first retry.

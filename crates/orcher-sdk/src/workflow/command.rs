@@ -91,7 +91,7 @@ pub struct ScheduleTaskCommand {
 /// Retry policy sent with a scheduled task.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TaskRetryPolicy {
-    /// Maximum number of attempts.
+    /// Maximum number of attempts, the first one included; 0 retries without limit.
     pub max_attempts: u32,
 
     /// Delay before the first retry.
