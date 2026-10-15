@@ -106,43 +106,46 @@ pub async fn payment_workflow(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use orcher_sdk::testing::{MockRegistry, MockTaskBuilder, TestWorkflowExecutor};
+    use orcher_sdk::workflow::WorkflowExecution;
+    use std::sync::{Arc, RwLock};
 
-    // The idiomatic way to test a workflow is the SDK's `orcher_sdk::testing::TestEnv`
-    // (mock_task + execute_workflow) — see docs/guides/sdk/rust/testing. The tasks
-    // and end-to-end durability of this workflow are covered by the live `--e2e`
-    // run against a real orchestrator (see `cli/e2e.rs`).
+    // The workflow runs in memory, with each task answered by a mock keyed by
+    // the task's name. A task body needs a worker to run, so the tasks
+    // themselves are exercised by the live `--e2e` mode instead.
+    #[tokio::test]
+    async fn completes_the_payment() -> orcher_sdk::Result<()> {
+        let mocks = Arc::new(RwLock::new(MockRegistry::new()));
+        MockTaskBuilder::new("charge_card".to_string(), mocks.clone()).returns(ChargeResult::new(
+            "ch_test".to_string(),
+            99.99,
+            "succeeded".to_string(),
+        ));
+        MockTaskBuilder::new("reserve_inventory".to_string(), mocks.clone())
+            .returns(InventoryResult::new(true, "rsv_test".to_string()));
+        MockTaskBuilder::new("send_confirmation_email".to_string(), mocks.clone())
+            .returns(NotificationResult::new(true, "notif_test".to_string()));
 
-    #[test]
-    fn test_payment_input_structure() {
+        let execution = WorkflowExecution::new(
+            "payment-test".to_string(),
+            "run-1".to_string(),
+            "payment_workflow".to_string(),
+            "examples".to_string(),
+            "durable-execution-queue".to_string(),
+        );
         let input = PaymentInput::new(
             "ord_123".to_string(),
             99.99,
             "tok_visa".to_string(),
             "test@example.com".to_string(),
         );
-
-        assert_eq!(input.order_id, "ord_123");
-        assert_eq!(input.amount, 99.99);
-    }
-
-    #[test]
-    fn test_payment_output_structure() {
-        let stats = ApiCallStats {
-            stripe_calls: 1,
-            email_calls: 1,
-            inventory_calls: 1,
-        };
-
-        let output = PaymentOutput::new(
-            "ord_123".to_string(),
-            "ch_abc".to_string(),
-            true,
-            true,
-            "completed".to_string(),
-            stats,
-        );
+        let output: PaymentOutput = TestWorkflowExecutor::new(mocks)
+            .execute_workflow(payment_workflow, execution, input)
+            .await?;
 
         assert!(output.is_successful());
         assert_eq!(output.order_id, "ord_123");
+        assert_eq!(output.charge_id, "ch_test");
+        Ok(())
     }
 }

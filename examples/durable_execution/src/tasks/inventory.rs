@@ -56,11 +56,3 @@ pub async fn reserve_inventory(ctx: TaskContext, order_id: String) -> Result<Inv
 
     Ok(InventoryResult::new(true, reservation_id))
 }
-
-// ============================================================================
-// Tests
-// ============================================================================
-
-// Tested at the workflow level via `TestEnv` in `workflows/payment.rs` — the SDK
-// has no public `TaskContext` constructor, so tasks are exercised through
-// mock_task + execute_workflow. See docs/guides/sdk/rust/testing.

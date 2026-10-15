@@ -122,12 +122,3 @@ pub async fn charge_card(ctx: TaskContext, input: ChargeInput) -> Result<ChargeR
         "succeeded".to_string(),
     ))
 }
-
-// ============================================================================
-// Tests
-// ============================================================================
-
-// Tasks are exercised at the workflow level with `TestEnv` (mock_task +
-// execute_workflow) in `workflows/payment.rs`. The SDK intentionally has no
-// public `TaskContext` constructor, so tasks aren't called directly in tests —
-// see docs/guides/sdk/rust/testing.

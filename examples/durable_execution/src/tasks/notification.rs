@@ -66,11 +66,3 @@ pub async fn send_confirmation_email(
 
     Ok(NotificationResult::new(true, notification_id))
 }
-
-// ============================================================================
-// Tests
-// ============================================================================
-
-// Tested at the workflow level via `TestEnv` in `workflows/payment.rs` — the SDK
-// has no public `TaskContext` constructor, so tasks are exercised through
-// mock_task + execute_workflow. See docs/guides/sdk/rust/testing.

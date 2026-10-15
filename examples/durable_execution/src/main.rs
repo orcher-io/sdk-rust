@@ -4,7 +4,7 @@
 //!
 //! ## Key Concepts
 //!
-//! **Automatic Journaling**: Every `ctx.execute()` call is automatically journaled to PostgreSQL.
+//! **Automatic Journaling**: Every `ctx.execute_task()` call is journaled by the engine.
 //! When a workflow crashes and restarts, completed steps replay from the journal instead of
 //! re-executing, ensuring:
 //! - External API calls (Stripe, email, webhooks) happen exactly once
