@@ -366,8 +366,11 @@ pub struct StartWorkflowOptions {
     /// Workflow-level retry policy (opt-in).
     ///
     /// When `None`, a failed workflow is **not** retried; recover with task-level
-    /// retry plus compensation. With `max_attempts > 0`, a failed workflow is retried
-    /// up to `max_attempts` times, each as a fresh run with its own event history.
+    /// retry plus compensation. When set, a failed workflow is run up to
+    /// `max_attempts` times in all, the first run included, each retry as a fresh run
+    /// with its own event history. `max_attempts` of 0 retries without limit; a policy
+    /// built from [`RetryPolicy::default`](crate::task::RetryPolicy::default) that
+    /// leaves it alone allows 3.
     pub retry_policy: Option<crate::task::RetryPolicy>,
 
     /// What to do when `workflow_id` is already in use in the namespace.
