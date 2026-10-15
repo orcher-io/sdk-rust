@@ -262,6 +262,18 @@
       }
     },
     {
+      "id": "workflow-attempt-first-run",
+      "description": "A workflow reports the attempt its run reads. A first run is attempt 1, counted from 1 as a task's attempt is; the engine used to hand it out as 0, its retry count, and each SDK raised that to 1, so the run of its first retry read 1 as well.",
+      "workflow": "report_attempt",
+      "input": {},
+      "expect": {
+        "status": "completed",
+        "result": {
+          "attempt": 1
+        }
+      }
+    },
+    {
       "id": "task-declared-heartbeat-observed",
       "description": "A workflow declares a heartbeat timeout on a task; the task reports back the value it was actually given. Guards the whole declaration loop — declared, recorded by the engine, delivered on poll — which is the path that silently dropped the value in every SDK while each layer looked implemented.",
       "workflow": "task_timeouts_echo",

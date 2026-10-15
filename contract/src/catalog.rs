@@ -920,3 +920,17 @@ pub async fn task_timeout_terminal(
         Err(other) => Err(other),
     }
 }
+
+/// The attempt a run read.
+#[derive(Serialize, Deserialize)]
+pub struct AttemptResult {
+    pub attempt: i32,
+}
+
+/// Returns the attempt its run reads. A first run is attempt 1.
+#[workflow(name = "report_attempt")]
+pub async fn report_attempt(ctx: WorkflowContext, _input: Empty) -> Result<AttemptResult> {
+    Ok(AttemptResult {
+        attempt: ctx.attempt(),
+    })
+}

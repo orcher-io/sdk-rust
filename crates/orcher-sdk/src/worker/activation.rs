@@ -87,7 +87,14 @@ pub(crate) fn load(activation: RunActivation, namespace: &str) -> Result<Loaded,
         workflow_id: run.workflow_id.clone(),
         run_id: run.run_id.clone(),
         workflow_type: run.workflow_type.clone(),
-        attempt: started.map_or(1, |(_, started)| started.attempt.max(1) as i32),
+        // The engine counts a run's attempt from 1 (2 for the run of its
+        // first workflow-level retry) and the kernel hands it over as is.
+        // Engines before orcher#356 numbered the first run 0; it reads as 1,
+        // so a first run is still the first attempt there. On a current engine
+        // the floor never applies.
+        attempt: started.map_or(1, |(_, started)| {
+            i32::try_from(started.attempt).unwrap_or(i32::MAX).max(1)
+        }),
         namespace: if run.namespace.is_empty() {
             namespace.to_string()
         } else {
@@ -593,6 +600,46 @@ mod tests {
             kind,
             id: id.into(),
         }
+    }
+
+    fn started_as(attempt: u32) -> RunActivation {
+        RunActivation {
+            run: Some(kernel::RunRef {
+                workflow_id: "order-7".into(),
+                run_id: "run-1".into(),
+                workflow_type: "checkout".into(),
+                task_queue: "orders".into(),
+                namespace: "contract".into(),
+            }),
+            resolutions: vec![kernel::Resolution {
+                what: Some(resolution::What::Started(kernel::RunStarted {
+                    attempt,
+                    ..Default::default()
+                })),
+                ..Default::default()
+            }],
+            ..Default::default()
+        }
+    }
+
+    /// A run's attempt reads as the engine numbered it, from 1: the first
+    /// run is attempt 1 and the run of its first retry attempt 2. An older
+    /// engine's 0 for a first run reads as 1.
+    #[test]
+    fn a_runs_attempt_is_the_one_the_engine_numbered() {
+        let first = load(started_as(1), "contract").unwrap().ctx;
+        assert_eq!(first.attempt(), 1);
+        assert!(first.execution().is_first_attempt());
+
+        let retry = load(started_as(2), "contract").unwrap().ctx;
+        assert_eq!(retry.attempt(), 2);
+        assert!(!retry.execution().is_first_attempt());
+        assert!(retry.execution().is_retry());
+
+        // An engine before orcher#356 numbers the first run 0.
+        let older_engine = load(started_as(0), "contract").unwrap().ctx;
+        assert_eq!(older_engine.attempt(), 1);
+        assert!(older_engine.execution().is_first_attempt());
     }
 
     /// Calls answered from history sit where the code made them among the
