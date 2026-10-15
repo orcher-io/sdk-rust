@@ -416,6 +416,36 @@
           "compensated": 1
         }
       }
+    },
+    {
+      "id": "cancel-stops-a-queued-task",
+      "kind": "cancel_queued_task",
+      "description": "A workflow schedules a task that no worker can start yet, on a queue whose only worker runs workflows and no tasks, and parks on it; the client cancels it. Its cancellation handler then runs a cleanup task and lets the cancellation end the run. Only then is a worker that runs tasks started on the queue. The queued task was scheduled before the request, so the cancellation ends it before it starts: its handler must never run, though a worker able to run it is polling, while the cleanup, scheduled after the request, runs. The workflow is told of the cancellation at its wait on the queued task, and reports how that wait ended under `queued_task_wait`. The worker observes the tasks in-process, keyed by the `key` the harness passes as input. Before the engine ended queued tasks at the request, the cancelled workflow's task started on the first worker free to take it and ran to the end.",
+      "workflow": "cancel_queued_task",
+      "input": {},
+      "expect": {
+        "status": "cancelled",
+        "observed": {
+          "queued_task_ran": false,
+          "queued_task_wait": "cancellation",
+          "cleanup_ran": true
+        }
+      }
+    },
+    {
+      "id": "task-timeout-on-last-attempt-reaches-workflow",
+      "kind": "worker_crash",
+      "description": "A task allowed a single attempt kills its worker process mid-task, as in `task-retried-after-its-worker-dies`. Its heartbeat timeout ends that attempt, which was its last, so the timeout is a terminal failure the workflow must receive: it catches the task failure and completes, reporting the task and whether the failure says it timed out. Before the engine recorded a terminal timeout the way it records a failure the worker reports, the workflow was never told and stayed running for good.",
+      "workflow": "task_timeout_terminal",
+      "input": {},
+      "expect": {
+        "status": "completed",
+        "result": {
+          "caught": true,
+          "task_type": "exit_if_worker_doomed_once",
+          "timed_out": true
+        }
+      }
     }
   ]
 }

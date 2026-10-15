@@ -78,7 +78,9 @@ struct Scenario {
     /// "client_error" makes a failing client call and asserts the error code;
     /// "workflow_id_reuse" starts one workflow id again while it runs and
     /// after it completes, and asserts which starts are refused; "cancel"
-    /// cancels the workflow once it has parked and asserts how it ended.
+    /// cancels the workflow once it has parked and asserts how it ended;
+    /// "cancel_queued_task" cancels a workflow parked on a task no worker
+    /// could start yet and asserts what the worker observed.
     #[serde(default)]
     kind: Option<String>,
     #[serde(default)]
@@ -157,6 +159,10 @@ struct Expect {
     /// "a few" is the contract, not an exact number.
     #[serde(default)]
     result_at_most: std::collections::HashMap<String, f64>,
+    /// What the worker observed in-process, for `kind: "cancel_queued_task"`,
+    /// whose workflow ends cancelled and so returns no result.
+    #[serde(default)]
+    observed: Value,
 }
 
 /// One step of an actor scenario: `parallel` concurrent invocations of
@@ -277,6 +283,9 @@ async fn main() -> Result<()> {
                 .await
                 .map(|()| Outcome::Ran),
             Some("cancel") => run_cancel_scenario(&client, &args, scenario)
+                .await
+                .map(|()| Outcome::Ran),
+            Some("cancel_queued_task") => run_cancel_queued_task_scenario(&client, &args, scenario)
                 .await
                 .map(|()| Outcome::Ran),
             Some("workflow_id_reuse") => run_workflow_id_reuse_scenario(&client, &args, scenario)
@@ -700,6 +709,122 @@ async fn run_cancel_scenario(client: &Client, args: &Args, scenario: &Scenario) 
             "unknown expected status '{other}' for a cancel scenario"
         )),
     }
+}
+
+/// Start a worker in this process serving `task_queue` alone. With
+/// `run_tasks` unset it runs workflows and no tasks: with no task registered
+/// it does not poll for tasks, so a task scheduled on its queue waits.
+async fn start_local_worker(
+    args: &Args,
+    task_queue: &str,
+    run_tasks: bool,
+) -> Result<(std::sync::Arc<Worker>, tokio::task::JoinHandle<()>)> {
+    let worker = Worker::builder()
+        .server_url(&args.server_url)
+        .task_queue(task_queue)
+        .namespace(&args.namespace)
+        .build()
+        .await
+        .context("building a worker")?;
+    if !run_tasks {
+        worker.registry().write().await.tasks.clear();
+    }
+    let worker = std::sync::Arc::new(worker);
+    let running = std::sync::Arc::clone(&worker);
+    let handle = tokio::spawn(async move {
+        if let Err(e) = running.run().await {
+            eprintln!("contract: a scenario's worker stopped: {e}");
+        }
+    });
+    Ok((worker, handle))
+}
+
+/// Run one queued-task cancellation scenario.
+///
+/// The workflow starts on a queue of its own, served by a worker that runs
+/// workflows and no tasks, so the task it schedules and parks on waits for a
+/// worker. Once it has parked it is cancelled, and only then is a worker that
+/// runs tasks started on the queue: a queued task the cancellation failed to
+/// end would start there. The workflow's cleanup runs on it too. The run must
+/// end cancelled, and what the worker observed must match `expect.observed`.
+async fn run_cancel_queued_task_scenario(
+    client: &Client,
+    args: &Args,
+    scenario: &Scenario,
+) -> Result<()> {
+    let workflow = scenario
+        .workflow
+        .as_deref()
+        .ok_or_else(|| anyhow!("cancel_queued_task scenario missing `workflow`"))?;
+    let expect = scenario
+        .expect
+        .as_ref()
+        .ok_or_else(|| anyhow!("cancel_queued_task scenario missing `expect`"))?;
+
+    let key = fresh_key("conf");
+    let task_queue = fresh_key("contract-queued");
+    let mut input = scenario.input.clone();
+    if !input.is_object() {
+        input = serde_json::json!({});
+    }
+    input["key"] = Value::String(key.clone());
+
+    let mut workers = vec![start_local_worker(args, &task_queue, false).await?];
+    let outcome = async {
+        let options =
+            StartWorkflowOptions::new(task_queue.clone()).with_namespace(args.namespace.clone());
+        let handle = client
+            .start_workflow_with_options(workflow, input, options)
+            .await
+            .with_context(|| format!("starting workflow {workflow}"))?;
+
+        let deadline = Duration::from_secs(args.result_timeout_secs);
+        if !wait_until_parked(&key, deadline).await {
+            let _ = handle.cancel().await;
+            return Err(anyhow!("the workflow never parked"));
+        }
+        // Let the engine record the activation that scheduled the task, so
+        // the request comes after it, as it does for a task queued for real.
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        handle.cancel().await.context("cancelling the workflow")?;
+        workers.push(start_local_worker(args, &task_queue, true).await?);
+
+        let until = std::time::Instant::now() + deadline;
+        loop {
+            match handle.status().await.context("reading the status")? {
+                WorkflowStatus::Cancelled => break,
+                WorkflowStatus::Running if std::time::Instant::now() < until => {
+                    tokio::time::sleep(Duration::from_millis(200)).await;
+                }
+                other => return Err(anyhow!("expected the workflow cancelled, it is {other:?}")),
+            }
+        }
+        // A queued task the cancellation missed would be claimed by now;
+        // give its handler a moment to be seen running.
+        tokio::time::sleep(Duration::from_secs(1)).await;
+
+        let observed = serde_json::json!({
+            "queued_task_ran": catalog::QUEUED_TASK_RAN.lock().unwrap().contains(&key),
+            "queued_task_wait": catalog::QUEUED_TASK_WAIT.lock().unwrap().get(&key).cloned(),
+            "cleanup_ran": catalog::CLEANUP_RAN.lock().unwrap().contains(&key),
+        });
+        if json_matches(&expect.observed, &observed) {
+            Ok(())
+        } else {
+            Err(anyhow!(
+                "observed mismatch\n    expected: {}\n    actual:   {}",
+                expect.observed,
+                observed
+            ))
+        }
+    }
+    .await;
+
+    for (worker, handle) in workers {
+        worker.shutdown();
+        let _ = handle.await;
+    }
+    outcome
 }
 
 /// Run one event scenario: start the workflow, wait for it to park, wake it
