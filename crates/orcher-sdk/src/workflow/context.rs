@@ -60,9 +60,9 @@ pub(crate) type UpdateFuture =
 /// An update handler registered on a context: JSON arguments in, JSON result out.
 pub(crate) type ContextUpdateHandler = Arc<dyn Fn(Vec<u8>) -> UpdateFuture + Send + Sync>;
 
-/// Events buffered for one name, oldest first, each with its job position
-/// (journal order) and the time it was journaled (ms since the epoch), when
-/// known.
+/// Events buffered for one name, oldest first, each with its place in the
+/// order the run observes its outcomes and the time it was journaled (ms since
+/// the epoch), when known.
 pub(crate) type BufferedEvents = VecDeque<(Option<usize>, Vec<u8>, Option<i64>)>;
 
 /// Serializes a query handler's result, failing the query if it cannot be.
@@ -93,6 +93,11 @@ pub(crate) struct ContextState {
     /// since the epoch: keyed as in `pending_task_results`, and fired timers
     /// under `timer:{id}`.
     pub(crate) resolved_at: HashMap<String, i64>,
+    /// Where each result the workflow can receive comes in the order the run observes
+    /// its outcomes (the kernel's resolution sequence), keyed as `resolved_at`. Which of
+    /// a result and a cancellation request came first is decided by it, never by times,
+    /// which tie within a millisecond.
+    pub(crate) resolved_order: HashMap<String, u64>,
     pub(crate) commands: Vec<WorkflowCommand>,
     pub(crate) workflow_state: HashMap<String, Vec<u8>>,
     pub(crate) pending_task_results: HashMap<String, Vec<u8>>,
@@ -106,8 +111,8 @@ pub(crate) struct ContextState {
     /// Task queue override for session-routed tasks, set by `SessionContext` around its
     /// call to `execute_task`.
     pub(crate) task_queue_override: Option<String>,
-    /// Fired durable timers by timer id, with the FireTimer job's position among this
-    /// activation's jobs (journal order) when known.
+    /// Fired durable timers by timer id, with the firing's place in the order the run
+    /// observes its outcomes when known.
     pub(crate) fired_timers: HashMap<String, Option<usize>>,
     pub(crate) child_workflows: HashMap<String, ChildWorkflowHandle>,
     /// The ids of the children the journal records this run starting. A child the code
@@ -116,7 +121,7 @@ pub(crate) struct ContextState {
     /// [`default_child_workflow_id`](WorkflowContext::default_child_workflow_id).
     pub(crate) journaled_children: HashSet<String>,
     /// Events received before a matching `wait_for_event`, per name, oldest first, each
-    /// with its job position (journal order) when known.
+    /// with its place in the order the run observes its outcomes when known.
     pub(crate) event_buffer: HashMap<String, BufferedEvents>,
     /// `wait_for_event_with_timeout` calls made per event name in this activation. The
     /// count names each deadline timer, so ids match across replays.
@@ -130,11 +135,11 @@ pub(crate) struct ContextState {
     pub(crate) update_handlers: HashMap<String, ContextUpdateHandler>,
     /// Whether the journal holds a request to cancel the workflow.
     pub(crate) cancel_requested: bool,
-    /// When the journal recorded that request, ms since the epoch, when known.
-    pub(crate) cancel_requested_at: Option<i64>,
+    /// Where that request comes in the order the run observes its outcomes, when known.
+    pub(crate) cancel_requested_order: Option<u64>,
     /// Whether the code has been told of the request. It is told once, at the first
-    /// wait whose result the journal did not record before the request: the same wait
-    /// on every replay, since the code's order and the journal's times are both fixed.
+    /// wait whose result does not come before the request: the same wait on every
+    /// replay, since the code's order and the history's order are both fixed.
     pub(crate) cancel_delivered: bool,
 }
 
@@ -144,16 +149,16 @@ impl ContextState {
     /// record this wait's result before the request. Marks the request delivered
     /// when it is.
     ///
-    /// `result` is `None` when the wait has no result yet, and otherwise when the
-    /// journal recorded it, if known. A result recorded no later than the request is
-    /// received; one with no known time is too, since it exists.
-    pub(crate) fn take_cancellation(&mut self, result: Option<Option<i64>>) -> bool {
+    /// `result` is `None` when the wait has no result yet, and otherwise where the
+    /// result comes in the run's order of outcomes, if known. A result that comes
+    /// before the request is received; one with no known place is too, since it exists.
+    pub(crate) fn take_cancellation(&mut self, result: Option<Option<u64>>) -> bool {
         if !self.cancel_requested || self.cancel_delivered {
             return false;
         }
-        let received_first = match (result, self.cancel_requested_at) {
+        let received_first = match (result, self.cancel_requested_order) {
             (None, _) => false,
-            (Some(Some(result_at)), Some(requested_at)) => result_at <= requested_at,
+            (Some(Some(result_order)), Some(requested_order)) => result_order < requested_order,
             (Some(_), _) => true,
         };
         if received_first {
@@ -165,10 +170,10 @@ impl ContextState {
 
     /// The result of the wait under `key`, as
     /// [`take_cancellation`](Self::take_cancellation) takes it.
-    pub(crate) fn result_seen(&self, key: &str) -> Option<Option<i64>> {
+    pub(crate) fn result_seen(&self, key: &str) -> Option<Option<u64>> {
         self.pending_task_results
             .contains_key(key)
-            .then(|| self.resolved_at.get(key).copied())
+            .then(|| self.resolved_order.get(key).copied())
     }
 
     /// The workflow received what was journaled under `key`: its clock moves
@@ -221,6 +226,7 @@ impl WorkflowContext {
             sequence: 0,
             clock: workflow_time.clone(),
             resolved_at: HashMap::new(),
+            resolved_order: HashMap::new(),
             commands: Vec::new(),
             workflow_state: HashMap::new(),
             pending_task_results: HashMap::new(),
@@ -238,7 +244,7 @@ impl WorkflowContext {
             query_handlers: HashMap::new(),
             update_handlers: HashMap::new(),
             cancel_requested: false,
-            cancel_requested_at: None,
+            cancel_requested_order: None,
             cancel_delivered: false,
         };
 
@@ -501,7 +507,7 @@ impl WorkflowContext {
             let state = self.state.lock().unwrap();
             state.fired_timers.contains_key(&timer_id).then(|| {
                 state
-                    .resolved_at
+                    .resolved_order
                     .get(&format!("timer:{}", timer_id))
                     .copied()
             })
@@ -770,7 +776,7 @@ impl WorkflowContext {
                 .event_buffer
                 .get(event_name)
                 .and_then(|events| events.front())
-                .map(|(_, _, at_ms)| *at_ms)
+                .map(|(order, _, _)| order.map(|order| order as u64))
         };
         self.cancellation_at(next)?;
         let buffered = {
@@ -897,10 +903,10 @@ impl WorkflowContext {
                 .event_buffer
                 .get(event_name)
                 .and_then(|events| events.front())
-                .map(|(_, _, at_ms)| *at_ms);
+                .map(|(order, _, _)| order.map(|order| order as u64));
             let deadline = state.fired_timers.contains_key(&timer_id).then(|| {
                 state
-                    .resolved_at
+                    .resolved_order
                     .get(&format!("timer:{}", timer_id))
                     .copied()
             });
@@ -1376,7 +1382,7 @@ impl WorkflowContext {
         self.buffer_event_at(event_name, payload, None);
     }
 
-    /// Buffers an event with its job position (journal order) in this activation.
+    /// Buffers an event with its place in the order the run observes its outcomes.
     ///
     /// The runtime calls this for each `EventReceived` entry. `None` means "before
     /// everything": the event wins any race with a deadline timer.
@@ -1390,7 +1396,7 @@ impl WorkflowContext {
         self.buffer_journaled_event(event_name, payload, position, None);
     }
 
-    /// Buffer an event with its job position and the time the engine
+    /// Buffer an event with its place in the run's order and the time the engine
     /// journaled it (ms since the epoch), which the workflow's clock moves to
     /// when a wait takes the event.
     pub(crate) fn buffer_journaled_event(
@@ -1834,17 +1840,21 @@ impl WorkflowContext {
         self.state.lock().unwrap().cancel_delivered
     }
 
-    /// Records that the journal holds a request to cancel the workflow, recorded at
-    /// `at_ms` (ms since the epoch) when known.
-    pub(crate) fn note_cancel_requested(&self, at_ms: Option<i64>) {
+    /// Records that the journal holds a request to cancel the workflow, at `order` in
+    /// the order the run observes its outcomes when known. The first request is the one
+    /// the run is told of; a later one changes nothing.
+    pub(crate) fn note_cancel_requested(&self, order: Option<u64>) {
         let mut state = self.state.lock().unwrap();
+        if state.cancel_requested {
+            return;
+        }
         state.cancel_requested = true;
-        state.cancel_requested_at = at_ms;
+        state.cancel_requested_order = order;
     }
 
     /// `Err(Canceled)` when this wait is where the code learns of a cancellation
     /// request; see [`ContextState::take_cancellation`].
-    fn cancellation_at(&self, result: Option<Option<i64>>) -> Result<()> {
+    fn cancellation_at(&self, result: Option<Option<u64>>) -> Result<()> {
         if self.state.lock().unwrap().take_cancellation(result) {
             return Err(Error::Workflow(crate::error::WorkflowError::Canceled));
         }
@@ -1919,9 +1929,21 @@ impl WorkflowContext {
             .or_insert(at_ms);
     }
 
-    /// Marks a durable timer as fired, with the FireTimer job's position (journal order)
-    /// in this activation, so a wait with a timeout can tell whether its event or its
-    /// deadline came first.
+    /// Records where the result held under `key` comes in the order the run observes its
+    /// outcomes, to tell whether it came before a cancellation request. The first
+    /// recorded for a key stands.
+    pub(crate) fn record_resolved_order(&self, key: String, order: u64) {
+        self.state
+            .lock()
+            .unwrap()
+            .resolved_order
+            .entry(key)
+            .or_insert(order);
+    }
+
+    /// Marks a durable timer as fired, with its place in the order the run observes its
+    /// outcomes, so a wait with a timeout can tell whether its event or its deadline came
+    /// first.
     pub(crate) fn mark_timer_fired_at(&self, timer_id: String, position: Option<usize>) {
         self.state
             .lock()
@@ -2183,14 +2205,14 @@ mod tests {
 
     // Cancellation requests
 
-    /// A context replaying a journal in which `work_0` completed at 1000 ms and the
-    /// cancellation request came at 2000 ms.
+    /// A context replaying a history in which `work_0` completed (the run's second
+    /// outcome) and then the cancellation request came (its third).
     fn context_asked_to_cancel() -> WorkflowContext {
         let ctx = create_test_context();
         ctx.set_replaying_for_test(true);
         ctx.inject_step_result("work_0".to_string(), serde_json::to_vec(&1).unwrap());
-        ctx.record_resolved_at("work_0".to_string(), 1_000);
-        ctx.note_cancel_requested(Some(2_000));
+        ctx.record_resolved_order("work_0".to_string(), 2);
+        ctx.note_cancel_requested(Some(3));
         ctx
     }
 
@@ -2238,7 +2260,7 @@ mod tests {
     async fn the_same_wait_is_told_on_every_replay() {
         let ctx = context_asked_to_cancel();
         ctx.inject_step_result("work_1".to_string(), serde_json::to_vec(&2).unwrap());
-        ctx.record_resolved_at("work_1".to_string(), 3_000);
+        ctx.record_resolved_order("work_1".to_string(), 4);
         let _: Result<u32> = ctx.execute_task_by_name("work", 0).await;
 
         let interrupted: Result<u32> = ctx.execute_task_by_name("work", 1).await;
@@ -2246,16 +2268,52 @@ mod tests {
         assert!(is_canceled(&interrupted));
     }
 
-    /// A result recorded in the same millisecond as the request counts as first.
+    /// A result and the request recorded in the same millisecond: the run's order of
+    /// outcomes says which came first, never their times.
     #[tokio::test]
-    async fn a_result_recorded_with_the_request_is_received() {
+    async fn a_result_in_the_requests_millisecond_is_ordered_by_sequence() {
+        let asked = |result_order: u64, request_order: u64| {
+            let ctx = create_test_context();
+            ctx.set_replaying_for_test(true);
+            ctx.inject_step_result("work_0".to_string(), serde_json::to_vec(&1).unwrap());
+            ctx.record_resolved_at("work_0".to_string(), 2_000);
+            ctx.record_resolved_order("work_0".to_string(), result_order);
+            ctx.note_cancel_requested(Some(request_order));
+            ctx
+        };
+        let before = asked(2, 3);
+        let first: Result<u32> = before.execute_task_by_name("work", 0).await;
+        assert_eq!(first.unwrap(), 1);
+        assert!(!before.is_cancel_requested());
+
+        let after = asked(3, 2);
+        let first: Result<u32> = after.execute_task_by_name("work", 0).await;
+        assert!(is_canceled(&first));
+        assert!(after.is_cancel_requested());
+    }
+
+    /// A result whose place in the run's order is not known exists, so it is received.
+    #[tokio::test]
+    async fn a_result_with_no_known_place_is_received() {
         let ctx = create_test_context();
         ctx.set_replaying_for_test(true);
         ctx.inject_step_result("work_0".to_string(), serde_json::to_vec(&1).unwrap());
-        ctx.record_resolved_at("work_0".to_string(), 2_000);
-        ctx.note_cancel_requested(Some(2_000));
+        ctx.note_cancel_requested(Some(2));
         let first: Result<u32> = ctx.execute_task_by_name("work", 0).await;
         assert_eq!(first.unwrap(), 1);
+    }
+
+    /// Only the first request is the one the run is told of.
+    #[tokio::test]
+    async fn a_second_request_does_not_move_the_first() {
+        let ctx = create_test_context();
+        ctx.set_replaying_for_test(true);
+        ctx.inject_step_result("work_0".to_string(), serde_json::to_vec(&1).unwrap());
+        ctx.record_resolved_order("work_0".to_string(), 3);
+        ctx.note_cancel_requested(Some(2));
+        ctx.note_cancel_requested(Some(4));
+        let first: Result<u32> = ctx.execute_task_by_name("work", 0).await;
+        assert!(is_canceled(&first));
     }
 
     #[tokio::test]
@@ -2271,7 +2329,7 @@ mod tests {
     async fn a_sleep_whose_timer_had_not_fired_is_told() {
         let ctx = create_test_context();
         ctx.set_replaying_for_test(true);
-        ctx.note_cancel_requested(Some(2_000));
+        ctx.note_cancel_requested(Some(2));
         let slept = ctx.sleep(Duration::from_secs(600)).await;
         assert!(matches!(
             slept,
@@ -2286,14 +2344,29 @@ mod tests {
         ctx.buffer_journaled_event(
             "go".to_string(),
             serde_json::to_vec(&7).unwrap(),
-            Some(0),
+            Some(2),
             Some(1_000),
         );
-        ctx.note_cancel_requested(Some(2_000));
+        ctx.note_cancel_requested(Some(3));
         let received: u32 = ctx.wait_for_event("go").await.unwrap();
         assert_eq!(received, 7);
         let next: Result<u32> = ctx.wait_for_event("go").await;
         assert!(is_canceled(&next));
+    }
+
+    #[tokio::test]
+    async fn an_event_that_came_after_the_request_is_where_it_is_told() {
+        let ctx = create_test_context();
+        ctx.set_replaying_for_test(true);
+        ctx.buffer_journaled_event(
+            "go".to_string(),
+            serde_json::to_vec(&7).unwrap(),
+            Some(3),
+            Some(2_000),
+        );
+        ctx.note_cancel_requested(Some(2));
+        let told: Result<u32> = ctx.wait_for_event("go").await;
+        assert!(is_canceled(&told));
     }
 
     // Event buffering tests

@@ -248,6 +248,7 @@ impl TaskContext {
             let details = details_bytes.map(|data| orcher_sdk_core::proto::kernel::v1::Payload {
                 data,
                 metadata: [("encoding".to_string(), b"json".to_vec())].into(),
+                ..Default::default()
             });
             if host.heartbeat(token, details).cancel_requested {
                 self.cancellation_token.cancel();

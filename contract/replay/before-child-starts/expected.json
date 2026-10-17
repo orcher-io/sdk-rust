@@ -13,6 +13,7 @@
             }
           ],
           "orphan_policy": "Cancel",
+          "retry_policy": null,
           "sequence": 0,
           "task_queue": "contract",
           "timeout": null,
@@ -719,6 +720,7 @@
             }
           ],
           "orphan_policy": "Cancel",
+          "retry_policy": null,
           "sequence": 0,
           "task_queue": "contract",
           "timeout": null,
@@ -2374,6 +2376,7 @@
               "metadata": {}
             }
           ],
+          "retry_policy": null,
           "task_queue": null,
           "timeout": null,
           "workflow_type": ""
@@ -2408,6 +2411,7 @@
             }
           ],
           "orphan_policy": "Cancel",
+          "retry_policy": null,
           "sequence": 0,
           "task_queue": "contract",
           "timeout": null,
@@ -2433,6 +2437,7 @@
             }
           ],
           "orphan_policy": "Cancel",
+          "retry_policy": null,
           "sequence": 1,
           "task_queue": "contract",
           "timeout": null,
@@ -2472,6 +2477,7 @@
             }
           ],
           "orphan_policy": "Cancel",
+          "retry_policy": null,
           "sequence": 1,
           "task_queue": "contract",
           "timeout": null,
