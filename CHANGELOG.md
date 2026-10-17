@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.11.2](https://github.com/orcher-io/sdk-rust/compare/v0.11.1...v0.11.2) (2026-10-17)
+
+
+### Features
+
+* expose a task failure's error type and whether it was cancelled ([#70](https://github.com/orcher-io/sdk-rust/issues/70)) ([5979ab6](https://github.com/orcher-io/sdk-rust/commit/5979ab6e95c36047a77d4396b3b0db7ab02bf4fa))
+
+
+### Bug Fixes
+
+* deliver a cancellation by the kernel's order of outcomes ([#67](https://github.com/orcher-io/sdk-rust/issues/67)) ([9623a62](https://github.com/orcher-io/sdk-rust/commit/9623a62617d49b481b9163a7bcb7f2178253b9b2))
+
 ## [0.11.1](https://github.com/orcher-io/sdk-rust/compare/v0.11.0...v0.11.1) (2026-10-15)
 
 
