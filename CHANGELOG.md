@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.11.3](https://github.com/orcher-io/sdk-rust/compare/v0.11.2...v0.11.3) (2026-10-18)
+
+
+### Features
+
+* let a child workflow and a restart-fresh set their retry policy ([#73](https://github.com/orcher-io/sdk-rust/issues/73)) ([5bd22d7](https://github.com/orcher-io/sdk-rust/commit/5bd22d7dfaf062e31d4ecffd1708d30841e77cb7)), closes [#72](https://github.com/orcher-io/sdk-rust/issues/72)
+
 ## [0.11.2](https://github.com/orcher-io/sdk-rust/compare/v0.11.1...v0.11.2) (2026-10-17)
 
 
