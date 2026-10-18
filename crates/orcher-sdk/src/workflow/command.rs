@@ -189,6 +189,9 @@ pub struct StartChildWorkflowCommand {
 
     /// What happens to the child when the parent closes.
     pub orphan_policy: OrphanPolicy,
+
+    /// How the child is retried; `None` sends no policy.
+    pub retry_policy: Option<crate::task::RetryPolicy>,
 }
 
 /// What happens to a child workflow when its parent closes.
@@ -267,6 +270,9 @@ pub struct RestartFreshCommand {
 
     /// Execution timeout for the new execution; `None` keeps the current one.
     pub timeout: Option<Duration>,
+
+    /// Retry policy for the new execution; `None` keeps the current one.
+    pub retry_policy: Option<crate::task::RetryPolicy>,
 }
 
 impl WorkflowCommand {

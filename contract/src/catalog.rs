@@ -258,6 +258,54 @@ pub async fn parent_starts_child(ctx: WorkflowContext, input: ChildInput) -> Res
     Ok(out)
 }
 
+/// The attempt a child ran as when it succeeded.
+#[derive(Serialize, Deserialize)]
+pub struct ChildAttemptResult {
+    pub attempt: i32,
+}
+
+/// A child workflow that fails on its first run and succeeds on any later one,
+/// reporting the attempt it ran as.
+#[workflow(name = "fails_first_run")]
+pub async fn fails_first_run(ctx: WorkflowContext, _input: Empty) -> Result<ChildAttemptResult> {
+    if ctx.attempt() == 1 {
+        return Err(Error::Workflow(WorkflowError::Panic(
+            "intentional failure of the first run".to_string(),
+        )));
+    }
+    Ok(ChildAttemptResult {
+        attempt: ctx.attempt(),
+    })
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct RetriedChildResult {
+    pub child_succeeded: bool,
+    pub child_attempt: i32,
+}
+
+/// Starts a child workflow with a retry policy of two attempts. The child's
+/// first run fails and the engine retries it; the parent receives the second
+/// run's success.
+#[workflow(name = "parent_retries_child")]
+pub async fn parent_retries_child(
+    ctx: WorkflowContext,
+    _input: Empty,
+) -> Result<RetriedChildResult> {
+    let options = ChildWorkflowOptions::new().retry_policy(
+        orcher_sdk::task::RetryPolicy::default()
+            .with_max_attempts(2)
+            .with_initial_interval(Duration::from_secs(1)),
+    );
+    let out: ChildAttemptResult = ctx
+        .execute_child_workflow_with_options("fails_first_run", Empty::default(), options)
+        .await?;
+    Ok(RetriedChildResult {
+        child_succeeded: true,
+        child_attempt: out.attempt,
+    })
+}
+
 #[derive(Serialize, Deserialize, Default)]
 pub struct RestartInput {
     #[serde(default)]
