@@ -674,7 +674,7 @@ impl ExecutionRuntime {
         (query_responses, update_results)
     }
 
-    fn convert_command(
+    pub(crate) fn convert_command(
         &self,
         cmd: WorkflowCommand,
         default_task_queue: &str,
@@ -787,6 +787,7 @@ impl ExecutionRuntime {
                         input: vec![Payload::new_data(child.input)],
                         timeout: child.timeout,
                         orphan_policy,
+                        retry_policy: child.retry_policy.as_ref().map(workflow_retry_policy),
                         ..Default::default()
                     },
                 ))
@@ -825,10 +826,26 @@ impl ExecutionRuntime {
                     task_queue: restart.task_queue,
                     input: vec![Payload::new_data(restart.input)],
                     timeout: restart.timeout,
+                    retry_policy: restart.retry_policy.as_ref().map(workflow_retry_policy),
                     ..Default::default()
                 },
             )),
         }
+    }
+}
+
+/// A child's or a fresh run's retry policy, sent as a workflow start sends
+/// one: `max_attempts` as given (the first run included, 0 unlimited), so a
+/// policy left at its default count sends 3.
+fn workflow_retry_policy(
+    policy: &crate::task::RetryPolicy,
+) -> orcher_sdk_core::bridge::WorkflowRetryPolicy {
+    orcher_sdk_core::bridge::WorkflowRetryPolicy {
+        max_attempts: policy.max_attempts,
+        initial_interval: Some(policy.initial_interval),
+        max_interval: Some(policy.max_interval),
+        backoff_coefficient: policy.backoff_coefficient,
+        non_retryable_errors: policy.non_retryable_errors.clone(),
     }
 }
 

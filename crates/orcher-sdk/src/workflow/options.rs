@@ -121,6 +121,16 @@ pub struct ChildWorkflowOptions {
 
     /// What happens to the child when the parent closes.
     pub orphan_policy: OrphanPolicy,
+
+    /// How the child is retried when a run of it fails.
+    ///
+    /// The same policy and meaning as a workflow start's
+    /// [`StartWorkflowOptions::retry_policy`](crate::client::StartWorkflowOptions::retry_policy):
+    /// `max_attempts` counts the first run, 0 retries without limit, and a
+    /// policy that leaves it at [`RetryPolicy::default`] allows 3 runs. `None`,
+    /// the default, sends no policy: a failed child is not retried and its
+    /// failure reaches the parent.
+    pub retry_policy: Option<RetryPolicy>,
 }
 
 impl ChildWorkflowOptions {
@@ -150,6 +160,12 @@ impl ChildWorkflowOptions {
     /// Sets what happens to the child when the parent closes.
     pub fn orphan_policy(mut self, policy: OrphanPolicy) -> Self {
         self.orphan_policy = policy;
+        self
+    }
+
+    /// Sets how the child is retried when a run of it fails.
+    pub fn retry_policy(mut self, retry_policy: RetryPolicy) -> Self {
+        self.retry_policy = Some(retry_policy);
         self
     }
 }
@@ -184,10 +200,20 @@ pub struct RestartFreshOptions {
 
     /// Execution timeout for the new execution. If not set, it is unchanged.
     pub timeout: Option<Duration>,
+
+    /// Retry policy for the new execution.
+    ///
+    /// The same policy and meaning as a workflow start's
+    /// [`StartWorkflowOptions::retry_policy`](crate::client::StartWorkflowOptions::retry_policy):
+    /// `max_attempts` counts the first run, 0 retries without limit, and a
+    /// policy that leaves it at [`RetryPolicy::default`] allows 3 runs. If not
+    /// set, no policy is sent and the new execution keeps the current one.
+    pub retry_policy: Option<RetryPolicy>,
 }
 
 impl RestartFreshOptions {
-    /// Creates options that keep the workflow type, task queue and timeout.
+    /// Creates options that keep the workflow type, task queue, timeout and
+    /// retry policy.
     pub fn new() -> Self {
         Self::default()
     }
@@ -207,6 +233,12 @@ impl RestartFreshOptions {
     /// Sets the execution timeout for the new execution.
     pub fn timeout(mut self, timeout: Duration) -> Self {
         self.timeout = Some(timeout);
+        self
+    }
+
+    /// Sets the retry policy for the new execution.
+    pub fn retry_policy(mut self, retry_policy: RetryPolicy) -> Self {
+        self.retry_policy = Some(retry_policy);
         self
     }
 }
@@ -231,6 +263,7 @@ mod tests {
         assert!(options.execution_timeout.is_none());
         assert!(options.task_queue.is_none());
         assert_eq!(options.orphan_policy, OrphanPolicy::Cancel);
+        assert!(options.retry_policy.is_none());
     }
 
     #[test]
@@ -255,6 +288,7 @@ mod tests {
         assert!(options.workflow_type.is_none());
         assert!(options.task_queue.is_none());
         assert!(options.timeout.is_none());
+        assert!(options.retry_policy.is_none());
     }
 
     #[test]

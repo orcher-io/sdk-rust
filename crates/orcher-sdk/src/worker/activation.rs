@@ -1074,6 +1074,110 @@ mod tests {
         );
     }
 
+    /// The kernel command a workflow's child start or restart-fresh becomes,
+    /// issued through the user-facing options.
+    async fn issued_through_options(
+        child: crate::workflow::ChildWorkflowOptions,
+        restart: crate::workflow::RestartFreshOptions,
+    ) -> (Option<kernel::RetryPolicy>, Option<kernel::RetryPolicy>) {
+        use crate::worker::runtime::{ExecutionRuntime, RuntimeConfig};
+        let ctx = WorkflowContext::new(
+            WorkflowExecution {
+                workflow_id: "order-7".into(),
+                run_id: "run-1".into(),
+                workflow_type: "checkout".into(),
+                attempt: 1,
+                namespace: "contract".into(),
+                task_queue: "orders".into(),
+            },
+            false,
+            "1.0".into(),
+        );
+        ctx.start_child_workflow_with_options("ship", 7, child)
+            .await
+            .unwrap();
+        ctx.restart_fresh_with(8, Some(restart)).unwrap();
+        let runtime = ExecutionRuntime::new(RuntimeConfig::default());
+        let mut policies = ctx.take_commands().into_iter().map(|issued| {
+            let bridge = runtime.convert_command(issued, "orders").unwrap();
+            match kernel_command(&bridge).unwrap().what {
+                Some(command::What::StartChild(child)) => child.retry_policy,
+                Some(command::What::RestartFresh(restart)) => restart.retry_policy,
+                other => panic!("{other:?}"),
+            }
+        });
+        let child = policies.next().unwrap();
+        let restart = policies.next().unwrap();
+        assert!(policies.next().is_none());
+        (child, restart)
+    }
+
+    /// A child's and a restart-fresh's retry policy set on their options
+    /// reaches the kernel commands as a workflow start sends one: delays and
+    /// errors as given, and the count as given.
+    #[tokio::test]
+    async fn a_child_and_restart_fresh_retry_policy_reach_the_kernel() {
+        use crate::task::RetryPolicy;
+        let policy = RetryPolicy::default()
+            .with_max_attempts(2)
+            .with_initial_interval(Duration::from_millis(500))
+            .with_max_interval(Duration::from_secs(9))
+            .with_backoff_coefficient(1.5)
+            .with_non_retryable_errors(["Declined"]);
+        let expected = kernel::RetryPolicy {
+            max_attempts: 2,
+            first_delay: Some(duration(Duration::from_millis(500))),
+            max_delay: Some(duration(Duration::from_secs(9))),
+            delay_multiplier: 1.5,
+            never_retry_types: vec!["Declined".into()],
+            ..Default::default()
+        };
+        let (child, restart) = issued_through_options(
+            crate::workflow::ChildWorkflowOptions::new().retry_policy(policy.clone()),
+            crate::workflow::RestartFreshOptions::new().retry_policy(policy),
+        )
+        .await;
+        assert_eq!(child, Some(expected.clone()));
+        assert_eq!(restart, Some(expected));
+    }
+
+    /// A policy that leaves the count alone sends the default of 3; a count
+    /// of 0 sends 0, retry without limit.
+    #[tokio::test]
+    async fn a_child_and_restart_fresh_retry_count_is_sent_as_a_workflow_start_sends_it() {
+        use crate::task::RetryPolicy;
+        let default_count = RetryPolicy::default().with_initial_interval(Duration::from_secs(2));
+        let (child, restart) = issued_through_options(
+            crate::workflow::ChildWorkflowOptions::new().retry_policy(default_count.clone()),
+            crate::workflow::RestartFreshOptions::new().retry_policy(default_count),
+        )
+        .await;
+        assert_eq!(child.unwrap().max_attempts, 3);
+        assert_eq!(restart.unwrap().max_attempts, 3);
+
+        let unlimited = RetryPolicy::default().with_max_attempts(0);
+        let (child, restart) = issued_through_options(
+            crate::workflow::ChildWorkflowOptions::new().retry_policy(unlimited.clone()),
+            crate::workflow::RestartFreshOptions::new().retry_policy(unlimited),
+        )
+        .await;
+        assert_eq!(child.unwrap().max_attempts, 0);
+        assert_eq!(restart.unwrap().max_attempts, 0);
+    }
+
+    /// Without a retry policy on the options, none is sent: the child is not
+    /// retried and the restarted-fresh run keeps its current policy.
+    #[tokio::test]
+    async fn a_child_and_restart_fresh_without_a_retry_policy_send_none() {
+        let (child, restart) = issued_through_options(
+            crate::workflow::ChildWorkflowOptions::new(),
+            crate::workflow::RestartFreshOptions::new(),
+        )
+        .await;
+        assert_eq!(child, None);
+        assert_eq!(restart, None);
+    }
+
     /// A child's and a restart's retry policies reach the kernel commands,
     /// unset delays unset; without one, none is sent.
     #[test]

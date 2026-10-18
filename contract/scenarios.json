@@ -141,6 +141,19 @@
       }
     },
     {
+      "id": "child-workflow-retried-by-its-policy",
+      "description": "A parent starts a child workflow with a retry policy of two attempts and a one-second initial interval. The child fails on its first run and succeeds on its second, reporting the attempt it ran as; the parent receives that success. Guards the child's retry policy end to end: set on the child workflow options, carried on the start of the child, and honoured by the engine, which retries the failed run instead of handing its failure to the parent.",
+      "workflow": "parent_retries_child",
+      "input": {},
+      "expect": {
+        "status": "completed",
+        "result": {
+          "child_succeeded": true,
+          "child_attempt": 2
+        }
+      }
+    },
+    {
       "id": "restart-fresh-roundtrip",
       "description": "A workflow restarts fresh once, then completes. The client following the original execution receives the continued execution's result. Guards restart-fresh persistence and the result-following chain (original -> restarted_fresh, continued -> completed).",
       "workflow": "restart_once",

@@ -697,6 +697,7 @@ impl WorkflowContext {
                 input: input_bytes,
                 timeout: options.execution_timeout,
                 orphan_policy: options.orphan_policy.into(),
+                retry_policy: options.retry_policy,
             });
             self.add_command(command);
         }
@@ -1592,6 +1593,7 @@ impl WorkflowContext {
             input: vec![],
             task_queue: None,
             timeout: None,
+            retry_policy: None,
         });
 
         self.add_command(command);
@@ -1681,6 +1683,7 @@ impl WorkflowContext {
             input: input_bytes,
             task_queue: opts.task_queue,
             timeout: opts.timeout,
+            retry_policy: opts.retry_policy,
         });
 
         self.add_command(command);
