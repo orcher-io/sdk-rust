@@ -334,11 +334,43 @@ impl ExecutionRuntime {
             Err(e) => {
                 tracing::error!(error = %e, "Workflow handler failed");
                 self.workflows_failed.fetch_add(1, Ordering::Relaxed);
-                ExecutionResult::failed(run_id, workflow_failure(&e))
+                let mut failed = ExecutionResult::failed(run_id, workflow_failure(&e));
+                // The calls the code made before it failed go with the
+                // failure, for sdk-core to check against history; they are
+                // never sent. A call that cannot be converted leaves the
+                // failure unchecked, rather than reported wrong.
+                match self.issued_commands(&ctx, task_queue) {
+                    Ok(issued) => {
+                        failed.commands = issued;
+                        failed.set_reached_steps(reached_steps);
+                    }
+                    Err(e) => {
+                        tracing::warn!(error = %e, "The calls made before the failure cannot be reported");
+                    }
+                }
+                return (failed, reached);
             }
         };
-        result.set_reached_steps(reached_steps);
+        // A result that failed on the way (a command that cannot be
+        // converted) carries no calls, so it says nothing of the steps.
+        if result.successful {
+            result.set_reached_steps(reached_steps);
+        }
         (result, reached)
+    }
+
+    /// Every command the code issued in this activation, the closures that
+    /// ran first, as the engine would receive them.
+    fn issued_commands(
+        &self,
+        ctx: &WorkflowContext,
+        task_queue: &str,
+    ) -> Result<Vec<BridgeCommand>> {
+        let mut issued = self.closure_result_commands(ctx, task_queue);
+        for cmd in ctx.take_commands() {
+            issued.push(self.convert_command(cmd, task_queue)?);
+        }
+        Ok(issued)
     }
 
     fn handle_workflow_completion(
