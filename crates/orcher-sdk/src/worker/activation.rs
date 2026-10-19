@@ -306,7 +306,7 @@ pub(crate) fn answer(
         let error = result.error.clone().unwrap_or_else(|| {
             orcher_sdk_core::bridge::ExecutionError::workflow_error(
                 "the workflow failed".to_string(),
-                false,
+                true,
             )
         });
         run_activation_result::Outcome::WorkflowFailed(Failure {

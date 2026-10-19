@@ -154,6 +154,19 @@
       }
     },
     {
+      "id": "workflow-non-retryable-not-retried",
+      "description": "A parent starts two child workflows, each with a retry policy of two attempts and a one-second initial interval, each failing its first run and succeeding on any later one. The first raises the SDK's non-retryable error, the same one task code raises: it is not retried, so the parent receives its failure. The second raises a plain error: it is retried, so the parent receives its second run's success. Guards that a workflow failure is non-retryable exactly when the workflow code raised it so, and that the engine honours the mark.",
+      "workflow": "parent_non_retryable_child",
+      "input": {},
+      "expect": {
+        "status": "completed",
+        "result": {
+          "non_retryable_child_failed": true,
+          "plain_child_attempt": 2
+        }
+      }
+    },
+    {
       "id": "restart-fresh-roundtrip",
       "description": "A workflow restarts fresh once, then completes. The client following the original execution receives the continued execution's result. Guards restart-fresh persistence and the result-following chain (original -> restarted_fresh, continued -> completed).",
       "workflow": "restart_once",

@@ -451,7 +451,10 @@ impl Worker {
             )
             .with_heartbeat_interval(c.heartbeat_interval)
             .with_max_sessions(c.max_sessions)
-            .with_sdk("rust", env!("CARGO_PKG_VERSION"));
+            .with_sdk("rust", env!("CARGO_PKG_VERSION"))
+            // A workflow failure is marked non-retryable only when the
+            // workflow code raised it so (see `workflow_failure`).
+            .with_protocol_version(orcher_sdk_core::worker_protocol::WORKFLOW_FAILURE_RETRYABILITY);
         if let Some(api_key) = &c.api_key {
             config = config.with_api_key(api_key);
         }

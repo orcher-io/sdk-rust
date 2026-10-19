@@ -225,7 +225,8 @@ impl ExecutionRuntime {
                         ),
                         error_type: orcher_sdk_core::bridge::ExecutionErrorType::WorkflowCode,
                         details: None,
-                        retryable: false,
+                        // Not raised as non-retryable by the workflow code.
+                        retryable: true,
                     },
                 ),
                 Vec::new(),
@@ -364,7 +365,8 @@ impl ExecutionRuntime {
                             message: format!("Command conversion failed: {}", e),
                             error_type: orcher_sdk_core::bridge::ExecutionErrorType::WorkflowCode,
                             details: None,
-                            retryable: false,
+                            // Not raised as non-retryable by the workflow code.
+                            retryable: true,
                         },
                     );
                 }
@@ -463,7 +465,8 @@ impl ExecutionRuntime {
                     message: "Workflow suspended without generating commands".to_string(),
                     error_type: orcher_sdk_core::bridge::ExecutionErrorType::WorkflowCode,
                     details: None,
-                    retryable: false,
+                    // Not raised as non-retryable by the workflow code.
+                    retryable: true,
                 },
             );
         }
@@ -485,7 +488,8 @@ impl ExecutionRuntime {
                             message: format!("Command conversion failed: {}", e),
                             error_type: orcher_sdk_core::bridge::ExecutionErrorType::WorkflowCode,
                             details: None,
-                            retryable: false,
+                            // Not raised as non-retryable by the workflow code.
+                            retryable: true,
                         },
                     );
                 }
@@ -933,6 +937,12 @@ fn reported_failure(error: &orcher_sdk_core::Error) -> KernelFailure {
 /// Non-determinism is reported as such, so the core fails the execution as
 /// non-deterministic and not retryable instead of as an ordinary workflow
 /// error: the same code against the same journal would fail the same way.
+///
+/// Any other error is retryable, so the workflow's retry policy decides,
+/// unless the workflow code raised it as non-retryable the way task code
+/// does: a [`TaskError::non_retryable`](crate::error::TaskError::non_retryable).
+/// A task's failure the workflow passes on is the workflow's own failure,
+/// retryable like any other.
 fn workflow_failure(error: &Error) -> orcher_sdk_core::bridge::ExecutionError {
     use orcher_sdk_core::bridge::{ExecutionError, ExecutionErrorType};
     match error {
@@ -943,7 +953,13 @@ fn workflow_failure(error: &Error) -> orcher_sdk_core::bridge::ExecutionError {
             message: error.to_string(),
             error_type: ExecutionErrorType::WorkflowCode,
             details: None,
-            retryable: false,
+            retryable: !matches!(
+                error,
+                Error::Task(crate::error::TaskError::Application {
+                    non_retryable: true,
+                    ..
+                })
+            ),
         },
     }
 }
@@ -988,6 +1004,28 @@ mod tests {
             "boom".into(),
         )));
         assert_eq!(reported.error_type, ExecutionErrorType::WorkflowCode);
+    }
+
+    /// A workflow's failure is non-retryable only when its code raised it as
+    /// non-retryable, the way task code does; any other error is left to the
+    /// workflow's retry policy, a task's failure passed on included.
+    #[test]
+    fn a_workflow_failure_is_non_retryable_only_when_raised_so() {
+        let raised = workflow_failure(&TaskError::non_retryable("OutOfStock", "gone").into());
+        assert!(!raised.retryable);
+        assert!(raised.message.contains("gone"));
+
+        for error in [
+            TaskError::application("Throttled", "slow down").into(),
+            TaskError::execution_failed("boom").into(),
+            Error::Workflow(crate::error::WorkflowError::Panic("boom".into())),
+            Error::Workflow(crate::error::WorkflowError::task_failed(
+                "charge", 3, "declined",
+            )),
+        ] {
+            let reported = workflow_failure(&error);
+            assert!(reported.retryable, "{error:?} was reported non-retryable");
+        }
     }
 
     #[test]

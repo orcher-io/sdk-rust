@@ -218,6 +218,10 @@ async fn charge(_ctx: TaskContext, order_id: String) -> Result<String> {
 Any other error is retried. `RetryPolicy::with_non_retryable_errors` sets the
 same list on a policy built in code.
 
+A workflow is marked the same way: a `TaskError::non_retryable` returned from
+workflow code fails the workflow without a retry, whatever its retry policy
+allows. Any other error a workflow returns is retried as its policy says.
+
 A workflow that catches the failure reads its type and whether the task was
 cancelled from the `TaskFailed` error:
 

@@ -306,6 +306,60 @@ pub async fn parent_retries_child(
     })
 }
 
+/// A child workflow that raises a non-retryable error on its first run and
+/// succeeds on any later one, so a retry would show as a success.
+#[workflow(name = "non_retryable_first_run")]
+pub async fn non_retryable_first_run(
+    ctx: WorkflowContext,
+    _input: Empty,
+) -> Result<ChildAttemptResult> {
+    if ctx.attempt() == 1 {
+        return Err(TaskError::non_retryable("OutOfStock", "out of stock, for good").into());
+    }
+    Ok(ChildAttemptResult {
+        attempt: ctx.attempt(),
+    })
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct NonRetryableChildResult {
+    pub non_retryable_child_failed: bool,
+    pub plain_child_attempt: i32,
+}
+
+/// Starts two child workflows, each with a retry policy of two attempts and
+/// each failing its first run: one raising a non-retryable error, which is not
+/// retried and fails, and one raising a plain error, which is retried and
+/// succeeds on its second run.
+#[workflow(name = "parent_non_retryable_child")]
+pub async fn parent_non_retryable_child(
+    ctx: WorkflowContext,
+    _input: Empty,
+) -> Result<NonRetryableChildResult> {
+    let options = || {
+        ChildWorkflowOptions::new().retry_policy(
+            orcher_sdk::task::RetryPolicy::default()
+                .with_max_attempts(2)
+                .with_initial_interval(Duration::from_secs(1)),
+        )
+    };
+    let marked: Result<ChildAttemptResult> = ctx
+        .execute_child_workflow_with_options("non_retryable_first_run", Empty::default(), options())
+        .await;
+    let non_retryable_child_failed = match marked {
+        Ok(_) => false,
+        Err(Error::Workflow(WorkflowError::ChildWorkflowFailed { .. })) => true,
+        Err(other) => return Err(other),
+    };
+    let plain: ChildAttemptResult = ctx
+        .execute_child_workflow_with_options("fails_first_run", Empty::default(), options())
+        .await?;
+    Ok(NonRetryableChildResult {
+        non_retryable_child_failed,
+        plain_child_attempt: plain.attempt,
+    })
+}
+
 #[derive(Serialize, Deserialize, Default)]
 pub struct RestartInput {
     #[serde(default)]
