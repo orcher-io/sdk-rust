@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.11.4](https://github.com/orcher-io/sdk-rust/compare/v0.11.3...v0.11.4) (2026-10-19)
+
+
+### Bug Fixes
+
+* mark a workflow failure non-retryable only when its code raised it so ([#76](https://github.com/orcher-io/sdk-rust/issues/76)) ([7789f26](https://github.com/orcher-io/sdk-rust/commit/7789f26177242790d8f42d173ae4d0c5a7e07be2))
+* send the calls a failing workflow made before it failed ([#78](https://github.com/orcher-io/sdk-rust/issues/78)) ([d2bb054](https://github.com/orcher-io/sdk-rust/commit/d2bb05480852eed53305aa8b38be6d071218af59))
+
 ## [0.11.3](https://github.com/orcher-io/sdk-rust/compare/v0.11.2...v0.11.3) (2026-10-18)
 
 
