@@ -1492,6 +1492,10 @@ impl TaskError {
 
     /// A failure of type `error_type` that is never retried, whatever the
     /// task's retry policy allows.
+    ///
+    /// Returned by workflow code, it fails the workflow the same way: the
+    /// workflow is not retried, whatever its retry policy allows. Any other
+    /// error a workflow returns is retried as its policy says.
     pub fn non_retryable(error_type: impl Into<String>, message: impl Into<String>) -> Self {
         Self::Application {
             error_type: error_type.into(),

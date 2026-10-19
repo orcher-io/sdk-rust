@@ -530,7 +530,7 @@
       "details": null,
       "error_type": "WorkflowCode",
       "message": "Workflow error: State error: deliberate contract failure",
-      "retryable": false
+      "retryable": true
     },
     "query_responses": [],
     "restart_fresh": null,
@@ -1239,7 +1239,7 @@
       "details": null,
       "error_type": "WorkflowCode",
       "message": "Workflow error: Workflow panicked: intentional child failure",
-      "retryable": false
+      "retryable": true
     },
     "query_responses": [],
     "restart_fresh": null,
