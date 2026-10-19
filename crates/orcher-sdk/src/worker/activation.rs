@@ -6,7 +6,8 @@
 //! [`WorkflowContext`], runs the workflow's code, and answers with a
 //! [`RunActivationResult`]: every durable call the code made, in issue order,
 //! those answered from history marked satisfied, with the queries and
-//! updates answered.
+//! updates answered. Code that fails answers its failure with the same
+//! calls, made before it failed.
 
 use std::collections::HashMap;
 use std::time::Duration;
@@ -261,7 +262,8 @@ fn task_failure_code(code: i32, end: i32) -> crate::error::TaskFailureCode {
 }
 
 /// The answer to an activation: what the workflow's code produced, as the
-/// kernel protocol's commands.
+/// kernel protocol's commands, or its failure with the calls it made before
+/// failing.
 pub(crate) fn answer(
     activation_id: Vec<u8>,
     result: ExecutionResult,
@@ -302,7 +304,19 @@ pub(crate) fn answer(
         })
         .collect();
 
+    // The calls the code made before it failed, when the result says which
+    // steps it reached: sdk-core holds them to history as it holds a
+    // completing activation's. Unset, the failure is not checked.
+    let mut calls_before_failure = None;
     let outcome = if !result.successful {
+        if result.reached_steps.is_some() {
+            calls_before_failure = commands(&result.commands, reached)
+                .map(|commands| Commands {
+                    commands,
+                    ..Default::default()
+                })
+                .ok();
+        }
         let error = result.error.clone().unwrap_or_else(|| {
             orcher_sdk_core::bridge::ExecutionError::workflow_error(
                 "the workflow failed".to_string(),
@@ -339,6 +353,7 @@ pub(crate) fn answer(
         outcome: Some(outcome),
         queries,
         updates,
+        calls_before_failure,
         ..Default::default()
     }
 }
@@ -654,6 +669,63 @@ mod tests {
             retry_policy: None,
             headers: vec![],
         })
+    }
+
+    fn failed_with(
+        commands: Vec<BridgeCommand>,
+        reached_steps: Option<&[&str]>,
+    ) -> ExecutionResult {
+        let mut result = ExecutionResult::failed(
+            "run-1".into(),
+            orcher_sdk_core::bridge::ExecutionError::workflow_error("out of stock".into(), false),
+        );
+        result.commands = commands;
+        if let Some(steps) = reached_steps {
+            result.set_reached_steps(steps.iter().map(|s| s.to_string()).collect());
+        }
+        result
+    }
+
+    /// A failure carries the calls made before it, answered from history or
+    /// not, as a completing activation carries its calls.
+    #[test]
+    fn a_failure_carries_the_calls_made_before_it() {
+        let answer = answer(
+            vec![7],
+            failed_with(vec![task(1, "ship_1")], Some(&["charge_0", "ship_1"])),
+            vec![
+                reached(StepKind::Task, "charge_0"),
+                reached(StepKind::Task, "ship_1"),
+            ],
+        );
+        assert!(matches!(
+            answer.outcome,
+            Some(run_activation_result::Outcome::WorkflowFailed(ref f)) if f.message == "out of stock"
+        ));
+        let calls: Vec<(bool, String)> = answer
+            .calls_before_failure
+            .expect("the calls before the failure")
+            .commands
+            .into_iter()
+            .map(|c| (c.satisfied, c.step_id))
+            .collect();
+        assert_eq!(
+            calls,
+            [
+                (true, "charge_0".to_string()),
+                (false, "ship_1".to_string())
+            ]
+        );
+    }
+
+    /// Code that failed before any call says it made none; a failure that
+    /// cannot say what calls were made (no steps reported) carries none.
+    #[test]
+    fn a_failure_says_when_it_made_no_call_and_carries_none_it_cannot_tell() {
+        let none_made = answer(vec![7], failed_with(vec![], Some(&[])), vec![]);
+        assert_eq!(none_made.calls_before_failure, Some(Commands::default()));
+        let unsaid = answer(vec![7], failed_with(vec![], None), vec![]);
+        assert_eq!(unsaid.calls_before_failure, None);
     }
 
     fn reached(kind: StepKind, id: &str) -> ReachedStep {

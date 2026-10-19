@@ -957,6 +957,7 @@
       "retryable": true
     },
     "query_responses": [],
+    "reached_steps": [],
     "restart_fresh": null,
     "run_id": "98d9e8e6-87d8-46a1-ab75-7ab2d6a9a0b9",
     "successful": false,
@@ -971,6 +972,7 @@
       "retryable": true
     },
     "query_responses": [],
+    "reached_steps": [],
     "restart_fresh": null,
     "run_id": "12d75e29-eac7-4255-90df-073aaf3f73f2",
     "successful": false,

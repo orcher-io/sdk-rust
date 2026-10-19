@@ -618,3 +618,78 @@ async fn a_run_started_under_the_old_default_child_id_replays_to_its_child() {
     assert_eq!(issued_steps(&replay.commands), Vec::<Issued>::new());
     assert_eq!(completion(&replay), Some(output));
 }
+
+/// Charges, then fails, or (`skip_charge`) fails before any call.
+fn charge_then_fail(skip_charge: bool) -> WorkflowHandlerFn {
+    Arc::new(move |ctx: WorkflowContext, _input| {
+        Box::pin(async move {
+            if !skip_charge {
+                let _: String = ctx.execute_task_by_name("charge", 1).await?;
+            }
+            let _: u32 = ctx.execute("count", || async { Ok(3) }).await?;
+            Err(crate::Error::Other("out of stock".into()))
+        })
+    })
+}
+
+/// Code that fails after leaving a step its journal recorded behind no
+/// longer replays the run, and is held like code that completes having left
+/// one behind; code that fails having reached every recorded step fails the
+/// run. The failure carries the calls made before it, so sdk-core can tell
+/// the two apart, and none of them is sent.
+#[tokio::test]
+async fn a_failure_that_left_a_recorded_step_behind_is_held() {
+    let mut engine = FakeEngine::new();
+    let first = activate(&runtime_with(charge_then_fail(false)).await, &engine).await;
+    engine.apply(&first.commands);
+
+    let genuine = answer(
+        &runtime_with(charge_then_fail(false)).await,
+        engine.activation(),
+    )
+    .await;
+    assert!(!genuine.successful);
+    assert!(genuine.commands.is_empty(), "{:?}", genuine.commands);
+    assert_eq!(
+        genuine.reached_steps.as_deref(),
+        Some(&["charge_0".to_string()][..])
+    );
+    let violations = Replayer::check_activation(&engine.journal, &genuine);
+    assert!(violations.is_empty(), "{violations:?}");
+    // The calls themselves: the task answered from history, the closure's
+    // value a new call.
+    let activation = orcher_sdk_core::kernel::resolve(&engine.activation(), "default");
+    let calls = runtime_with(charge_then_fail(false))
+        .await
+        .run_activation(activation)
+        .await
+        .calls_before_failure
+        .expect("the calls before the failure")
+        .commands;
+    let kinds: Vec<(bool, &str)> = calls
+        .iter()
+        .map(|c| match &c.what {
+            Some(orcher_sdk_core::proto::kernel::v1::command::What::RunTask(_)) => {
+                (c.satisfied, "task")
+            }
+            Some(orcher_sdk_core::proto::kernel::v1::command::What::RecordValue(_)) => {
+                (c.satisfied, "value")
+            }
+            _ => (c.satisfied, "other"),
+        })
+        .collect();
+    assert_eq!(kinds, [(false, "value"), (true, "task")]);
+
+    let changed = answer(
+        &runtime_with(charge_then_fail(true)).await,
+        engine.activation(),
+    )
+    .await;
+    assert!(!changed.successful);
+    assert_eq!(changed.reached_steps, Some(vec![]));
+    let violations = Replayer::check_activation(&engine.journal, &changed);
+    let [violation] = violations.as_slice() else {
+        panic!("expected one violation, got {violations:?}");
+    };
+    assert_eq!(violation.step_id.as_deref(), Some("charge_0"));
+}

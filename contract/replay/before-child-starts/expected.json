@@ -533,6 +533,7 @@
       "retryable": true
     },
     "query_responses": [],
+    "reached_steps": [],
     "restart_fresh": null,
     "run_id": "13d80797-0b09-4f7e-8384-b3484f9d7f7a",
     "successful": false,
@@ -1242,6 +1243,7 @@
       "retryable": true
     },
     "query_responses": [],
+    "reached_steps": [],
     "restart_fresh": null,
     "run_id": "5fdebb0d-6a41-43b5-af3f-24c4162340c4",
     "successful": false,
