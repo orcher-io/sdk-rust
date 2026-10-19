@@ -66,7 +66,11 @@ use std::collections::VecDeque;
 ///
 /// When a step run through [`SagaStepBuilder::execute`] fails, every
 /// compensation registered before it runs in reverse order (last in, first
-/// out). A failing compensation does not stop the others from running.
+/// out). A failing compensation does not stop the others from running, and is
+/// never silent: once all have run, the failure is returned as
+/// [`WorkflowError::CompensationFailed`].
+///
+/// [`WorkflowError::CompensationFailed`]: crate::error::WorkflowError::CompensationFailed
 ///
 /// ## Running steps with the builder
 /// ```rust
@@ -280,10 +284,13 @@ impl Saga {
     ///
     /// # Errors
     ///
-    /// If any compensation fails, the others still run and the first failure is
-    /// returned as a state error. A suspension (a compensation task being
-    /// scheduled) is returned unchanged so the runtime can schedule it; on
-    /// replay, finished compensations return their journaled results.
+    /// If any compensation fails, the others still run, and then
+    /// [`WorkflowError::CompensationFailed`] is returned, naming the failed
+    /// compensations and the first failure. A suspension (a compensation task
+    /// being scheduled) is returned unchanged so the runtime can schedule it;
+    /// on replay, finished compensations return their journaled results.
+    ///
+    /// [`WorkflowError::CompensationFailed`]: crate::error::WorkflowError::CompensationFailed
     pub async fn compensate(&mut self, ctx: &WorkflowContext) -> Result<()> {
         if self.completed {
             tracing::warn!("Saga already completed, skipping compensation");
@@ -303,8 +310,8 @@ impl Saga {
         );
 
         let mut first_error: Option<Error> = None;
+        let mut failed: Vec<String> = Vec::new();
         let mut successful_compensations = 0;
-        let mut failed_compensations = 0;
 
         while let Some(entry) = self.compensations.pop_back() {
             tracing::info!(
@@ -338,7 +345,7 @@ impl Saga {
                 // and the loop moves on. It must not count as a failure.
                 Err(e) if e.is_suspend() => return Err(e),
                 Err(e) => {
-                    failed_compensations += 1;
+                    failed.push(entry.compensation_task.to_string());
                     tracing::error!(
                         step = %entry.step_number,
                         task = %entry.compensation_task,
@@ -356,16 +363,19 @@ impl Saga {
 
         tracing::info!(
             successful = %successful_compensations,
-            failed = %failed_compensations,
+            failed = %failed.len(),
             "Saga compensation complete"
         );
 
-        if let Some(error) = first_error {
-            Err(Error::Workflow(crate::error::WorkflowError::StateError(
-                format!("Saga compensation failed: {}", error),
-            )))
-        } else {
-            Ok(())
+        match first_error {
+            Some(error) => Err(Error::Workflow(
+                crate::error::WorkflowError::CompensationFailed {
+                    failed,
+                    reason: error.to_string(),
+                    step_failure: None,
+                },
+            )),
+            None => Ok(()),
         }
     }
 
@@ -460,8 +470,13 @@ where
     ///
     /// If the action fails, no compensation is registered for it, the
     /// compensations of all earlier steps run, and the action's error is
-    /// returned. A suspension (the action or a compensation being scheduled) is
-    /// returned unchanged; it is not treated as a failure.
+    /// returned. If a compensation fails too, all of them still run and
+    /// [`WorkflowError::CompensationFailed`] is returned instead, carrying the
+    /// action's failure in `step_failure`: an undo left half done must not
+    /// read as a clean one. A suspension (the action or a compensation being
+    /// scheduled) is returned unchanged; it is not treated as a failure.
+    ///
+    /// [`WorkflowError::CompensationFailed`]: crate::error::WorkflowError::CompensationFailed
     pub async fn execute<O>(self) -> Result<O>
     where
         O: DeserializeOwned + Send + Sync + 'static,
@@ -503,22 +518,27 @@ where
                     "Saga step failed, starting compensation"
                 );
 
-                if let Err(comp_error) = self.saga.compensate(self.ctx).await {
+                match self.saga.compensate(self.ctx).await {
+                    Ok(()) => Err(e),
                     // A compensation being scheduled surfaces as a suspension, not a
                     // failure. Propagate it so the runtime schedules the compensation and
                     // replays; on replay it returns its journaled result and the next one
                     // runs. Swallowing it would let the workflow finish before the
                     // compensations run.
-                    if comp_error.is_suspend() {
-                        return Err(comp_error);
-                    }
-                    tracing::error!(
-                        compensation_error = %comp_error,
-                        "Saga compensation encountered errors"
-                    );
+                    Err(comp_error) if comp_error.is_suspend() => Err(comp_error),
+                    Err(Error::Workflow(crate::error::WorkflowError::CompensationFailed {
+                        failed,
+                        reason,
+                        ..
+                    })) => Err(Error::Workflow(
+                        crate::error::WorkflowError::CompensationFailed {
+                            failed,
+                            reason,
+                            step_failure: Some(e.to_string()),
+                        },
+                    )),
+                    Err(comp_error) => Err(comp_error),
                 }
-
-                Err(e)
             }
         }
     }

@@ -95,6 +95,101 @@ async fn a_saga_compensates_when_a_mocked_step_fails() {
     assert_eq!(released.load(Ordering::SeqCst), 1);
 }
 
+/// A compensation that fails does not stop the ones after it, and the
+/// workflow is told: the failed step's error comes back as a compensation
+/// failure that still carries it.
+#[tokio::test]
+async fn a_failed_compensation_is_reported_after_the_rest_run() {
+    let mocks = Arc::new(RwLock::new(MockRegistry::new()));
+    mock(&mocks, "reserve").returns("r_1");
+    mock(&mocks, "charge").returns("c_1");
+    mock(&mocks, "ship").fails_with("carrier refused");
+    mock(&mocks, "refund").fails_with("refund declined");
+    let released = Arc::new(AtomicUsize::new(0));
+    let counter = released.clone();
+    mock(&mocks, "release").with_fn(move |_input| {
+        counter.fetch_add(1, Ordering::SeqCst);
+        Ok(serde_json::to_vec(&true).unwrap())
+    });
+
+    let checkout = |ctx: WorkflowContext, order: String| async move {
+        let mut saga = Saga::new();
+        let _: String = saga
+            .add_step(&ctx, "reserve", order.clone())
+            .with_compensation("release")
+            .execute()
+            .await?;
+        let _: String = saga
+            .add_step(&ctx, "charge", order.clone())
+            .with_compensation("refund")
+            .execute()
+            .await?;
+        let _: String = saga.add_step(&ctx, "ship", order).execute().await?;
+        saga.commit();
+        Ok("done".to_string())
+    };
+
+    let result: Result<String> = TestWorkflowExecutor::new(mocks.clone())
+        .execute_workflow(checkout, execution(), "order-1".to_string())
+        .await;
+
+    match result {
+        Err(Error::Workflow(WorkflowError::CompensationFailed {
+            failed,
+            reason,
+            step_failure,
+            ..
+        })) => {
+            assert_eq!(failed, ["refund"]);
+            assert!(reason.contains("refund declined"), "{reason}");
+            let step_failure = step_failure.expect("the step's failure is kept");
+            assert!(step_failure.contains("carrier refused"), "{step_failure}");
+        }
+        other => panic!("expected a compensation failure, got {other:?}"),
+    }
+    // The failed refund did not stop the release.
+    assert_eq!(released.load(Ordering::SeqCst), 1);
+}
+
+/// Compensating a saga by hand reports a failed compensation too.
+#[tokio::test]
+async fn compensating_by_hand_reports_a_failed_compensation() {
+    let mocks = Arc::new(RwLock::new(MockRegistry::new()));
+    mock(&mocks, "reserve").returns("r_1");
+    mock(&mocks, "charge").returns("c_1");
+    mock(&mocks, "refund").fails_with("refund declined");
+    mock(&mocks, "release").returns(true);
+
+    let checkout = |ctx: WorkflowContext, order: String| async move {
+        let mut saga = Saga::new();
+        let _: String = saga
+            .add_step(&ctx, "reserve", order.clone())
+            .with_compensation("release")
+            .execute()
+            .await?;
+        let _: String = saga
+            .add_step(&ctx, "charge", order)
+            .with_compensation("refund")
+            .execute()
+            .await?;
+        saga.compensate(&ctx).await?;
+        Ok("compensated".to_string())
+    };
+
+    let result: Result<String> = TestWorkflowExecutor::new(mocks.clone())
+        .execute_workflow(checkout, execution(), "order-1".to_string())
+        .await;
+
+    assert!(
+        matches!(
+            result,
+            Err(Error::Workflow(WorkflowError::CompensationFailed { ref failed, step_failure: None, .. }))
+                if failed == &["refund"]
+        ),
+        "{result:?}"
+    );
+}
+
 #[tokio::test]
 async fn a_missing_mock_still_stops_the_run() {
     let mocks = Arc::new(RwLock::new(MockRegistry::new()));
