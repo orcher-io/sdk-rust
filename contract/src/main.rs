@@ -109,6 +109,10 @@ struct Scenario {
     /// an unexpected pass is reported so the flag can be removed.
     #[serde(default)]
     known_gap: Option<String>,
+    /// How long to keep watching a held run, for `kind:
+    /// "non_determinism_held"`, once it has been replayed.
+    #[serde(default)]
+    hold_ms: Option<u64>,
     /// SDKs the gap applies to; absent means all of them. Lets one SDK close
     /// a gap while the shared file keeps it open for the others.
     #[serde(default)]
@@ -138,6 +142,11 @@ struct Expect {
     /// Expected returned result for a completed workflow (ignored for "failed").
     #[serde(default)]
     result: Value,
+    /// Assert the whole result rather than the fields `result` lists: equal
+    /// JSON, with no extra fields. A falsy result is the value under test, and
+    /// a structural match would accept any object for `{}`.
+    #[serde(default)]
+    result_exact: bool,
     /// Expected error code, for `kind: "client_error"`.
     #[serde(default)]
     error_code: Option<String>,
@@ -291,6 +300,11 @@ async fn main() -> Result<()> {
             Some("workflow_id_reuse") => run_workflow_id_reuse_scenario(&client, &args, scenario)
                 .await
                 .map(|()| Outcome::Ran),
+            Some("non_determinism_held") => {
+                run_non_determinism_held_scenario(&client, &args, scenario)
+                    .await
+                    .map(|()| Outcome::Ran)
+            }
             Some("engine_restart") => run_engine_restart_scenario(&client, &args, scenario).await,
             Some("worker_crash") => run_worker_crash_scenario(&client, &args, scenario)
                 .await
@@ -443,7 +457,12 @@ async fn run_scenario(client: &Client, args: &Args, scenario: &Scenario) -> Resu
                 }
             }
 
-            if json_matches(&expect.result, &result) {
+            let matched = if expect.result_exact {
+                expect.result == result
+            } else {
+                json_matches(&expect.result, &result)
+            };
+            if matched {
                 Ok(())
             } else {
                 Err(anyhow!(
@@ -605,6 +624,97 @@ async fn wait_until_parked(key: &str, deadline: Duration) -> bool {
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
     false
+}
+/// Start a workflow whose replay is not deterministic, and check the run is
+/// held rather than carried on.
+///
+/// Once the worker has replayed the workflow (activated it a second time), the
+/// run is watched for `hold_ms` more: it must still be running, and what the
+/// worker observed must match `expect.observed`. The run is terminated after,
+/// pass or fail: held, it would otherwise stay open for good.
+async fn run_non_determinism_held_scenario(
+    client: &Client,
+    args: &Args,
+    scenario: &Scenario,
+) -> Result<()> {
+    let workflow = scenario
+        .workflow
+        .as_deref()
+        .ok_or_else(|| anyhow!("held scenario missing `workflow`"))?;
+    let expect = scenario
+        .expect
+        .as_ref()
+        .ok_or_else(|| anyhow!("held scenario missing `expect`"))?;
+
+    let key = fresh_key("conf");
+    let mut input = scenario.input.clone();
+    if !input.is_object() {
+        input = serde_json::json!({});
+    }
+    input["key"] = Value::String(key.clone());
+
+    let options =
+        StartWorkflowOptions::new(args.task_queue.clone()).with_namespace(args.namespace.clone());
+    let handle = client
+        .start_workflow_with_options(workflow, input, options)
+        .await
+        .with_context(|| format!("starting workflow {workflow}"))?;
+
+    let outcome = async {
+        let activations = || {
+            catalog::ACTIVATIONS
+                .lock()
+                .unwrap()
+                .get(&key)
+                .copied()
+                .unwrap_or(0)
+        };
+        let until = std::time::Instant::now() + Duration::from_secs(args.result_timeout_secs);
+        while activations() < 2 && std::time::Instant::now() < until {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        tokio::time::sleep(Duration::from_millis(scenario.hold_ms.unwrap_or(5_000))).await;
+
+        let status = handle.status().await.context("reading the status")?;
+        let expected_status = match expect.status.as_str() {
+            "running" => WorkflowStatus::Running,
+            other => {
+                return Err(anyhow!(
+                    "unknown expected status '{other}' for a held scenario"
+                ))
+            }
+        };
+        if status != expected_status {
+            let ended = match status {
+                WorkflowStatus::Completed => match handle.result::<Value>().await {
+                    Ok(result) => format!(" with {result}"),
+                    Err(e) => format!(" ({e})"),
+                },
+                _ => String::new(),
+            };
+            return Err(anyhow!(
+                "expected the run held {:?}, it is {status:?}{ended}",
+                expected_status
+            ));
+        }
+        let observed = serde_json::json!({
+            "replayed": activations() >= 2,
+            "child_runs": catalog::CHILD_RUNS.lock().unwrap().get(&key).copied().unwrap_or(0),
+        });
+        if json_matches(&expect.observed, &observed) {
+            Ok(())
+        } else {
+            Err(anyhow!(
+                "observed mismatch\n    expected: {}\n    actual:   {}",
+                expect.observed,
+                observed
+            ))
+        }
+    }
+    .await;
+
+    let _ = handle.terminate("contract: held run checked").await;
+    outcome
 }
 
 /// Numeric upper bounds: every listed field must be present in `actual` and

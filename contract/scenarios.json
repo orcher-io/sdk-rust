@@ -1,5 +1,5 @@
 {
-  "$comment": "Cross-SDK contract scenarios. Language-agnostic contract: every SDK ships a worker implementing the same-named workflow catalog, and each workflow returns a JSON result describing the durable behavior it observed. The harness starts each workflow with `input`, waits for a terminal state, and asserts `expect` (terminal status + returned result). Result matching is structural \u2014 a scenario asserts only the fields it lists, so SDK-specific extras (e.g. Rust exposes a task `attempts` count that Python's TaskError does not) are ignored. Scenarios with `kind: \"actor\"` instead invoke operations on a same-named actor from the catalog: each step fires `parallel` concurrent invocations against a fresh per-run key and asserts every invocation's JSON result against `expect_each`. Keep this file in sync across SDK repos.",
+  "$comment": "Cross-SDK contract scenarios. Language-agnostic contract: every SDK ships a worker implementing the same-named workflow catalog, and each workflow returns a JSON result describing the durable behavior it observed. The harness starts each workflow with `input`, waits for a terminal state, and asserts `expect` (terminal status + returned result). Result matching is structural \u2014 a scenario asserts only the fields it lists, so SDK-specific extras (e.g. Rust exposes a task `attempts` count that Python's TaskError does not) are ignored. A scenario whose `expect.result_exact` is true asserts the whole result instead: equal JSON with no extra fields, where a boolean never equals a number. Scenarios with `kind: \"actor\"` instead invoke operations on a same-named actor from the catalog: each step fires `parallel` concurrent invocations against a fresh per-run key and asserts every invocation's JSON result against `expect_each`. Keep this file in sync across SDK repos.",
   "version": 1,
   "scenarios": [
     {
@@ -484,6 +484,250 @@
           "task_type": "exit_if_worker_doomed_once",
           "timed_out": true
         }
+      }
+    },
+    {
+      "id": "saga-step-failure-surfaces-compensation-failure",
+      "description": "A saga completes two steps, each with a compensation, and its third step fails. The compensations run in reverse order: the later one fails, and the earlier one still runs. The failure the workflow catches must say that a compensation failed, and still carry the failure of the step that started the compensating. Before, every SDK logged the failed compensation and raised only the step's failure, so a run whose undo was left half done read the same as one cleanly compensated.",
+      "workflow": "saga_step_failure",
+      "input": {},
+      "expect": {
+        "status": "completed",
+        "result": {
+          "compensation_failed": true,
+          "failed_compensations": 1,
+          "step_failure_kept": true,
+          "compensations_ran": [
+            "saga_refund",
+            "saga_release"
+          ]
+        },
+        "result_exact": true
+      }
+    },
+    {
+      "id": "saga-compensate-surfaces-compensation-failure",
+      "description": "A saga completes two steps, each with a compensation, and the workflow then compensates it itself. The later compensation fails and the earlier one still runs; compensating must then fail, saying that a compensation failed. The SDKs disagreed here: one raised the failure, the other two logged it and returned as if the saga had been undone.",
+      "workflow": "saga_compensate_failure",
+      "input": {},
+      "expect": {
+        "status": "completed",
+        "result": {
+          "compensation_failed": true,
+          "failed_compensations": 1,
+          "compensations_ran": [
+            "saga_refund",
+            "saga_release"
+          ]
+        },
+        "result_exact": true
+      }
+    },
+    {
+      "id": "child-id-changed-on-replay-is-held",
+      "kind": "non_determinism_held",
+      "description": "A workflow names its child workflow from a count kept in the worker process, so replaying it names the child differently from the child its journal records. The replay must be found non-deterministic and held: the run stays running, its journal unchanged, and no second child workflow starts. The harness waits until the workflow has been replayed, then for `hold_ms` more, reads the run's status and what the worker observed (keyed by the `key` it passes as input), and then terminates the run. A worker that let the replay through would start a child under the new id, and the child would run twice.",
+      "workflow": "child_id_changes_on_replay",
+      "input": {},
+      "hold_ms": 5000,
+      "expect": {
+        "status": "running",
+        "observed": {
+          "replayed": true,
+          "child_runs": 1
+        }
+      }
+    },
+    {
+      "id": "falsy-task-results",
+      "description": "A workflow runs a task six times, asking it for 0, false, an empty string, null, an empty list and an empty object, and returns what each run returned, in order. Each must reach the workflow as that value exactly: not dropped, not replaced by a default, and not read as another of the six.",
+      "workflow": "falsy_task_results",
+      "input": {},
+      "expect": {
+        "status": "completed",
+        "result": {
+          "values": [
+            0,
+            false,
+            "",
+            null,
+            [],
+            {}
+          ]
+        },
+        "result_exact": true
+      }
+    },
+    {
+      "id": "falsy-workflow-result-zero",
+      "description": "A workflow returns 0 as its whole result; the caller must receive 0.",
+      "workflow": "falsy_result",
+      "input": {
+        "kind": "zero"
+      },
+      "expect": {
+        "status": "completed",
+        "result": 0,
+        "result_exact": true
+      }
+    },
+    {
+      "id": "falsy-workflow-result-false",
+      "description": "A workflow returns false as its whole result; the caller must receive false.",
+      "workflow": "falsy_result",
+      "input": {
+        "kind": "false"
+      },
+      "expect": {
+        "status": "completed",
+        "result": false,
+        "result_exact": true
+      }
+    },
+    {
+      "id": "falsy-workflow-result-empty-string",
+      "description": "A workflow returns an empty string as its whole result; the caller must receive an empty string.",
+      "workflow": "falsy_result",
+      "input": {
+        "kind": "empty_string"
+      },
+      "expect": {
+        "status": "completed",
+        "result": "",
+        "result_exact": true
+      }
+    },
+    {
+      "id": "falsy-workflow-result-null",
+      "description": "A workflow returns null as its whole result; the caller must receive null, as a completed result rather than an error.",
+      "workflow": "falsy_result",
+      "input": {
+        "kind": "null"
+      },
+      "expect": {
+        "status": "completed",
+        "result": null,
+        "result_exact": true
+      }
+    },
+    {
+      "id": "falsy-workflow-result-empty-list",
+      "description": "A workflow returns an empty list as its whole result; the caller must receive an empty list.",
+      "workflow": "falsy_result",
+      "input": {
+        "kind": "empty_list"
+      },
+      "expect": {
+        "status": "completed",
+        "result": [],
+        "result_exact": true
+      }
+    },
+    {
+      "id": "falsy-workflow-result-empty-object",
+      "description": "A workflow returns an empty object as its whole result; the caller must receive an empty object.",
+      "workflow": "falsy_result",
+      "input": {
+        "kind": "empty_object"
+      },
+      "expect": {
+        "status": "completed",
+        "result": {},
+        "result_exact": true
+      }
+    },
+    {
+      "id": "list-input-received-whole",
+      "description": "A workflow started with a list takes it as its one argument, and passes it to a task that takes a list as its one argument and returns it. Both must receive the list exactly: whole, not spread into several arguments or cut to its first item, with its falsy items intact.",
+      "workflow": "list_input",
+      "input": [
+        "a",
+        1,
+        0,
+        false,
+        "",
+        null,
+        [
+          2
+        ],
+        {
+          "k": "v"
+        },
+        {}
+      ],
+      "expect": {
+        "status": "completed",
+        "result": {
+          "workflow_received": [
+            "a",
+            1,
+            0,
+            false,
+            "",
+            null,
+            [
+              2
+            ],
+            {
+              "k": "v"
+            },
+            {}
+          ],
+          "task_received": [
+            "a",
+            1,
+            0,
+            false,
+            "",
+            null,
+            [
+              2
+            ],
+            {
+              "k": "v"
+            },
+            {}
+          ]
+        },
+        "result_exact": true
+      }
+    },
+    {
+      "id": "several-arguments-received-exactly",
+      "description": "A workflow takes several arguments, started with an object naming each of them, and passes them on to a task that takes several arguments, as the SDK's language passes several values. Both must receive every argument exactly, the falsy ones included, and report them by name.",
+      "workflow": "several_arguments",
+      "input": {
+        "name": "widget",
+        "count": 0,
+        "tags": [
+          "a",
+          "b"
+        ],
+        "gift": false
+      },
+      "expect": {
+        "status": "completed",
+        "result": {
+          "workflow_received": {
+            "name": "widget",
+            "count": 0,
+            "tags": [
+              "a",
+              "b"
+            ],
+            "gift": false
+          },
+          "task_received": {
+            "name": "widget",
+            "count": 0,
+            "tags": [
+              "a",
+              "b"
+            ],
+            "gift": false
+          }
+        },
+        "result_exact": true
       }
     }
   ]

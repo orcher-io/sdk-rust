@@ -61,7 +61,8 @@ cargo run -p orcher-contract -- --server-url http://localhost:50051
    result.
 
 Result matching is structural: a scenario asserts only the fields it lists, and
-extra fields in the actual result are ignored.
+extra fields in the actual result are ignored. A scenario with `result_exact`
+set asserts the whole result instead: equal JSON, with no extra fields.
 
 ## Replay check
 

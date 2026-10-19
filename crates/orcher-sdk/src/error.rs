@@ -460,6 +460,26 @@ pub enum WorkflowError {
         reason: String,
     },
 
+    /// A saga's compensations ran, and at least one of them failed.
+    ///
+    /// Every compensation still runs when one fails; this reports the ones
+    /// that failed once all have run. Returned by [`Saga::compensate`], and by
+    /// a failed saga step whose compensating failed, which then carries the
+    /// step's own failure in `step_failure`.
+    ///
+    /// [`Saga::compensate`]: crate::workflow::Saga::compensate
+    #[error("{}", compensation_failed_message(failed, reason, step_failure.as_deref()))]
+    #[non_exhaustive]
+    CompensationFailed {
+        /// The compensation tasks that failed, in the order they ran.
+        failed: Vec<String>,
+        /// The first failed compensation's error.
+        reason: String,
+        /// The failure of the saga step that started the compensating, or
+        /// `None` when the workflow compensated the saga itself.
+        step_failure: Option<String>,
+    },
+
     /// Invalid workflow state
     #[error("Invalid workflow state: {0}")]
     InvalidState(
@@ -513,6 +533,29 @@ pub enum WorkflowError {
         /// List of pending operation IDs (task IDs, timer IDs, etc.)
         pending_operations: Vec<String>,
     },
+}
+
+/// The message of [`WorkflowError::CompensationFailed`].
+fn compensation_failed_message(
+    failed: &[String],
+    reason: &str,
+    step_failure: Option<&str>,
+) -> String {
+    let first = failed.first().map(String::as_str).unwrap_or("unknown");
+    let mut message = if failed.len() > 1 {
+        format!(
+            "Saga compensation failed: {} compensations failed, the first '{first}': {reason}",
+            failed.len()
+        )
+    } else {
+        format!("Saga compensation failed: compensation '{first}' failed: {reason}")
+    };
+    if let Some(step) = step_failure {
+        message.push_str(&format!(
+            "; the compensating followed a failed step: {step}"
+        ));
+    }
+    message
 }
 
 /// Errors that can occur during task execution.
@@ -1137,6 +1180,7 @@ impl Error {
                 WorkflowError::NonDeterministic(_) => ErrorCode::WorkflowNonDeterministic,
                 WorkflowError::EventError { .. } => ErrorCode::WorkflowFailed,
                 WorkflowError::QueryError { .. } => ErrorCode::WorkflowFailed,
+                WorkflowError::CompensationFailed { .. } => ErrorCode::WorkflowStateError,
                 WorkflowError::InvalidState(_) => ErrorCode::WorkflowStateError,
                 WorkflowError::NotFound { .. } => ErrorCode::WorkflowNotFound,
                 WorkflowError::ReplayError(_) => ErrorCode::WorkflowReplayError,

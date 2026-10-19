@@ -1010,3 +1010,335 @@ pub async fn report_attempt(ctx: WorkflowContext, _input: Empty) -> Result<Attem
         attempt: ctx.attempt(),
     })
 }
+
+// ---------------------------------------------------------------------------
+// A saga's failed compensation reaches the workflow.
+// ---------------------------------------------------------------------------
+
+/// The compensations that ran, by workflow, in the order they ran. Kept by the
+/// compensation tasks themselves, which run once each: a task is not run again
+/// on replay.
+static SAGA_RAN: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::HashMap<String, Vec<String>>>,
+> = std::sync::LazyLock::new(Default::default);
+
+fn record_compensation(key: &str, name: &str) {
+    SAGA_RAN
+        .lock()
+        .unwrap()
+        .entry(key.to_string())
+        .or_default()
+        .push(name.to_string());
+}
+
+/// A saga step's input, which its compensation is given too.
+#[derive(Serialize, Deserialize, Clone)]
+pub struct SagaInput {
+    pub key: String,
+}
+
+#[task(retry = 1)]
+pub async fn saga_reserve(_ctx: TaskContext, _input: SagaInput) -> Result<String> {
+    Ok("reserved".to_string())
+}
+
+#[task(retry = 1)]
+pub async fn saga_charge(_ctx: TaskContext, _input: SagaInput) -> Result<String> {
+    Ok("charged".to_string())
+}
+
+/// The step that fails, so the saga compensates.
+#[task(retry = 1)]
+pub async fn saga_ship(_ctx: TaskContext, _input: SagaInput) -> Result<String> {
+    Err(Error::Task(TaskError::execution_failed(
+        "the carrier refused the parcel",
+    )))
+}
+
+/// Undoes `saga_reserve`, and succeeds.
+#[task(retry = 1)]
+pub async fn saga_release(_ctx: TaskContext, input: SagaInput) -> Result<String> {
+    record_compensation(&input.key, "saga_release");
+    Ok("released".to_string())
+}
+
+/// Undoes `saga_charge`, and fails.
+#[task(retry = 1)]
+pub async fn saga_refund(_ctx: TaskContext, input: SagaInput) -> Result<String> {
+    record_compensation(&input.key, "saga_refund");
+    Err(Error::Task(TaskError::execution_failed(
+        "the refund was declined",
+    )))
+}
+
+/// Reports the compensations that ran for a workflow.
+#[task(retry = 1)]
+pub async fn saga_compensations_ran(_ctx: TaskContext, input: SagaInput) -> Result<Vec<String>> {
+    Ok(SAGA_RAN
+        .lock()
+        .unwrap()
+        .get(&input.key)
+        .cloned()
+        .unwrap_or_default())
+}
+
+/// Runs the two steps both saga workflows start with.
+async fn saga_two_steps(
+    ctx: &WorkflowContext,
+    saga: &mut orcher_sdk::workflow::Saga,
+    input: &SagaInput,
+) -> Result<()> {
+    let _: String = saga
+        .add_step(ctx, saga_reserve, input.clone())
+        .with_compensation(saga_release)
+        .execute()
+        .await?;
+    let _: String = saga
+        .add_step(ctx, saga_charge, input.clone())
+        .with_compensation(saga_refund)
+        .execute()
+        .await?;
+    Ok(())
+}
+
+/// Completes two steps with compensations, then runs a step that fails, and
+/// reports the failure the saga raised and the compensations that ran.
+#[workflow(name = "saga_step_failure")]
+pub async fn saga_step_failure(ctx: WorkflowContext, _input: Empty) -> Result<serde_json::Value> {
+    let input = SagaInput {
+        key: ctx.workflow_id().to_string(),
+    };
+    let mut saga = orcher_sdk::workflow::Saga::new();
+    saga_two_steps(&ctx, &mut saga, &input).await?;
+    let outcome: Result<String> = saga
+        .add_step(&ctx, saga_ship, input.clone())
+        .execute()
+        .await;
+    let (compensation_failed, failed_compensations, step_failure_kept) = match outcome {
+        Err(e) if e.is_suspend() => return Err(e),
+        Err(Error::Workflow(WorkflowError::CompensationFailed {
+            failed,
+            step_failure,
+            ..
+        })) => (
+            true,
+            failed.len(),
+            step_failure.is_some_and(|step| step.contains("the carrier refused the parcel")),
+        ),
+        Err(other) => (
+            false,
+            0,
+            other.to_string().contains("the carrier refused the parcel"),
+        ),
+        Ok(_) => (false, 0, false),
+    };
+    let ran: Vec<String> = ctx.execute_task(saga_compensations_ran, input).await?;
+    Ok(serde_json::json!({
+        "compensation_failed": compensation_failed,
+        "failed_compensations": failed_compensations,
+        "step_failure_kept": step_failure_kept,
+        "compensations_ran": ran,
+    }))
+}
+
+/// Completes two steps with compensations, then compensates the saga itself,
+/// and reports what compensating returned and the compensations that ran.
+#[workflow(name = "saga_compensate_failure")]
+pub async fn saga_compensate_failure(
+    ctx: WorkflowContext,
+    _input: Empty,
+) -> Result<serde_json::Value> {
+    let input = SagaInput {
+        key: ctx.workflow_id().to_string(),
+    };
+    let mut saga = orcher_sdk::workflow::Saga::new();
+    saga_two_steps(&ctx, &mut saga, &input).await?;
+    let (compensation_failed, failed_compensations) = match saga.compensate(&ctx).await {
+        Err(e) if e.is_suspend() => return Err(e),
+        Err(Error::Workflow(WorkflowError::CompensationFailed { failed, .. })) => {
+            (true, failed.len())
+        }
+        Err(other) => return Err(other),
+        Ok(()) => (false, 0),
+    };
+    let ran: Vec<String> = ctx.execute_task(saga_compensations_ran, input).await?;
+    Ok(serde_json::json!({
+        "compensation_failed": compensation_failed,
+        "failed_compensations": failed_compensations,
+        "compensations_ran": ran,
+    }))
+}
+
+// ---------------------------------------------------------------------------
+// A child workflow named differently on replay is held, not started again.
+// ---------------------------------------------------------------------------
+
+/// Runs of `counted_child`, by key.
+pub static CHILD_RUNS: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::HashMap<String, u32>>,
+> = std::sync::LazyLock::new(Default::default);
+
+/// A child workflow that counts its runs.
+#[workflow(name = "counted_child")]
+pub async fn counted_child(_ctx: WorkflowContext, input: KeyedInput) -> Result<serde_json::Value> {
+    *CHILD_RUNS.lock().unwrap().entry(input.key).or_insert(0) += 1;
+    Ok(serde_json::json!({ "ran": true }))
+}
+
+/// Names its child after how many times this worker process has run it, which
+/// differs on every replay: deliberately not deterministic.
+#[workflow(name = "child_id_changes_on_replay")]
+pub async fn child_id_changes_on_replay(
+    ctx: WorkflowContext,
+    input: KeyedInput,
+) -> Result<serde_json::Value> {
+    let n = record_activation(&input.key);
+    let options = ChildWorkflowOptions::new().workflow_id(format!("{}-child-{n}", input.key));
+    let child: serde_json::Value = ctx
+        .execute_child_workflow_with_options(
+            "counted_child",
+            KeyedInput {
+                key: input.key.clone(),
+            },
+            options,
+        )
+        .await?;
+    Ok(serde_json::json!({ "child": child }))
+}
+
+// ---------------------------------------------------------------------------
+// Falsy values, list inputs and several arguments arrive exactly.
+// ---------------------------------------------------------------------------
+
+/// Names one of the six falsy values.
+#[derive(Serialize, Deserialize)]
+pub struct KindInput {
+    pub kind: String,
+}
+
+const FALSY_KINDS: [&str; 6] = [
+    "zero",
+    "false",
+    "empty_string",
+    "null",
+    "empty_list",
+    "empty_object",
+];
+
+fn falsy(kind: &str) -> Result<serde_json::Value> {
+    Ok(match kind {
+        "zero" => serde_json::json!(0),
+        "false" => serde_json::json!(false),
+        "empty_string" => serde_json::json!(""),
+        "null" => serde_json::Value::Null,
+        "empty_list" => serde_json::json!([]),
+        "empty_object" => serde_json::json!({}),
+        other => {
+            return Err(Error::Workflow(WorkflowError::StateError(format!(
+                "no falsy value is named {other:?}"
+            ))))
+        }
+    })
+}
+
+/// Returns the falsy value its input names.
+#[task]
+pub async fn falsy_value(_ctx: TaskContext, input: KindInput) -> Result<serde_json::Value> {
+    falsy(&input.kind)
+}
+
+/// Asks a task for each falsy value and returns what came back, in order.
+#[workflow(name = "falsy_task_results")]
+pub async fn falsy_task_results(ctx: WorkflowContext, _input: Empty) -> Result<serde_json::Value> {
+    let mut values = Vec::new();
+    for kind in FALSY_KINDS {
+        let value: serde_json::Value = ctx
+            .execute_task(
+                falsy_value,
+                KindInput {
+                    kind: kind.to_string(),
+                },
+            )
+            .await?;
+        values.push(value);
+    }
+    Ok(serde_json::json!({ "values": values }))
+}
+
+/// Returns the falsy value its input names as its whole result.
+#[workflow(name = "falsy_result")]
+pub async fn falsy_result(_ctx: WorkflowContext, input: KindInput) -> Result<serde_json::Value> {
+    falsy(&input.kind)
+}
+
+/// Takes a list as its one input and returns it.
+#[task]
+pub async fn list_task(
+    _ctx: TaskContext,
+    items: Vec<serde_json::Value>,
+) -> Result<Vec<serde_json::Value>> {
+    Ok(items)
+}
+
+/// Takes a list as its one input, passes it to a task that takes a list, and
+/// reports what each received.
+#[workflow(name = "list_input")]
+pub async fn list_input(
+    ctx: WorkflowContext,
+    items: Vec<serde_json::Value>,
+) -> Result<serde_json::Value> {
+    let task_received: Vec<serde_json::Value> = ctx.execute_task(list_task, items.clone()).await?;
+    Ok(serde_json::json!({
+        "workflow_received": items,
+        "task_received": task_received,
+    }))
+}
+
+/// Several arguments, by name.
+#[derive(Serialize, Deserialize, Clone)]
+pub struct SeveralArguments {
+    pub name: String,
+    pub count: i64,
+    pub tags: Vec<String>,
+    pub gift: bool,
+}
+
+/// Takes several values as a tuple, which travels as a list, and reports them
+/// by name.
+#[task]
+pub async fn several_arguments_task(
+    _ctx: TaskContext,
+    args: (String, i64, Vec<String>, bool),
+) -> Result<SeveralArguments> {
+    let (name, count, tags, gift) = args;
+    Ok(SeveralArguments {
+        name,
+        count,
+        tags,
+        gift,
+    })
+}
+
+/// Takes several arguments by name, passes them on to a task that takes
+/// several values, and reports what each received.
+#[workflow(name = "several_arguments")]
+pub async fn several_arguments(
+    ctx: WorkflowContext,
+    input: SeveralArguments,
+) -> Result<serde_json::Value> {
+    let task_received: SeveralArguments = ctx
+        .execute_task(
+            several_arguments_task,
+            (
+                input.name.clone(),
+                input.count,
+                input.tags.clone(),
+                input.gift,
+            ),
+        )
+        .await?;
+    Ok(serde_json::json!({
+        "workflow_received": input,
+        "task_received": task_received,
+    }))
+}
