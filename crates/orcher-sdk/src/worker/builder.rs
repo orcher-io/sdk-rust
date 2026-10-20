@@ -511,6 +511,7 @@ impl WorkerBuilder {
             shutdown_tx,
             started_at: std::time::Instant::now(),
             interceptor_chain: Arc::new(self.interceptor_chain),
+            host: std::sync::Mutex::new(None),
         })
     }
 }
@@ -556,6 +557,17 @@ mod tests {
             .expect("builds");
         let core = worker.core_tls().expect("TLS configured");
         assert_eq!(core.domain_name.as_deref(), Some("orcher.internal"));
+    }
+
+    #[tokio::test]
+    async fn a_worker_that_never_ran_has_no_measurements() {
+        let worker = WorkerBuilder::new()
+            .server_url("http://localhost:50051")
+            .task_queue("q")
+            .build()
+            .await
+            .expect("builds");
+        assert!(worker.wire_metrics().is_none());
     }
 
     #[tokio::test]

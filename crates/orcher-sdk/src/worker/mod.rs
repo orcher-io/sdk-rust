@@ -65,6 +65,7 @@ use crate::interceptor::InterceptorChain;
 
 use crate::error::{Error, Result};
 
+use orcher_sdk_core::observability::WireMetricsSnapshot;
 use orcher_sdk_core::proto::host::v1::{actor_result, ActorMode, ActorOperation, ActorResult};
 use orcher_sdk_core::proto::kernel::v1::{run_activation_result, Payload as KernelPayload};
 use orcher_sdk_host::{Host, HostConfig, Registrations};
@@ -152,6 +153,10 @@ pub struct Worker {
 
     /// Hooks run around every execution, for logging, metrics and tracing.
     interceptor_chain: Arc<InterceptorChain>,
+
+    /// The worker host once [`run`](Self::run) has started it, kept after it
+    /// stops so its wire measurements stay readable.
+    host: std::sync::Mutex<Option<Host>>,
 }
 
 /// Configuration for a [`Worker`].
@@ -425,6 +430,18 @@ impl Worker {
         let _ = self.shutdown_tx.send(());
     }
 
+    /// What this worker's calls to the engine have done, by RPC method
+    /// (calls, latency, outcomes, retries), and the work it has handed to its
+    /// code and reported back. The same measurements every language SDK
+    /// reports, to export as you like. `None` until [`run`](Self::run) has
+    /// started the worker; still readable after it stops.
+    pub fn wire_metrics(&self) -> Option<WireMetricsSnapshot> {
+        self.host
+            .lock()
+            .ok()
+            .and_then(|host| host.as_ref().map(Host::wire_metrics))
+    }
+
     /// The TLS settings for sdk-core's drivers: the configured ones, or, for
     /// an `https://` address without any, TLS verified against the system
     /// trust store.
@@ -542,6 +559,10 @@ impl Worker {
                 return Ok(());
             }
         };
+
+        if let Ok(mut held) = self.host.lock() {
+            *held = Some(host.clone());
+        }
 
         let workflows = tokio::spawn(run_workflows(
             host.clone(),

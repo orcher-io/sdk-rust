@@ -112,6 +112,9 @@ pub use orcher_sdk_core::{
 
 pub use orcher_sdk_core::proto::orcher::v1::NamespaceInfo;
 
+/// A worker's wire measurements; see [`Worker::wire_metrics`].
+pub use orcher_sdk_core::observability::{MethodStats, WireMetricsSnapshot, WorkStats};
+
 #[cfg(feature = "auto-register")]
 pub use orcher_sdk_macros::{actor, event, operations, query, task, tasks, update, workflow};
 
