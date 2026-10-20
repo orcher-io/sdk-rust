@@ -241,15 +241,17 @@ async fn main() -> Result<()> {
 
     // Start the worker in the background. The catalog registers itself through
     // the macros' auto-registration.
-    let worker_args = args.clone();
-    let worker_handle = tokio::spawn(async move {
-        let worker = Worker::builder()
-            .server_url(&worker_args.server_url)
-            .task_queue(&worker_args.task_queue)
-            .namespace(&worker_args.namespace)
+    let worker = std::sync::Arc::new(
+        Worker::builder()
+            .server_url(&args.server_url)
+            .task_queue(&args.task_queue)
+            .namespace(&args.namespace)
             .build()
-            .await?;
-        worker.run().await
+            .await?,
+    );
+    let worker_handle = tokio::spawn({
+        let worker = std::sync::Arc::clone(&worker);
+        async move { worker.run().await }
     });
 
     // Give the worker a moment to register and start polling.
@@ -343,6 +345,15 @@ async fn main() -> Result<()> {
                 println!("  FAIL  {} ({label}): {e:#}", scenario.id);
                 failed += 1;
             }
+        }
+    }
+
+    // The worker measured its own calls to the engine and the work it ran.
+    match wire_metrics_check(&worker) {
+        Ok(()) => println!("  PASS  wire metrics"),
+        Err(why) => {
+            println!("  FAIL  wire metrics: {why}");
+            failed += 1;
         }
     }
 
@@ -1312,4 +1323,27 @@ fn json_matches(expected: &Value, actual: &Value) -> bool {
         }
         _ => expected == actual,
     }
+}
+
+/// What the suite's worker should have measured once the scenarios ran: polls
+/// and completions on the wire, and the activations and tasks it handled.
+fn wire_metrics_check(worker: &Worker) -> std::result::Result<(), String> {
+    let wire = worker
+        .wire_metrics()
+        .ok_or("no measurements: the worker never started")?;
+    for method in [
+        "/orcher.v1.ExecutionService/PollWorkflowExecution",
+        "/orcher.v1.ExecutionService/PollTaskExecution",
+        "/orcher.v1.ExecutionService/CompleteWorkflowExecution",
+        "/orcher.v1.ExecutionService/CompleteTaskExecution",
+    ] {
+        let calls = wire.methods.get(method).map_or(0, |stats| stats.calls);
+        if calls == 0 {
+            return Err(format!("no calls of {method}"));
+        }
+    }
+    if wire.work.activations == 0 || wire.work.tasks == 0 {
+        return Err(format!("no work counted: {:?}", wire.work));
+    }
+    Ok(())
 }
