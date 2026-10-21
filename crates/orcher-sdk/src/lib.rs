@@ -105,6 +105,10 @@ pub use task::{Task, TaskContext};
 pub use worker::{HealthReport, HealthStatus, RuntimeStats, Worker, WorkerBuilder};
 pub use workflow::{Workflow, WorkflowContext};
 
+// These are orcher-sdk-core's (and orcher-proto's) own types, so a release
+// that moves to a newer orcher-sdk-core is a minor release of this crate: a
+// crate that also depends on orcher-sdk-core or orcher-proto must move to
+// the same versions.
 pub use orcher_sdk_core::{
     ListWorkflowsOptions, ListWorkflowsSortOrder, SearchWorkflowsOptions,
     WorkflowExecutionDescription, WorkflowExecutionInfo, WorkflowListPage, WorkflowStatus,
