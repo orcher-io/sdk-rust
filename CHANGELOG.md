@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.12.0](https://github.com/orcher-io/sdk-rust/compare/v0.11.4...v0.12.0) (2026-10-21)
+
+
+### Features
+
+* expose the worker's measurements of the engine wire and its work ([#79](https://github.com/orcher-io/sdk-rust/issues/79)) ([1d94525](https://github.com/orcher-io/sdk-rust/commit/1d945250fb4310ac1b976708e703e83cdcabae59))
+* move to sdk-core 0.19 ([#81](https://github.com/orcher-io/sdk-rust/issues/81)) ([bf06e51](https://github.com/orcher-io/sdk-rust/commit/bf06e51b7c7fa61ee0d347f7965abf843475a5e3))
+
+
+### Documentation
+
+* say a move to a newer orcher-sdk-core is a minor release ([#82](https://github.com/orcher-io/sdk-rust/issues/82)) ([a3d1acb](https://github.com/orcher-io/sdk-rust/commit/a3d1acba0429deea7a08f4d94e19416392b19374))
+
 ## [0.11.4](https://github.com/orcher-io/sdk-rust/compare/v0.11.3...v0.11.4) (2026-10-19)
 
 
