@@ -1331,14 +1331,28 @@ fn wire_metrics_check(worker: &Worker) -> std::result::Result<(), String> {
     let wire = worker
         .wire_metrics()
         .ok_or("no measurements: the worker never started")?;
+    let calls = |method: &str| wire.methods.get(method).map_or(0, |stats| stats.calls);
+    // An engine that hands out several items per poll is polled with the
+    // batch calls; an older one, one item at a time.
+    for (one, several) in [
+        (
+            "/orcher.v1.ExecutionService/PollWorkflowExecution",
+            "/orcher.v1.ExecutionService/PollWorkflowExecutions",
+        ),
+        (
+            "/orcher.v1.ExecutionService/PollTaskExecution",
+            "/orcher.v1.ExecutionService/PollTaskExecutions",
+        ),
+    ] {
+        if calls(one) + calls(several) == 0 {
+            return Err(format!("no calls of {one} or {several}"));
+        }
+    }
     for method in [
-        "/orcher.v1.ExecutionService/PollWorkflowExecution",
-        "/orcher.v1.ExecutionService/PollTaskExecution",
         "/orcher.v1.ExecutionService/CompleteWorkflowExecution",
         "/orcher.v1.ExecutionService/CompleteTaskExecution",
     ] {
-        let calls = wire.methods.get(method).map_or(0, |stats| stats.calls);
-        if calls == 0 {
+        if calls(method) == 0 {
             return Err(format!("no calls of {method}"));
         }
     }
