@@ -432,11 +432,11 @@ where
             Err(e) => {
                 // Record the failure before propagating the error, so
                 // extract_failed_closure_commands can report which step failed.
-                let failure = orcher_sdk_core::proto::orcher::v1::Failure {
+                let failure = orcher_sdk_core::protocol::StepFailure {
                     message: e.to_string(),
+                    stack_trace: String::new(),
                     source: "ClosureExecution".to_string(),
                     failure_type: "ClosureError".to_string(),
-                    ..Default::default()
                 };
                 {
                     let mut state = ctx.state.lock().unwrap();

@@ -10,16 +10,18 @@
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use orcher_sdk_core::bridge::{Command, ExecutionErrorType, ExecutionResult};
-use orcher_sdk_core::poller::WorkflowExecutionTask;
-use orcher_sdk_core::proto::orcher::v1::journal_entry::Attributes;
-use orcher_sdk_core::proto::orcher::v1::{
+use orcher_proto::orcher::v1::journal_entry::Attributes;
+use orcher_proto::orcher::v1::{
     ChildWorkflowExecutionCompletedEventAttributes, ChildWorkflowExecutionStartedEventAttributes,
-    EntryType, JournalEntry, StepCompletedEventAttributes, TaskScheduledEventAttributes,
-    TimerFiredEventAttributes, TimerStartedEventAttributes,
+    EntryType, JournalEntry, PollWorkflowExecutionResponse, StepCompletedEventAttributes,
+    TaskScheduledEventAttributes, TimerFiredEventAttributes, TimerStartedEventAttributes,
     WorkflowExecutionStartedEventAttributes,
 };
-use orcher_sdk_core::Replayer;
+use orcher_sdk_core::kernel::encoded;
+use orcher_sdk_core::proto::kernel::v1::RunActivation;
+use orcher_sdk_core::proto::prost::Message;
+use orcher_sdk_core::protocol::{Command, ExecutionErrorType, ExecutionResult};
+use orcher_sdk_core::DeterminismViolation;
 
 use crate::payload::Payload;
 use crate::worker::registration::WorkflowHandlerFn;
@@ -59,7 +61,7 @@ impl FakeEngine {
         self.clock_ms += ENTRY_GAP_MS;
         self.journal.push(JournalEntry {
             entry_id: self.journal.len() as i64 + 1,
-            timestamp: Some(orcher_sdk_core::proto::prost_types::Timestamp {
+            timestamp: Some(orcher_proto::prost_types::Timestamp {
                 seconds: at / 1000,
                 nanos: ((at % 1000) * 1_000_000) as i32,
             }),
@@ -74,21 +76,20 @@ impl FakeEngine {
         self.journal[index].timestamp.as_ref().unwrap().seconds
     }
 
-    fn activation(&self) -> WorkflowExecutionTask {
-        WorkflowExecutionTask {
-            execution: orcher_sdk_core::WorkflowExecution::new("wf-replay", "run-replay"),
+    /// The next activation, encoded as the engine sends it: what a recorded
+    /// run holds, and what core's replay tools take.
+    fn activation(&self) -> Vec<u8> {
+        PollWorkflowExecutionResponse {
+            workflow_id: "wf-replay".into(),
+            execution_id: "run-replay".into(),
             workflow_type: "under_test".into(),
             task_queue: "replay".into(),
-            input: serde_json::json!(null),
+            input: b"null".to_vec(),
             journal: self.journal.clone(),
-            task_token: Vec::new(),
-            started_event_id: 1,
-            previous_started_event_id: 0,
             attempt: 1,
-            stream_entry_id: None,
-            queries: Vec::new(),
-            updates: Vec::new(),
+            ..Default::default()
         }
+        .encode_to_vec()
     }
 
     /// Journal and resolve what an activation asked for. A task's result is
@@ -195,14 +196,52 @@ fn completion(result: &ExecutionResult) -> Option<serde_json::Value> {
     })
 }
 
+/// The runtime's answer to a recorded activation, with what it goes to the
+/// engine as.
+struct Answered {
+    result: ExecutionResult,
+    recorded: Vec<u8>,
+    answer: Vec<u8>,
+}
+
+impl std::ops::Deref for Answered {
+    type Target = ExecutionResult;
+
+    fn deref(&self) -> &ExecutionResult {
+        &self.result
+    }
+}
+
+impl Answered {
+    /// What core's determinism check, the one the worker runs before it
+    /// sends an answer, finds in this one against the history it answers.
+    fn violations(&self) -> Vec<DeterminismViolation> {
+        encoded::check_recorded(&self.recorded, &self.answer).expect("core checks the answer")
+    }
+}
+
+/// An activation resolved into the kernel protocol, as the worker host hands
+/// it to the language.
+fn resolved(recorded: &[u8]) -> RunActivation {
+    let bytes = encoded::resolve_recorded(recorded, "default").expect("the activation resolves");
+    RunActivation::decode(bytes.as_slice()).expect("a RunActivation")
+}
+
 /// The runtime's answer to an activation, as the worker host hands it over:
-/// the task resolved into the kernel protocol, the answer turned into what
-/// goes to the engine.
-async fn answer(runtime: &ExecutionRuntime, task: WorkflowExecutionTask) -> ExecutionResult {
-    let run_id = task.execution.run_id.clone();
-    let activation = orcher_sdk_core::kernel::resolve(&task, "default");
-    orcher_sdk_core::kernel::execution_result(&run_id, runtime.run_activation(activation).await)
-        .expect("the kernel takes the answer")
+/// the activation resolved into the kernel protocol, the answer turned into
+/// what goes to the engine.
+async fn answer(runtime: &ExecutionRuntime, recorded: Vec<u8>) -> Answered {
+    let answer = runtime
+        .run_activation(resolved(&recorded))
+        .await
+        .encode_to_vec();
+    let result =
+        encoded::execution_result("run-replay", &answer).expect("the kernel takes the answer");
+    Answered {
+        result,
+        recorded,
+        answer,
+    }
 }
 
 /// Run one activation and hold it to what the worker's driver checks: no
@@ -210,7 +249,8 @@ async fn answer(runtime: &ExecutionRuntime, task: WorkflowExecutionTask) -> Exec
 /// recorded step left unreached by an activation that issues new work or ends
 /// the workflow.
 async fn activate(runtime: &ExecutionRuntime, engine: &FakeEngine) -> ExecutionResult {
-    let result = answer(runtime, engine.activation()).await;
+    let answered = answer(runtime, engine.activation()).await;
+    let result = &answered.result;
     if let Some(error) = &result.error {
         assert_ne!(
             error.error_type,
@@ -225,12 +265,12 @@ async fn activate(runtime: &ExecutionRuntime, engine: &FakeEngine) -> ExecutionR
         result.reached_steps.is_some(),
         "the activation does not report the steps it reached"
     );
-    let violations = Replayer::check_activation(&engine.journal, &result);
+    let violations = answered.violations();
     assert!(
         violations.is_empty(),
         "the activation does not replay its journal: {violations:?}"
     );
-    result
+    answered.result
 }
 
 /// Drive a workflow to completion, one activation per journal state. Returns
@@ -523,7 +563,7 @@ async fn a_loop_cut_short_is_refused_where_the_journal_goes_on() {
             ][..]
         )
     );
-    let violations = Replayer::check_activation(&engine.journal, &result);
+    let violations = result.violations();
     let [violation] = violations.as_slice() else {
         panic!("expected one violation, got {violations:?}");
     };
@@ -654,11 +694,11 @@ async fn a_failure_that_left_a_recorded_step_behind_is_held() {
         genuine.reached_steps.as_deref(),
         Some(&["charge_0".to_string()][..])
     );
-    let violations = Replayer::check_activation(&engine.journal, &genuine);
+    let violations = genuine.violations();
     assert!(violations.is_empty(), "{violations:?}");
     // The calls themselves: the task answered from history, the closure's
     // value a new call.
-    let activation = orcher_sdk_core::kernel::resolve(&engine.activation(), "default");
+    let activation = resolved(&engine.activation());
     let calls = runtime_with(charge_then_fail(false))
         .await
         .run_activation(activation)
@@ -687,7 +727,7 @@ async fn a_failure_that_left_a_recorded_step_behind_is_held() {
     .await;
     assert!(!changed.successful);
     assert_eq!(changed.reached_steps, Some(vec![]));
-    let violations = Replayer::check_activation(&engine.journal, &changed);
+    let violations = changed.violations();
     let [violation] = violations.as_slice() else {
         panic!("expected one violation, got {violations:?}");
     };

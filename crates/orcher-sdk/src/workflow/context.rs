@@ -106,7 +106,7 @@ pub(crate) struct ContextState {
     /// Attempts made so far, by step id.
     pub(crate) step_attempt_counts: HashMap<String, i32>,
     /// Recorded failures of closure steps, by step id.
-    pub(crate) pending_task_failures: HashMap<String, orcher_sdk_core::proto::orcher::v1::Failure>,
+    pub(crate) pending_task_failures: HashMap<String, orcher_sdk_core::protocol::StepFailure>,
     pub(crate) cached_input: Option<crate::payload::Payload>,
     /// Task queue override for session-routed tasks, set by `SessionContext` around its
     /// call to `execute_task`.

@@ -1,11 +1,11 @@
 //! Client for calling operations on an actor instance.
 //!
 //! [`ActorInvocationClient`] encodes inputs and decodes outputs as JSON and
-//! delegates the gRPC call to `CoreActorClient`. The typed clients generated
+//! delegates the call to sdk-core's `ActorClient`. The typed clients generated
 //! by `#[operations]` (for example `CounterClient`) wrap it.
 
 use crate::error::Result;
-use orcher_sdk_core::client::CoreActorClient;
+use orcher_sdk_core::client::ActorClient;
 use serde::{de::DeserializeOwned, Serialize};
 use std::sync::Arc;
 
@@ -15,7 +15,7 @@ use std::sync::Arc;
 /// Generated typed clients and `Client::invoke_actor()` are both built on it.
 #[derive(Clone)]
 pub struct ActorInvocationClient {
-    core: Arc<CoreActorClient>,
+    core: Arc<ActorClient>,
     actor_name: String,
     key: String,
 }
@@ -23,7 +23,7 @@ pub struct ActorInvocationClient {
 impl ActorInvocationClient {
     /// Creates a handle to the instance `key` of `actor_name`.
     pub fn new(
-        core: Arc<CoreActorClient>,
+        core: Arc<ActorClient>,
         actor_name: impl Into<String>,
         key: impl Into<String>,
     ) -> Self {

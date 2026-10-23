@@ -23,8 +23,9 @@ use std::process::ExitCode;
 use std::sync::Arc;
 
 use orcher_sdk::worker::{ExecutionRuntime, Registry, RuntimeConfig};
-use orcher_sdk_core::kernel::{execution_result, resolve};
-use orcher_sdk_core::worker::poll::polling::WorkflowExecutionTask;
+use orcher_sdk_core::kernel::encoded;
+use orcher_sdk_core::proto::kernel::v1::RunActivation;
+use orcher_sdk_core::proto::prost::Message;
 use orcher_sdk_core::worker::record::{read_runs, Recorded};
 
 const NAMESPACE: &str = "contract";
@@ -52,16 +53,21 @@ async fn main() -> ExitCode {
         let mut answered = BTreeMap::new();
         for run in read_runs(&corpus).expect("read the recorded runs") {
             for (index, message) in run.messages.iter().enumerate() {
-                let Recorded::Activation(response) = message else {
+                let Recorded::Activation(recorded) = message else {
                     continue;
                 };
                 checked += 1;
                 let key = format!("{}/{}#{index}", run.workflow_id, run.run_id);
-                let task = WorkflowExecutionTask::from(response.clone());
-                let result = match answer(&runtime, task).await {
+                let activation = resolve(recorded);
+                let workflow_type = activation
+                    .run
+                    .as_ref()
+                    .map(|run| run.workflow_type.clone())
+                    .unwrap_or_default();
+                let result = match answer(&runtime, &run.run_id, activation).await {
                     Ok(result) => result,
                     Err(problem) => {
-                        problems.push(format!("{key} ({}): {problem}", response.workflow_type));
+                        problems.push(format!("{key} ({workflow_type}): {problem}"));
                         continue;
                     }
                 };
@@ -69,8 +75,7 @@ async fn main() -> ExitCode {
                     match expected.get(&key) {
                         Some(expected) if *expected == result => {}
                         Some(expected) => problems.push(format!(
-                            "{key} ({}):\n  expected: {expected}\n  answered: {result}",
-                            response.workflow_type
+                            "{key} ({workflow_type}):\n  expected: {expected}\n  answered: {result}"
                         )),
                         None => problems.push(format!("{key}: no expected result")),
                     }
@@ -133,17 +138,23 @@ async fn runtime() -> Arc<ExecutionRuntime> {
     runtime
 }
 
+/// A recorded activation as the worker host hands it to the SDK.
+fn resolve(recorded: &[u8]) -> RunActivation {
+    let bytes = encoded::resolve_recorded(recorded, NAMESPACE).expect("a recorded activation");
+    RunActivation::decode(bytes.as_slice()).expect("a RunActivation")
+}
+
 /// The SDK's answer to a recorded activation, as what goes to the engine.
 async fn answer(
     runtime: &ExecutionRuntime,
-    task: WorkflowExecutionTask,
+    run_id: &str,
+    activation: RunActivation,
 ) -> Result<serde_json::Value, String> {
-    let run_id = task.execution.run_id.clone();
     // Some catalog workflows count their activations in the process; each
     // activation is answered as if it were the run's next.
     catalog::ACTIVATIONS.lock().unwrap().clear();
-    let answer = runtime.run_activation(resolve(&task, NAMESPACE)).await;
-    let result = execution_result(&run_id, answer)
+    let answer = runtime.run_activation(activation).await.encode_to_vec();
+    let result = encoded::execution_result(run_id, &answer)
         .map_err(|error| format!("the kernel refused the answer: {error}"))?;
     Ok(serde_json::to_value(&result).unwrap())
 }

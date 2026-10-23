@@ -387,17 +387,11 @@ impl ActorContextBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::actor::state::ActorStateClientConfig;
 
     #[tokio::test]
-    #[ignore = "Integration test - requires running ORCHER server"]
     async fn test_actor_context_creation() {
         let actor_key = ActorKey::new("ShoppingCart", "user-123");
-        let state_client = Arc::new(
-            ActorStateClient::new(ActorStateClientConfig::default())
-                .await
-                .unwrap(),
-        );
+        let state_client = Arc::new(ActorStateClient::new_mock());
         let execution_id = "exec-456".to_string();
 
         let ctx = ActorContext::new(actor_key.clone(), state_client, execution_id.clone());
@@ -408,14 +402,9 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "Integration test - requires running ORCHER server"]
     async fn test_shared_context_from_actor_context() {
         let actor_key = ActorKey::new("ShoppingCart", "user-123");
-        let state_client = Arc::new(
-            ActorStateClient::new(ActorStateClientConfig::default())
-                .await
-                .unwrap(),
-        );
+        let state_client = Arc::new(ActorStateClient::new_mock());
 
         let ctx = ActorContext::new(actor_key, state_client, "exec-123".to_string());
         let shared_ctx = SharedActorContext::from(ctx);
@@ -425,14 +414,9 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "Integration test - requires running ORCHER server"]
     async fn test_context_builder() {
         let actor_key = ActorKey::new("BankAccount", "account-789");
-        let state_client = Arc::new(
-            ActorStateClient::new(ActorStateClientConfig::default())
-                .await
-                .unwrap(),
-        );
+        let state_client = Arc::new(ActorStateClient::new_mock());
 
         let ctx = ActorContextBuilder::new(actor_key, state_client)
             .execution_id("exec-999")
@@ -446,14 +430,9 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "Integration test - requires running ORCHER server"]
     async fn test_deterministic_uuid() {
         let actor_key = ActorKey::new("ShoppingCart", "user-123");
-        let state_client = Arc::new(
-            ActorStateClient::new(ActorStateClientConfig::default())
-                .await
-                .unwrap(),
-        );
+        let state_client = Arc::new(ActorStateClient::new_mock());
 
         let ctx = ActorContext::new(actor_key, state_client, "exec-123".to_string());
 
@@ -467,14 +446,9 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "Integration test - requires running ORCHER server"]
     async fn test_context_builder_default_execution_id() {
         let actor_key = ActorKey::new("ShoppingCart", "user-123");
-        let state_client = Arc::new(
-            ActorStateClient::new(ActorStateClientConfig::default())
-                .await
-                .unwrap(),
-        );
+        let state_client = Arc::new(ActorStateClient::new_mock());
 
         let ctx = ActorContextBuilder::new(actor_key, state_client).build();
 

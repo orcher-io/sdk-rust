@@ -127,7 +127,7 @@ pub struct RecordStepResultCommand {
     pub result: Vec<u8>,
 
     /// Failure details, set when the step failed.
-    pub failure: Option<orcher_sdk_core::proto::orcher::v1::Failure>,
+    pub failure: Option<orcher_sdk_core::protocol::StepFailure>,
 
     /// How many times the step has run, including this attempt.
     pub execution_attempt: i32,
