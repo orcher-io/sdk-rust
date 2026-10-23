@@ -519,9 +519,11 @@ mod over_the_wire_tests {
     #[ignore = "requires a running orcher server on localhost:50051"]
     async fn a_missing_workflow_is_typed_and_not_retryable_over_the_wire() {
         let core_client = Arc::new(
-            CoreClient::connect("http://localhost:50051")
-                .await
-                .expect("connect to server"),
+            orcher_sdk_core::Connection::lazy(orcher_sdk_core::ConnectOptions::new(
+                "http://localhost:50051",
+            ))
+            .expect("a valid address")
+            .workflow_client(),
         );
         let handle = WorkflowHandle::new_with_namespace(
             core_client,

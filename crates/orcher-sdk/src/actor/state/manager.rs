@@ -468,17 +468,11 @@ impl Clone for ActorStateManager {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::actor::state::ActorStateClientConfig;
 
     #[tokio::test]
-    #[ignore = "Integration test - requires running ORCHER server"]
     async fn test_state_manager_creation() {
         let actor_key = ActorKey::new("ShoppingCart", "user-123");
-        let state_client = Arc::new(
-            ActorStateClient::new(ActorStateClientConfig::default())
-                .await
-                .unwrap(),
-        );
+        let state_client = Arc::new(ActorStateClient::new_mock());
         let execution_id = "exec-456".to_string();
 
         let manager = ActorStateManager::new(actor_key, state_client, execution_id);
@@ -489,14 +483,9 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "Integration test - requires running ORCHER server"]
     async fn test_state_manager_accessors() {
         let actor_key = ActorKey::new("BankAccount", "account-789");
-        let state_client = Arc::new(
-            ActorStateClient::new(ActorStateClientConfig::default())
-                .await
-                .unwrap(),
-        );
+        let state_client = Arc::new(ActorStateClient::new_mock());
 
         let manager =
             ActorStateManager::new(actor_key.clone(), state_client, "exec-999".to_string());
@@ -507,14 +496,9 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "Integration test - requires running ORCHER server"]
     async fn test_state_manager_clone() {
         let actor_key = ActorKey::new("ShoppingCart", "user-123");
-        let state_client = Arc::new(
-            ActorStateClient::new(ActorStateClientConfig::default())
-                .await
-                .unwrap(),
-        );
+        let state_client = Arc::new(ActorStateClient::new_mock());
 
         let manager1 = ActorStateManager::new(actor_key, state_client, "exec-123".to_string());
         let manager2 = manager1.clone();

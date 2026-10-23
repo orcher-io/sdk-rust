@@ -57,7 +57,8 @@
 use crate::error::{Error, Result};
 use crate::workflow::command::RecordStepResultCommand;
 use crate::workflow::WorkflowContext;
-use orcher_sdk_core::proto::orcher::v1::StepType;
+/// The engine's step type for an inline closure (`STEP_TYPE_CLOSURE`).
+const CLOSURE_STEP_TYPE: i32 = 2;
 use std::collections::HashMap;
 
 /// Collects the successful closure results in `ctx` as `RecordStepResult` commands.
@@ -149,7 +150,7 @@ pub fn extract_closure_commands(ctx: &WorkflowContext) -> Result<Vec<RecordStepR
         // closures; failed ones are kept in `pending_task_failures`.
         let command = RecordStepResultCommand {
             step_name: step_id.clone(),
-            step_type: StepType::Closure as i32,
+            step_type: CLOSURE_STEP_TYPE,
             result: result_bytes,
             failure: None,
             execution_attempt,
@@ -214,7 +215,7 @@ pub fn extract_failed_closure_commands(
     ctx: &WorkflowContext,
 ) -> Result<Vec<RecordStepResultCommand>> {
     let (pending_failures, step_attempt_counts): (
-        HashMap<String, orcher_sdk_core::proto::orcher::v1::Failure>,
+        HashMap<String, orcher_sdk_core::protocol::StepFailure>,
         HashMap<String, i32>,
     ) = {
         let state = ctx.state.lock().map_err(|e| {
@@ -243,7 +244,7 @@ pub fn extract_failed_closure_commands(
 
         commands.push(RecordStepResultCommand {
             step_name: step_id,
-            step_type: StepType::Closure as i32,
+            step_type: CLOSURE_STEP_TYPE,
             result: vec![],
             failure: Some(failure),
             execution_attempt,

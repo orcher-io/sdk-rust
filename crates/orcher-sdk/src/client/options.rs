@@ -38,7 +38,7 @@ pub struct ClientConfig {
     ///
     /// The server decodes payloads and stores plain JSON so that they stay
     /// queryable; this is not end-to-end encryption.
-    pub codec_chain: Option<Arc<orcher_sdk_core::codec::CodecChain>>,
+    pub codec_chain: Option<Arc<orcher_sdk_core::payload::codec::CodecChain>>,
 
     /// API key that authenticates with the server (default: None).
     ///
@@ -193,7 +193,7 @@ impl ClientConfig {
     /// Set the codec chain for compression/encryption.
     pub fn with_codec_chain(
         mut self,
-        codec_chain: Arc<orcher_sdk_core::codec::CodecChain>,
+        codec_chain: Arc<orcher_sdk_core::payload::codec::CodecChain>,
     ) -> Self {
         self.codec_chain = Some(codec_chain);
         self
@@ -468,9 +468,9 @@ pub enum WorkflowIdReusePolicy {
 }
 
 impl WorkflowIdReusePolicy {
-    /// Converts to the protobuf enum sent on the wire.
-    pub(crate) fn to_proto(self) -> orcher_sdk_core::proto::orcher::v1::WorkflowIdReusePolicy {
-        use orcher_sdk_core::proto::orcher::v1::WorkflowIdReusePolicy as Proto;
+    /// The same policy as sdk-core names it.
+    pub(crate) fn to_core(self) -> orcher_sdk_core::WorkflowIdReusePolicy {
+        use orcher_sdk_core::WorkflowIdReusePolicy as Proto;
         match self {
             Self::AllowDuplicate => Proto::AllowDuplicate,
             Self::AllowDuplicateFailedOnly => Proto::AllowDuplicateFailedOnly,

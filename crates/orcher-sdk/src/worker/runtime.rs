@@ -14,46 +14,13 @@ use crate::workflow::ReachedStep;
 use crate::workflow::{WorkflowCommand, WorkflowContext};
 use crate::TaskContext;
 
-use orcher_sdk_core::bridge::{
+use orcher_sdk_core::proto::host::v1::{task_outcome, TaskAssignment, TaskOutcome};
+use orcher_sdk_core::proto::kernel::v1::{Failure as KernelFailure, Payload as KernelPayload};
+use orcher_sdk_core::protocol::{
     CancelWorkflowCommand, Command as BridgeCommand, CompleteWorkflowCommand, ExecutionResult,
     FailWorkflowCommand, QueryResponse, QueryResult, ScheduleTaskCommand, StartTimerCommand,
     TaskRetryPolicy as BridgeRetryPolicy, UpdateResponse, UpdateResult, WaitForEventCommand,
 };
-use orcher_sdk_core::poller::{TaskExecutionTask, WorkflowExecutionTask};
-use orcher_sdk_core::proto::host::v1::{task_outcome, TaskAssignment, TaskOutcome};
-use orcher_sdk_core::proto::kernel::v1::{Failure as KernelFailure, Payload as KernelPayload};
-
-/// A workflow task handed to the runtime, with the channel its result goes back on.
-#[derive(Debug)]
-pub struct WorkflowExecutionRequest {
-    /// The workflow task polled from the server.
-    pub task: WorkflowExecutionTask,
-    /// Receives the outcome once the workflow handler has run.
-    pub result_sender: tokio::sync::oneshot::Sender<WorkflowExecutionResponse>,
-}
-
-/// The outcome of a [`WorkflowExecutionRequest`].
-#[derive(Debug)]
-pub struct WorkflowExecutionResponse {
-    /// The commands the workflow produced, or the error that stopped it.
-    pub result: orcher_sdk_core::Result<ExecutionResult>,
-}
-
-/// A task handed to the runtime, with the channel its result goes back on.
-#[derive(Debug)]
-pub struct TaskExecutionRequest {
-    /// The task polled from the server.
-    pub task: TaskExecutionTask,
-    /// Receives the outcome once the task handler has run.
-    pub result_sender: tokio::sync::oneshot::Sender<TaskExecutionResponse>,
-}
-
-/// The outcome of a [`TaskExecutionRequest`].
-#[derive(Debug)]
-pub struct TaskExecutionResponse {
-    /// The task's encoded output, or the error it failed with.
-    pub result: orcher_sdk_core::Result<Vec<u8>>,
-}
 
 /// Limits and defaults for an [`ExecutionRuntime`].
 #[derive(Debug, Clone)]
@@ -71,7 +38,7 @@ pub struct RuntimeConfig {
     ///
     /// If decoding fails, a warning is logged and the handler gets the input
     /// as received.
-    pub codec_chain: Option<Arc<orcher_sdk_core::codec::CodecChain>>,
+    pub codec_chain: Option<Arc<orcher_sdk_core::payload::codec::CodecChain>>,
 }
 
 impl Default for RuntimeConfig {
@@ -218,12 +185,12 @@ impl ExecutionRuntime {
             return Ok((
                 ExecutionResult::failed(
                     run_id,
-                    orcher_sdk_core::bridge::ExecutionError {
+                    orcher_sdk_core::protocol::ExecutionError {
                         message: format!(
                             "No handler registered for workflow type: {}",
                             execution.workflow_type
                         ),
-                        error_type: orcher_sdk_core::bridge::ExecutionErrorType::WorkflowCode,
+                        error_type: orcher_sdk_core::protocol::ExecutionErrorType::WorkflowCode,
                         details: None,
                         // Not raised as non-retryable by the workflow code.
                         retryable: true,
@@ -244,7 +211,7 @@ impl ExecutionRuntime {
         let mut payload =
             Payload::from_json(&input).unwrap_or_else(|_| Payload::new_data(Vec::new()));
         if let Some(ref codec) = self.config.codec_chain {
-            use orcher_sdk_core::codec::PayloadCodec;
+            use orcher_sdk_core::payload::codec::PayloadCodec;
             match codec.decode(&payload) {
                 Ok(decoded) => payload = decoded,
                 Err(e) => {
@@ -393,9 +360,9 @@ impl ExecutionRuntime {
                     tracing::error!(error = %e, "Failed to convert command");
                     return ExecutionResult::failed(
                         run_id,
-                        orcher_sdk_core::bridge::ExecutionError {
+                        orcher_sdk_core::protocol::ExecutionError {
                             message: format!("Command conversion failed: {}", e),
-                            error_type: orcher_sdk_core::bridge::ExecutionErrorType::WorkflowCode,
+                            error_type: orcher_sdk_core::protocol::ExecutionErrorType::WorkflowCode,
                             details: None,
                             // Not raised as non-retryable by the workflow code.
                             retryable: true,
@@ -493,9 +460,9 @@ impl ExecutionRuntime {
         if sdk_commands.is_empty() {
             return ExecutionResult::failed(
                 run_id,
-                orcher_sdk_core::bridge::ExecutionError {
+                orcher_sdk_core::protocol::ExecutionError {
                     message: "Workflow suspended without generating commands".to_string(),
-                    error_type: orcher_sdk_core::bridge::ExecutionErrorType::WorkflowCode,
+                    error_type: orcher_sdk_core::protocol::ExecutionErrorType::WorkflowCode,
                     details: None,
                     // Not raised as non-retryable by the workflow code.
                     retryable: true,
@@ -516,9 +483,9 @@ impl ExecutionRuntime {
                     tracing::error!(error = %e, "Failed to convert command during suspension");
                     return ExecutionResult::failed(
                         run_id,
-                        orcher_sdk_core::bridge::ExecutionError {
+                        orcher_sdk_core::protocol::ExecutionError {
                             message: format!("Command conversion failed: {}", e),
-                            error_type: orcher_sdk_core::bridge::ExecutionErrorType::WorkflowCode,
+                            error_type: orcher_sdk_core::protocol::ExecutionErrorType::WorkflowCode,
                             details: None,
                             // Not raised as non-retryable by the workflow code.
                             retryable: true,
@@ -559,7 +526,7 @@ impl ExecutionRuntime {
     pub async fn execute_assignment(
         &self,
         assignment: TaskAssignment,
-        host: &orcher_sdk_host::Host,
+        host: &orcher_sdk_core::Host,
     ) -> TaskOutcome {
         let token = assignment.token.clone();
         let run = assignment.run.clone().unwrap_or_default();
@@ -631,7 +598,7 @@ impl ExecutionRuntime {
 
         let mut input = Payload::new_data(input);
         if let Some(ref codec) = self.config.codec_chain {
-            use orcher_sdk_core::codec::PayloadCodec;
+            use orcher_sdk_core::payload::codec::PayloadCodec;
             match codec.decode(&input) {
                 Ok(decoded) => {
                     input = decoded;
@@ -716,30 +683,18 @@ impl ExecutionRuntime {
         default_task_queue: &str,
     ) -> Result<BridgeCommand> {
         use crate::workflow::CommandOrphanPolicy;
-        use orcher_sdk_core::bridge::OrphanPolicy as BridgeOrphanPolicy;
+        use orcher_sdk_core::protocol::OrphanPolicy as BridgeOrphanPolicy;
 
         match cmd {
-            WorkflowCommand::RecordStepResult(cmd) => {
-                let failure = cmd
-                    .failure
-                    .as_ref()
-                    .map(|f| orcher_sdk_core::bridge::StepFailure {
-                        message: f.message.clone(),
-                        stack_trace: f.stack_trace.clone(),
-                        source: f.source.clone(),
-                        failure_type: f.failure_type.clone(),
-                    });
-
-                Ok(BridgeCommand::RecordStepResult(
-                    orcher_sdk_core::bridge::RecordStepResultCommand {
-                        step_name: cmd.step_name,
-                        step_type: cmd.step_type,
-                        result: cmd.result,
-                        failure,
-                        execution_attempt: cmd.execution_attempt,
-                    },
-                ))
-            }
+            WorkflowCommand::RecordStepResult(cmd) => Ok(BridgeCommand::RecordStepResult(
+                orcher_sdk_core::protocol::RecordStepResultCommand {
+                    step_name: cmd.step_name,
+                    step_type: cmd.step_type,
+                    result: cmd.result,
+                    failure: cmd.failure,
+                    execution_attempt: cmd.execution_attempt,
+                },
+            )),
 
             WorkflowCommand::ScheduleTask(task) => {
                 let retry_policy = task.retry_policy.as_ref().map(|rp| BridgeRetryPolicy {
@@ -783,7 +738,7 @@ impl ExecutionRuntime {
             }
 
             WorkflowCommand::CancelTimer(cancel) => Ok(BridgeCommand::CancelTimer(
-                orcher_sdk_core::bridge::CancelTimerCommand {
+                orcher_sdk_core::protocol::CancelTimerCommand {
                     sequence: cancel.sequence as u32,
                     timer_id: cancel.timer_id,
                 },
@@ -811,7 +766,7 @@ impl ExecutionRuntime {
                 };
 
                 Ok(BridgeCommand::StartChildWorkflow(
-                    orcher_sdk_core::bridge::StartChildWorkflowCommand {
+                    orcher_sdk_core::protocol::StartChildWorkflowCommand {
                         sequence: child.sequence as u32,
                         workflow_id: child.workflow_id,
                         workflow_type: child.workflow_type,
@@ -830,7 +785,7 @@ impl ExecutionRuntime {
             }
 
             WorkflowCommand::SendEvent(event) => Ok(BridgeCommand::SendEvent(
-                orcher_sdk_core::bridge::SendEventCommand {
+                orcher_sdk_core::protocol::SendEventCommand {
                     workflow_id: event.workflow_id,
                     run_id: None,
                     event_name: event.event_name,
@@ -842,7 +797,7 @@ impl ExecutionRuntime {
             // The engine identifies the child by the id its parent gave it; the run id
             // is left empty because the child's run changes when it is retried.
             WorkflowCommand::CancelChildWorkflow(cancel) => Ok(BridgeCommand::CancelChildWorkflow(
-                orcher_sdk_core::bridge::CancelChildWorkflowCommand {
+                orcher_sdk_core::protocol::CancelChildWorkflowCommand {
                     workflow_id: cancel.workflow_id,
                     run_id: String::new(),
                 },
@@ -857,7 +812,7 @@ impl ExecutionRuntime {
             }
 
             WorkflowCommand::RestartFresh(restart) => Ok(BridgeCommand::RestartFresh(
-                orcher_sdk_core::bridge::RestartFreshCommand {
+                orcher_sdk_core::protocol::RestartFreshCommand {
                     workflow_type: restart.workflow_type.unwrap_or_default(),
                     task_queue: restart.task_queue,
                     input: vec![Payload::new_data(restart.input)],
@@ -875,8 +830,8 @@ impl ExecutionRuntime {
 /// policy left at its default count sends 3.
 fn workflow_retry_policy(
     policy: &crate::task::RetryPolicy,
-) -> orcher_sdk_core::bridge::WorkflowRetryPolicy {
-    orcher_sdk_core::bridge::WorkflowRetryPolicy {
+) -> orcher_sdk_core::protocol::WorkflowRetryPolicy {
+    orcher_sdk_core::protocol::WorkflowRetryPolicy {
         max_attempts: policy.max_attempts,
         initial_interval: Some(policy.initial_interval),
         max_interval: Some(policy.max_interval),
@@ -975,8 +930,8 @@ fn reported_failure(error: &orcher_sdk_core::Error) -> KernelFailure {
 /// does: a [`TaskError::non_retryable`](crate::error::TaskError::non_retryable).
 /// A task's failure the workflow passes on is the workflow's own failure,
 /// retryable like any other.
-fn workflow_failure(error: &Error) -> orcher_sdk_core::bridge::ExecutionError {
-    use orcher_sdk_core::bridge::{ExecutionError, ExecutionErrorType};
+fn workflow_failure(error: &Error) -> orcher_sdk_core::protocol::ExecutionError {
+    use orcher_sdk_core::protocol::{ExecutionError, ExecutionErrorType};
     match error {
         Error::Workflow(crate::error::WorkflowError::NonDeterministic(_)) => {
             ExecutionError::non_determinism(error.to_string(), None)
@@ -1023,7 +978,7 @@ mod tests {
 
     #[test]
     fn a_non_deterministic_workflow_is_reported_as_non_determinism() {
-        use orcher_sdk_core::bridge::ExecutionErrorType;
+        use orcher_sdk_core::protocol::ExecutionErrorType;
 
         let reported = workflow_failure(&Error::Workflow(
             crate::error::WorkflowError::non_deterministic("step 3 changed"),

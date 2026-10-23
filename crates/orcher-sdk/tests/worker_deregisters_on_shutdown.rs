@@ -10,11 +10,9 @@
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use orcher_proto::orcher::v1::worker_service_server::{WorkerService, WorkerServiceServer};
+use orcher_proto::orcher::v1::*;
 use orcher_sdk::worker::WorkerBuilder;
-use orcher_sdk_core::proto::orcher::v1::worker_service_server::{
-    WorkerService, WorkerServiceServer,
-};
-use orcher_sdk_core::proto::orcher::v1::*;
 use tonic::transport::server::TcpIncoming;
 use tonic::transport::Server;
 use tonic::{Request, Response, Status};

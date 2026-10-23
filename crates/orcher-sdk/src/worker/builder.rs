@@ -361,7 +361,7 @@ impl WorkerBuilder {
     /// Without this, encrypted payloads reach handlers as opaque bytes. Replaces
     /// any codec chain already configured.
     pub fn with_encryption(mut self, key: &[u8; 32]) -> Self {
-        use orcher_sdk_core::codec::{CodecChain, EncryptionPayloadCodec};
+        use orcher_sdk_core::payload::codec::{CodecChain, EncryptionPayloadCodec};
         let chain = CodecChain::new().with_codec(EncryptionPayloadCodec::new(key));
         self.config.codec_chain = Some(Arc::new(chain));
         self
@@ -371,7 +371,7 @@ impl WorkerBuilder {
     ///
     /// Replaces any codec chain already configured.
     pub fn with_gzip_compression(mut self) -> Self {
-        use orcher_sdk_core::codec::{CodecChain, GzipPayloadCodec};
+        use orcher_sdk_core::payload::codec::{CodecChain, GzipPayloadCodec};
         let chain = CodecChain::new().with_codec(GzipPayloadCodec::default());
         self.config.codec_chain = Some(Arc::new(chain));
         self
@@ -423,7 +423,7 @@ impl WorkerBuilder {
         // Reject unusable TLS settings now rather than at the first poll:
         // a certificate without its key, or PEM that does not parse.
         if self.config.tls.is_some() {
-            crate::tls::endpoint(&self.config.server_url, self.config.tls.as_ref()).map_err(
+            crate::tls::check(&self.config.server_url, self.config.tls.as_ref()).map_err(
                 |reason| Error::Worker(crate::error::WorkerError::InvalidConfiguration(reason)),
             )?;
         }
@@ -589,24 +589,28 @@ mod tests {
         ));
     }
 
+    /// TLS settings given to the worker reach sdk-core as given; an `https`
+    /// address without any is left to core, which verifies it against the
+    /// system trust store (the `tls` tests check that on the wire).
     #[tokio::test]
-    async fn an_https_url_gets_tls_without_settings_and_http_does_not() {
+    async fn the_tls_settings_given_reach_core_and_none_are_invented() {
         let https = WorkerBuilder::new()
             .server_url("https://orcher.example:443")
             .task_queue("q")
             .build()
             .await
             .unwrap();
-        let core = https.core_tls().expect("https gets TLS");
-        assert!(core.ca_cert.is_none(), "system trust store");
+        assert!(https.core_tls().is_none());
 
-        let http = WorkerBuilder::new()
-            .server_url("http://localhost:50051")
+        let pinned = WorkerBuilder::new()
+            .server_url("https://orcher.example:443")
             .task_queue("q")
+            .tls(crate::client::ClientTlsConfig::new().with_domain_name("orcher.internal"))
             .build()
             .await
             .unwrap();
-        assert!(http.core_tls().is_none());
+        let core = pinned.core_tls().expect("the settings reach core");
+        assert_eq!(core.domain_name.as_deref(), Some("orcher.internal"));
     }
 
     #[tokio::test]

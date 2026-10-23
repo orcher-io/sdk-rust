@@ -114,7 +114,8 @@ pub use orcher_sdk_core::{
     WorkflowExecutionDescription, WorkflowExecutionInfo, WorkflowListPage, WorkflowStatus,
 };
 
-pub use orcher_sdk_core::proto::orcher::v1::NamespaceInfo;
+/// A namespace, as the namespace calls on [`Client`] return it.
+pub use orcher_sdk_core::Namespace;
 
 /// A worker's wire measurements; see [`Worker::wire_metrics`].
 pub use orcher_sdk_core::observability::{MethodStats, WireMetricsSnapshot, WorkStats};

@@ -58,7 +58,7 @@ pub struct TaskContext {
 
     /// The worker host running the task, and the task's token: `heartbeat`
     /// reports through it.
-    host: Option<(orcher_sdk_host::Host, Vec<u8>)>,
+    host: Option<(orcher_sdk_core::Host, Vec<u8>)>,
 }
 
 /// A heartbeat sent through `heartbeat_tx`.
@@ -116,7 +116,7 @@ impl TaskContext {
         task_id: String,
         attempt: i32,
         heartbeat_timeout: Option<Duration>,
-        host: orcher_sdk_host::Host,
+        host: orcher_sdk_core::Host,
         token: Vec<u8>,
     ) -> Self {
         let cancellation_token = tokio_util::sync::CancellationToken::new();

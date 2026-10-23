@@ -12,16 +12,16 @@
 use std::collections::HashMap;
 use std::time::Duration;
 
-use orcher_sdk_core::bridge::{
-    Command as BridgeCommand, ExecutionResult, OrphanPolicy, QueryResult, TaskRetryPolicy,
-    UpdateResult, WorkflowRetryPolicy,
-};
 use orcher_sdk_core::proto::kernel::v1::{
     self as kernel, command, outcome, query_answer, resolution, run_activation_result,
     update_answer, Command, Commands, End, Failure, FailureCode, Outcome, ProtocolError,
     QueryAnswer, Resolution, RunActivation, RunActivationResult, UpdateAnswer,
 };
 use orcher_sdk_core::proto::prost_types;
+use orcher_sdk_core::protocol::{
+    Command as BridgeCommand, ExecutionResult, OrphanPolicy, QueryResult, TaskRetryPolicy,
+    UpdateResult, WorkflowRetryPolicy,
+};
 
 use crate::worker::runtime::{inject_child_failure, Asked, ExecutionRuntime};
 use crate::workflow::{ReachedStep, StepKind, WorkflowContext, WorkflowExecution};
@@ -318,7 +318,7 @@ pub(crate) fn answer(
                 .ok();
         }
         let error = result.error.clone().unwrap_or_else(|| {
-            orcher_sdk_core::bridge::ExecutionError::workflow_error(
+            orcher_sdk_core::protocol::ExecutionError::workflow_error(
                 "the workflow failed".to_string(),
                 true,
             )
@@ -328,7 +328,7 @@ pub(crate) fn answer(
             non_retryable: !error.retryable,
             code: if matches!(
                 error.error_type,
-                orcher_sdk_core::bridge::ExecutionErrorType::NonDeterminism
+                orcher_sdk_core::protocol::ExecutionErrorType::NonDeterminism
             ) {
                 FailureCode::NonDeterminism
             } else {
@@ -654,7 +654,7 @@ fn millis(t: &prost_types::Timestamp) -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use orcher_sdk_core::bridge::{ScheduleTaskCommand, StartTimerCommand};
+    use orcher_sdk_core::protocol::{ScheduleTaskCommand, StartTimerCommand};
 
     fn task(sequence: u32, task_id: &str) -> BridgeCommand {
         BridgeCommand::ScheduleTask(ScheduleTaskCommand {
@@ -677,7 +677,7 @@ mod tests {
     ) -> ExecutionResult {
         let mut result = ExecutionResult::failed(
             "run-1".into(),
-            orcher_sdk_core::bridge::ExecutionError::workflow_error("out of stock".into(), false),
+            orcher_sdk_core::protocol::ExecutionError::workflow_error("out of stock".into(), false),
         );
         result.commands = commands;
         if let Some(steps) = reached_steps {
@@ -1128,7 +1128,7 @@ mod tests {
     #[test]
     fn a_restart_carries_its_execution_timeout() {
         let issued = vec![BridgeCommand::RestartFresh(
-            orcher_sdk_core::bridge::RestartFreshCommand {
+            orcher_sdk_core::protocol::RestartFreshCommand {
                 workflow_type: "checkout".into(),
                 input: vec![],
                 task_queue: None,
@@ -1270,16 +1270,18 @@ mod tests {
             ..Default::default()
         };
         let child = |retry_policy| {
-            BridgeCommand::StartChildWorkflow(orcher_sdk_core::bridge::StartChildWorkflowCommand {
-                sequence: 1,
-                workflow_id: "order-7-child-1".into(),
-                workflow_type: "ship".into(),
-                retry_policy,
-                ..Default::default()
-            })
+            BridgeCommand::StartChildWorkflow(
+                orcher_sdk_core::protocol::StartChildWorkflowCommand {
+                    sequence: 1,
+                    workflow_id: "order-7-child-1".into(),
+                    workflow_type: "ship".into(),
+                    retry_policy,
+                    ..Default::default()
+                },
+            )
         };
         let restart = |retry_policy| {
-            BridgeCommand::RestartFresh(orcher_sdk_core::bridge::RestartFreshCommand {
+            BridgeCommand::RestartFresh(orcher_sdk_core::protocol::RestartFreshCommand {
                 retry_policy,
                 ..Default::default()
             })
@@ -1306,7 +1308,7 @@ mod tests {
     #[test]
     fn a_command_the_protocol_cannot_carry_is_refused() {
         let issued = vec![BridgeCommand::RequestCancellation(
-            orcher_sdk_core::bridge::RequestCancellationCommand {
+            orcher_sdk_core::protocol::RequestCancellationCommand {
                 reason: "done".into(),
             },
         )];

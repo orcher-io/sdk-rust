@@ -876,8 +876,8 @@ pub enum WorkerError {
 /// user sees are both meaningful. The mapping is the standard one. The cases that
 /// matter most are UNAVAILABLE and DEADLINE_EXCEEDED landing in 5xx so they are
 /// retried, and NOT_FOUND landing in 4xx so it is not.
-fn grpc_code_to_http_status(code: tonic::Code) -> u16 {
-    use tonic::Code;
+fn grpc_code_to_http_status(code: orcher_sdk_core::error::Code) -> u16 {
+    use orcher_sdk_core::error::Code;
     match code {
         Code::Ok => 200,
         Code::InvalidArgument | Code::OutOfRange | Code::FailedPrecondition => 400,
@@ -948,12 +948,8 @@ impl From<orcher_sdk_core::error::Error> for Error {
             CoreError::InvalidPayload { reason, .. } => Error::Serialization(reason),
             CoreError::Codec(msg) => Error::Serialization(msg),
 
-            // gRPC and transport errors
-            CoreError::Transport(err) => Error::Client(ClientError::ConnectionFailed {
-                url: "unknown".to_string(),
-                reason: err.to_string(),
-            }),
-            CoreError::GrpcStatus(status) => Error::Client(ClientError::ServerError {
+            // A call the engine refused.
+            CoreError::Status(status) => Error::Client(ClientError::ServerError {
                 // gRPC codes are 0-16, but `is_retryable` classifies ServerError by
                 // HTTP range. Storing the raw code would make every gRPC failure
                 // non-retryable, including UNAVAILABLE and DEADLINE_EXCEEDED, so
@@ -1938,11 +1934,12 @@ mod typed_client_error_tests {
     #[test]
     fn transient_grpc_failures_are_retryable() {
         for code in [
-            tonic::Code::Unavailable,
-            tonic::Code::DeadlineExceeded,
-            tonic::Code::ResourceExhausted,
+            orcher_sdk_core::error::Code::Unavailable,
+            orcher_sdk_core::error::Code::DeadlineExceeded,
+            orcher_sdk_core::error::Code::ResourceExhausted,
         ] {
-            let err: Error = CoreError::GrpcStatus(tonic::Status::new(code, "boom")).into();
+            let err: Error =
+                CoreError::Status(orcher_sdk_core::error::Status::new(code, "boom")).into();
             assert!(
                 err.is_retryable(),
                 "{code:?} should be retryable but was classified permanent"
@@ -1954,13 +1951,14 @@ mod typed_client_error_tests {
     #[test]
     fn permanent_grpc_failures_are_not_retryable() {
         for code in [
-            tonic::Code::NotFound,
-            tonic::Code::InvalidArgument,
-            tonic::Code::PermissionDenied,
-            tonic::Code::Unauthenticated,
-            tonic::Code::AlreadyExists,
+            orcher_sdk_core::error::Code::NotFound,
+            orcher_sdk_core::error::Code::InvalidArgument,
+            orcher_sdk_core::error::Code::PermissionDenied,
+            orcher_sdk_core::error::Code::Unauthenticated,
+            orcher_sdk_core::error::Code::AlreadyExists,
         ] {
-            let err: Error = CoreError::GrpcStatus(tonic::Status::new(code, "nope")).into();
+            let err: Error =
+                CoreError::Status(orcher_sdk_core::error::Status::new(code, "nope")).into();
             assert!(
                 !err.is_retryable(),
                 "{code:?} should be permanent but was classified retryable"
@@ -1972,8 +1970,11 @@ mod typed_client_error_tests {
     /// an HTTP code and is not one.
     #[test]
     fn grpc_status_is_translated_for_the_caller() {
-        let err: Error =
-            CoreError::GrpcStatus(tonic::Status::new(tonic::Code::NotFound, "missing")).into();
+        let err: Error = CoreError::Status(orcher_sdk_core::error::Status::new(
+            orcher_sdk_core::error::Code::NotFound,
+            "missing",
+        ))
+        .into();
         match err {
             Error::Client(ClientError::ServerError { status, .. }) => assert_eq!(status, 404),
             other => panic!("expected ServerError, got {other:?}"),

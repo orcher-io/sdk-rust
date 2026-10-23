@@ -2,38 +2,55 @@
 
 use crate::actor::{ActorInvocationClient, ActorRef};
 use crate::error::{Error, Result};
-use orcher_sdk_core::client::{CoreActorClient, NamespaceClient, WorkflowClient as CoreClient};
-use orcher_sdk_core::codec::PayloadCodec;
-use orcher_sdk_core::converter::{BinaryPayloadConverter, DataConverter, JsonPayloadConverter};
+use orcher_sdk_core::client::{
+    ActorClient, ConnectOptions, Connection, NamespaceClient, StartWorkflowOpts,
+    WorkflowClient as CoreClient,
+};
+use orcher_sdk_core::payload::codec::PayloadCodec;
+use orcher_sdk_core::payload::converter::{
+    BinaryPayloadConverter, DataConverter, JsonPayloadConverter,
+};
 use serde::{de::DeserializeOwned, Serialize};
 use std::sync::Arc;
 
 use super::{ClientConfig, StartWorkflowOptions, WorkflowHandle};
 
-/// Converts a std `Duration` to the protobuf `Duration` used in workflow requests.
-fn proto_duration(d: std::time::Duration) -> orcher_sdk_core::proto::prost_types::Duration {
-    orcher_sdk_core::proto::prost_types::Duration {
-        seconds: d.as_secs() as i64,
-        nanos: d.subsec_nanos() as i32,
-    }
-}
-
-/// Converts an SDK `RetryPolicy` to the protobuf form sent with a start request.
+/// The workflow retry policy core sends for an SDK [`RetryPolicy`].
 ///
 /// `max_attempts` is sent as given: the first run included, 0 for unlimited. A
 /// policy built from [`RetryPolicy::default`](crate::task::RetryPolicy::default)
 /// that leaves it alone sends the default of 3.
-fn proto_retry_policy(
-    p: &crate::task::RetryPolicy,
-) -> orcher_sdk_core::proto::orcher::v1::RetryPolicy {
-    orcher_sdk_core::proto::orcher::v1::RetryPolicy {
-        initial_interval: Some(proto_duration(p.initial_interval)),
+///
+/// [`RetryPolicy`]: crate::task::RetryPolicy
+fn workflow_retry_policy(p: &crate::task::RetryPolicy) -> orcher_sdk_core::WorkflowRetryPolicy {
+    orcher_sdk_core::WorkflowRetryPolicy {
+        max_attempts: p.max_attempts,
+        initial_interval: Some(p.initial_interval),
+        max_interval: Some(p.max_interval),
         backoff_coefficient: p.backoff_coefficient,
-        maximum_interval: Some(proto_duration(p.max_interval)),
-        maximum_attempts: p.max_attempts as i32,
-        non_retryable_error_types: p.non_retryable_errors.clone(),
-        ..Default::default()
+        non_retryable_errors: p.non_retryable_errors.clone(),
     }
+}
+
+/// Core's start options for one workflow of `workflow_type` with `input`, as
+/// `options` asks.
+fn start_opts(
+    workflow_id: String,
+    workflow_type: &str,
+    input: Vec<u8>,
+    options: &StartWorkflowOptions,
+) -> StartWorkflowOpts {
+    let mut opts = StartWorkflowOpts::new(
+        workflow_id,
+        workflow_type,
+        options.task_queue.clone(),
+        input,
+    );
+    opts.execution_timeout = options.workflow_execution_timeout;
+    opts.run_timeout = options.workflow_run_timeout;
+    opts.task_timeout = options.workflow_task_timeout;
+    opts.retry_policy = options.retry_policy.as_ref().map(workflow_retry_policy);
+    opts
 }
 
 /// Data converter selected by the client.
@@ -96,13 +113,12 @@ impl Default for DataConverterType {
 #[derive(Clone)]
 pub struct Client {
     pub(crate) core_client: Arc<CoreClient>,
-    pub(crate) actor_client: Arc<CoreActorClient>,
+    pub(crate) actor_client: Arc<ActorClient>,
     pub(crate) namespace_client: Arc<NamespaceClient>,
     pub(crate) config: ClientConfig,
     pub(crate) data_converter: DataConverterType,
-    /// The connection every gRPC client above shares, kept so the clients can
-    /// be rebuilt with new credentials.
-    channel: tonic::transport::Channel,
+    /// The connection the clients above share.
+    pub(crate) connection: Connection,
 }
 
 impl Client {
@@ -146,62 +162,40 @@ impl Client {
         tracing::info!(
             server_url = %config.server_url,
             namespace = %config.namespace,
-            tls = crate::tls::tls_for_url(&config.server_url, config.tls.as_ref()).is_some(),
+            tls = config.tls.is_some() || crate::tls::is_https(&config.server_url),
             "Connecting to ORCHER server via gRPC"
         );
 
-        // TLS follows the URL scheme unless set explicitly; see `tls_for_url`.
-        let endpoint =
-            crate::tls::endpoint(&config.server_url, config.tls.as_ref()).map_err(|reason| {
-                Error::Client(crate::error::ClientError::ConnectionFailed {
-                    url: config.server_url.clone(),
-                    reason,
-                })
-            })?;
-
-        // One channel shared by the workflow, actor and namespace clients.
-        let channel = endpoint
-            .connect_timeout(std::time::Duration::from_secs(5))
-            .timeout(config.timeout)
-            .connect_lazy();
-
-        Ok(Self::from_channel(config, channel))
+        crate::tls::validate(&config.server_url, config.tls.as_ref()).map_err(|reason| {
+            Error::Client(crate::error::ClientError::ConnectionFailed {
+                url: config.server_url.clone(),
+                reason,
+            })
+        })?;
+        Self::from_config(config)
     }
 
-    /// Builds the gRPC clients on `channel` with the credentials in `config`.
-    fn from_channel(config: ClientConfig, channel: tonic::transport::Channel) -> Self {
-        // Credentials are attached by an interceptor bound here, so every RPC
-        // carries them.
-        let mut core_client = CoreClient::from_channel(channel.clone())
-            .with_namespace(&config.namespace)
-            .with_timeout(config.timeout);
-        if let Some(ref key) = config.api_key {
-            core_client = core_client.with_api_key(key.clone());
-        }
-        if let Some(ref organization_id) = config.organization_id {
-            core_client = core_client.with_organization_id(organization_id.clone());
-        }
-
-        // The actor and namespace clients must share the workflow client's
-        // credentials. Built from the bare channel, their calls would go out
-        // unauthenticated against a server that requires an API key.
-        let credentials = core_client.auth().clone();
-        let actor_client = Arc::new(CoreActorClient::with_auth(
-            channel.clone(),
-            credentials.clone(),
-        ));
-        let namespace_client = Arc::new(NamespaceClient::with_auth(channel.clone(), credentials));
-
+    /// Builds the clients on one lazy connection made as `config` says: its
+    /// address, namespace, credentials and TLS. Every client shares the
+    /// connection, so none can go out without the credentials the others
+    /// carry.
+    fn from_config(config: ClientConfig) -> Result<Self> {
+        let connection = Connection::lazy(connect_options(&config)).map_err(|e| {
+            Error::Client(crate::error::ClientError::ConnectionFailed {
+                url: config.server_url.clone(),
+                reason: e.to_string(),
+            })
+        })?;
+        let core_client = connection.workflow_client().with_timeout(config.timeout);
         let data_converter = config.data_converter.clone().unwrap_or_default();
-
-        Self {
+        Ok(Self {
             core_client: Arc::new(core_client),
-            actor_client,
-            namespace_client,
+            actor_client: Arc::new(connection.actor_client()),
+            namespace_client: Arc::new(connection.namespace_client()),
             config,
             data_converter,
-            channel,
-        }
+            connection,
+        })
     }
 
     // ============================================================================
@@ -212,7 +206,7 @@ impl Client {
     ///
     /// Replaces any codec chain already configured.
     pub fn with_gzip_compression(mut self) -> Self {
-        use orcher_sdk_core::codec::{CodecChain, GzipPayloadCodec};
+        use orcher_sdk_core::payload::codec::{CodecChain, GzipPayloadCodec};
 
         let chain = CodecChain::new().with_codec(GzipPayloadCodec::default());
 
@@ -226,7 +220,7 @@ impl Client {
     /// payloads and stores plain JSON, so this protects data in transit only;
     /// it is not end-to-end encryption.
     pub fn with_encryption(mut self, key: &[u8; 32]) -> Self {
-        use orcher_sdk_core::codec::{CodecChain, EncryptionPayloadCodec};
+        use orcher_sdk_core::payload::codec::{CodecChain, EncryptionPayloadCodec};
 
         let chain = CodecChain::new().with_codec(EncryptionPayloadCodec::new(key));
 
@@ -248,17 +242,27 @@ impl Client {
 
     /// Authenticates every later call with this API key.
     ///
-    /// The workflow, actor and namespace clients are rebuilt on the existing
-    /// connection, so the key is sent from the next call on. Clones taken
-    /// before this call keep their old credentials.
+    /// The workflow, actor and namespace clients are rebuilt on a new lazy
+    /// connection carrying the key, so it is sent from the next call on.
+    /// Clones taken before this call keep their old credentials.
     pub fn with_api_key(mut self, key: impl Into<String>) -> Self {
         self.config.api_key = Some(key.into());
-        let channel = self.channel.clone();
         let data_converter = self.data_converter.clone();
-        let mut rebuilt = Self::from_channel(self.config, channel);
+        // The address and TLS settings were accepted when this client was
+        // made, so the same connection with a key can be made too.
+        let mut rebuilt = match Self::from_config(self.config.clone()) {
+            Ok(rebuilt) => rebuilt,
+            Err(_) => return self,
+        };
         // Keep a converter chosen after connecting (use_binary_serialization).
         rebuilt.data_converter = data_converter;
         rebuilt
+    }
+
+    /// The calls this client has made so far, by method: its workflow,
+    /// actor and namespace calls alike.
+    pub fn wire_metrics(&self) -> orcher_sdk_core::observability::WireMetricsSnapshot {
+        self.connection.wire_metrics()
     }
 
     /// Serializes values in the binary format instead of JSON.
@@ -372,33 +376,13 @@ impl Client {
             })?
         };
 
-        // Build the full request so that every option (retry policy, timeouts,
-        // reuse policy) reaches the server; `start_workflow_raw` would drop them.
-        // Submit through the single-start call, because the batch endpoint
-        // re-wraps the input.
-        let request = orcher_sdk_core::proto::orcher::v1::StartWorkflowRequest {
-            workflow_id: workflow_id.clone(),
-            workflow_type,
-            task_queue: options.task_queue.clone(),
-            namespace: namespace.clone(),
-            input: input_data,
-            execution_timeout: options.workflow_execution_timeout.map(proto_duration),
-            run_timeout: options.workflow_run_timeout.map(proto_duration),
-            task_timeout: options.workflow_task_timeout.map(proto_duration),
-            retry_policy: options.retry_policy.as_ref().map(proto_retry_policy),
-            cron_schedule: options.cron_schedule.clone().unwrap_or_default(),
-            annotations: std::collections::HashMap::new(),
-            labels: std::collections::HashMap::new(),
-            request_id: uuid::Uuid::new_v4().to_string(),
-            start_delay: None,
-            schedule_config: None,
-            workflow_id_reuse_policy: options
-                .id_reuse_policy
-                .map_or(0, |policy| policy.to_proto() as i32),
-            ..Default::default()
-        };
+        // Every option (retry policy, timeouts, reuse policy) reaches the
+        // server through core's start options.
+        let mut opts = start_opts(workflow_id.clone(), &workflow_type, input_data, &options);
+        opts.cron_schedule = options.cron_schedule.clone();
+        opts.id_reuse_policy = options.id_reuse_policy.map(|policy| policy.to_core());
         let handle = client
-            .start_workflow_request(request)
+            .start_workflow_with_options(opts)
             .await
             .map_err(|e| match e {
                 // Surface an id conflict as its own error, naming the open run,
@@ -459,25 +443,13 @@ impl Client {
                 )))
             })?;
 
-            requests.push(orcher_sdk_core::proto::orcher::v1::StartWorkflowRequest {
-                workflow_id: String::new(), // server generates
-                workflow_type: workflow_type.clone(),
-                task_queue: options.task_queue.clone(),
-                namespace: namespace.clone(),
-                input: input_bytes,
-                execution_timeout: options.workflow_execution_timeout.map(proto_duration),
-                run_timeout: options.workflow_run_timeout.map(proto_duration),
-                task_timeout: options.workflow_task_timeout.map(proto_duration),
-                retry_policy: options.retry_policy.as_ref().map(proto_retry_policy),
-                cron_schedule: String::new(),
-                annotations: std::collections::HashMap::new(),
-                labels: std::collections::HashMap::new(),
-                request_id: uuid::Uuid::new_v4().to_string(),
-                start_delay: None,
-                schedule_config: None,
-                workflow_id_reuse_policy: 0,
-                ..Default::default()
-            });
+            // The server generates each workflow id.
+            requests.push(start_opts(
+                String::new(),
+                &workflow_type,
+                input_bytes,
+                &options,
+            ));
         }
 
         let client = self.core_client.as_ref().clone().with_namespace(&namespace);
@@ -659,7 +631,7 @@ impl Client {
         &self,
         name: impl Into<String>,
         retention_days: i32,
-    ) -> Result<orcher_sdk_core::proto::orcher::v1::NamespaceInfo> {
+    ) -> Result<orcher_sdk_core::Namespace> {
         self.namespace_client
             .create_namespace(name, retention_days)
             .await
@@ -675,7 +647,7 @@ impl Client {
     pub async fn get_namespace(
         &self,
         name: impl Into<String>,
-    ) -> Result<orcher_sdk_core::proto::orcher::v1::NamespaceInfo> {
+    ) -> Result<orcher_sdk_core::Namespace> {
         self.namespace_client
             .get_namespace(name)
             .await
@@ -688,9 +660,7 @@ impl Client {
     }
 
     /// Lists namespaces, returning at most the first 100.
-    pub async fn list_namespaces(
-        &self,
-    ) -> Result<Vec<orcher_sdk_core::proto::orcher::v1::NamespaceInfo>> {
+    pub async fn list_namespaces(&self) -> Result<Vec<orcher_sdk_core::Namespace>> {
         let (namespaces, _total) = self
             .namespace_client
             .list_namespaces(100, 0)
@@ -711,7 +681,7 @@ impl Client {
         &self,
         name: impl Into<String>,
         description: impl Into<String>,
-    ) -> Result<orcher_sdk_core::proto::orcher::v1::NamespaceInfo> {
+    ) -> Result<orcher_sdk_core::Namespace> {
         self.namespace_client
             .update_namespace(name, description, "", 0)
             .await
@@ -782,6 +752,21 @@ impl std::fmt::Debug for Client {
     }
 }
 
+/// Core's connection options for `config`.
+fn connect_options(config: &ClientConfig) -> ConnectOptions {
+    let mut options = ConnectOptions::new(&config.server_url).with_namespace(&config.namespace);
+    if let Some(ref key) = config.api_key {
+        options = options.with_api_key(key);
+    }
+    if let Some(ref organization_id) = config.organization_id {
+        options = options.with_organization_id(organization_id);
+    }
+    if let Some(ref tls) = config.tls {
+        options = options.with_tls(crate::tls::to_core(tls));
+    }
+    options
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -791,19 +776,19 @@ mod tests {
     fn a_workflow_retry_policy_left_at_its_count_sends_the_default() {
         let policy =
             crate::task::RetryPolicy::default().with_initial_interval(Duration::from_secs(2));
-        assert_eq!(proto_retry_policy(&policy).maximum_attempts, 3);
+        assert_eq!(workflow_retry_policy(&policy).max_attempts, 3);
     }
 
     #[test]
     fn a_workflow_retry_policy_sends_zero_as_unlimited() {
         let policy = crate::task::RetryPolicy::default().with_max_attempts(0);
-        assert_eq!(proto_retry_policy(&policy).maximum_attempts, 0);
+        assert_eq!(workflow_retry_policy(&policy).max_attempts, 0);
     }
 
     #[test]
     fn a_workflow_retry_policy_sends_its_count_as_given() {
         let policy = crate::task::RetryPolicy::default().with_max_attempts(5);
-        assert_eq!(proto_retry_policy(&policy).maximum_attempts, 5);
+        assert_eq!(workflow_retry_policy(&policy).max_attempts, 5);
     }
 
     #[test]
@@ -811,7 +796,7 @@ mod tests {
         let policy = crate::task::RetryPolicy::default()
             .with_non_retryable_errors(["InvalidInput", "Fraud"]);
         assert_eq!(
-            proto_retry_policy(&policy).non_retryable_error_types,
+            workflow_retry_policy(&policy).non_retryable_errors,
             vec!["InvalidInput".to_string(), "Fraud".to_string()]
         );
     }
@@ -849,12 +834,12 @@ mod tests {
     #[tokio::test]
     async fn with_api_key_after_connecting_changes_the_credentials_sent() {
         let client = Client::connect("http://127.0.0.1:1").await.unwrap();
-        assert_eq!(client.core_client.auth().api_key, None);
+        assert_eq!(client.connection.options().api_key, None);
 
         let client = client.use_binary_serialization().with_api_key("key-123");
 
         assert_eq!(
-            client.core_client.auth().api_key.as_deref(),
+            client.connection.options().api_key.as_deref(),
             Some("key-123")
         );
         // The binary converter chosen before survives the rebuild.

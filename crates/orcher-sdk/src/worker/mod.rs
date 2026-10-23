@@ -68,7 +68,7 @@ use crate::error::{Error, Result};
 use orcher_sdk_core::observability::WireMetricsSnapshot;
 use orcher_sdk_core::proto::host::v1::{actor_result, ActorMode, ActorOperation, ActorResult};
 use orcher_sdk_core::proto::kernel::v1::{run_activation_result, Payload as KernelPayload};
-use orcher_sdk_host::{Host, HostConfig, Registrations};
+use orcher_sdk_core::{Host, HostConfig, Registrations};
 
 /// Health status of a worker, as reported by [`Worker::get_health`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -216,7 +216,7 @@ pub struct WorkerConfig {
     /// When set, workflow and task inputs are decoded with it before they reach
     /// handlers. It must match the codec chain of the client that started the
     /// workflow.
-    pub codec_chain: Option<Arc<orcher_sdk_core::codec::CodecChain>>,
+    pub codec_chain: Option<Arc<orcher_sdk_core::payload::codec::CodecChain>>,
 
     /// The code release this worker is running (optional).
     ///
@@ -442,12 +442,11 @@ impl Worker {
             .and_then(|host| host.as_ref().map(Host::wire_metrics))
     }
 
-    /// The TLS settings for sdk-core's drivers: the configured ones, or, for
-    /// an `https://` address without any, TLS verified against the system
-    /// trust store.
-    fn core_tls(&self) -> Option<orcher_sdk_core::poller::TlsConfig> {
-        crate::tls::tls_for_url(&self.config.server_url, self.config.tls.as_ref())
-            .map(|tls| crate::tls::to_core(&tls))
+    /// The configured TLS settings as sdk-core takes them. An `https://`
+    /// address without any is verified against the system trust store by
+    /// core itself.
+    fn core_tls(&self) -> Option<orcher_sdk_core::TlsConfig> {
+        self.config.tls.as_ref().map(crate::tls::to_core)
     }
 
     /// The worker host's configuration, from this worker's.
@@ -504,10 +503,10 @@ impl Worker {
                 for (operation, registration) in operations {
                     handlers.push(match registration.mode {
                         crate::actor::types::OperationMode::Shared => {
-                            orcher_sdk_host::ActorHandler::shared(actor, operation)
+                            orcher_sdk_core::ActorHandler::shared(actor, operation)
                         }
                         crate::actor::types::OperationMode::Exclusive => {
-                            orcher_sdk_host::ActorHandler::exclusive(actor, operation)
+                            orcher_sdk_core::ActorHandler::exclusive(actor, operation)
                         }
                     });
                 }

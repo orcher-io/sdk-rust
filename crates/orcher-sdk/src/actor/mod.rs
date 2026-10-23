@@ -106,18 +106,15 @@
 //!
 //! ## Modules
 //!
-//! - [`client`]: [`ActorClient`], the worker's lifecycle client (register, heartbeat, poll,
-//!   complete).
 //! - [`context`]: the handler contexts, [`ActorContext`] and [`SharedActorContext`].
 //! - [`definition`]: static actor definitions collected for auto-registration.
 //! - [`executor`]: [`ActorExecutor`], the handler registry and dispatcher.
 //! - [`invocation`]: [`ActorInvocationClient`], for calling operations on other actors.
-//! - [`state`]: state access; [`state::client`] talks gRPC, [`state::manager`] is the
-//!   typed API handlers use.
+//! - [`state`]: state access; [`state::client`] reads and writes through the worker
+//!   host, [`state::manager`] is the typed API handlers use.
 //! - [`testing`]: helpers for unit-testing handlers without a server.
 //! - [`types`]: core types such as [`ActorKey`] and [`OperationMode`].
 
-pub mod client;
 pub mod context;
 pub mod definition;
 pub mod executor;
@@ -126,7 +123,6 @@ pub mod state;
 pub mod testing;
 pub mod types;
 
-pub use client::{ActorClient, ActorHandlerInfo};
 pub use context::{ActorContext, ActorContextBuilder, SharedActorContext};
 pub use executor::{ActorExecutor, ActorHandlerFn};
 pub use invocation::ActorInvocationClient;
@@ -148,7 +144,6 @@ pub use definition::{
 /// use orcher_sdk::actor::prelude::*;
 /// ```
 pub mod prelude {
-    pub use super::client::{ActorClient, ActorHandlerInfo};
     pub use super::context::{ActorContext, SharedActorContext};
     pub use super::executor::ActorExecutor;
     pub use super::state::{ActorStateClient, ActorStateManager};

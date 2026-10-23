@@ -1,8 +1,9 @@
 //! Low-level client for reading and writing actor state.
 //!
-//! [`ActorStateClient`] talks to the Orcher server over gRPC, or to an in-memory
-//! [`MockStateBackend`] in tests. The server is the source of truth; the worker only
-//! keeps an optional read cache.
+//! [`ActorStateClient`] reads and writes through the worker host, on the
+//! worker's connection and credentials, or an in-memory [`MockStateBackend`]
+//! in tests. The server is the source of truth; the worker only keeps an
+//! optional read cache.
 //!
 //! ## Architecture
 //!
@@ -17,35 +18,21 @@
 //! └─────────────────┘            └──────────────────┘
 //! ```
 //!
-//! State calls use the `GetState`, `SetState`, `DeleteState`, and `ListStateKeys`
-//! RPCs of the `orcher.v1.ActorService` gRPC service.
+//! The host makes the `GetState`, `SetState`, `DeleteState`, and
+//! `ListStateKeys` calls, scoped to the operation that is running.
 
 use crate::error::{Error, Result};
 use moka::future::Cache;
-use orcher_sdk_core::proto::orcher::v1::{
-    actor_service_client::ActorServiceClient, DeleteStateRequest, GetStateRequest,
-    ListStateKeysRequest, SetStateRequest,
-};
 use serde::{de::DeserializeOwned, Serialize};
 use std::sync::Arc;
 use std::time::Duration;
-use tonic::transport::Channel;
 
 use super::mock::MockStateBackend;
 
-/// Configuration for [`ActorStateClient`].
+/// How an [`ActorStateClient`] caches state.
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub struct ActorStateClientConfig {
-    /// Server URL, such as `"http://localhost:8080"`.
-    pub server_url: String,
-
-    /// Per-request timeout.
-    pub timeout: Duration,
-
-    /// Not used by this client: failed requests are not retried.
-    pub max_retries: u32,
-
     /// Cache state values in the worker.
     ///
     /// Only this client's own writes and deletes update the cache, so a cached
@@ -57,26 +44,14 @@ pub struct ActorStateClientConfig {
 
     /// Maximum number of cached entries; the least recently used are evicted first.
     pub max_cache_size: u64,
-
-    /// Not sent by this client.
-    pub auth_token: Option<String>,
-
-    /// TLS settings (default: None, which follows the URL scheme: `https://`
-    /// uses TLS verified against the system trust store).
-    pub tls: Option<crate::client::ClientTlsConfig>,
 }
 
 impl Default for ActorStateClientConfig {
     fn default() -> Self {
         Self {
-            server_url: "http://localhost:8080".to_string(),
-            timeout: Duration::from_secs(10),
-            max_retries: 3,
             enable_cache: true,
             cache_ttl: Duration::from_secs(60),
             max_cache_size: 1_000,
-            auth_token: None,
-            tls: None,
         }
     }
 }
@@ -84,18 +59,20 @@ impl Default for ActorStateClientConfig {
 /// Reads and writes actor state on the server, with an optional local cache.
 ///
 /// Values are JSON-encoded. Each call carries the execution ID of the running
-/// operation. Cloning is cheap; clones share the connection and the cache.
+/// operation. Cloning is cheap; clones share the backend and the cache.
 ///
 /// # Examples
 ///
-/// ```rust,no_run
-/// use orcher_sdk::actor::{ActorStateClient, ActorStateClientConfig};
+/// A worker hands one to each actor operation it runs, through its
+/// [`ActorContext`](crate::actor::ActorContext); a test builds one with
+/// [`ActorStateClient::new_mock`].
+///
+/// ```rust
+/// use orcher_sdk::actor::ActorStateClient;
 ///
 /// # #[tokio::main(flavor = "current_thread")]
 /// # async fn main() -> orcher_sdk::Result<()> {
-/// let mut config = ActorStateClientConfig::default();
-/// config.server_url = "http://localhost:50051".to_string();
-/// let client = ActorStateClient::new(config).await?;
+/// let client = ActorStateClient::new_mock();
 ///
 /// let items: Vec<String> = client
 ///     .get_state("ShoppingCart", "user-123", "cart", "exec-456")
@@ -119,61 +96,14 @@ pub struct ActorStateClient {
 
 /// Where state is actually stored.
 enum StateBackend {
-    /// The Orcher server.
-    Grpc(ActorServiceClient<Channel>),
-
     /// In-memory storage for tests.
     Mock(MockStateBackend),
 
     /// The worker host, on its connection, with the worker's credentials.
-    Host(orcher_sdk_host::Host),
+    Host(orcher_sdk_core::Host),
 }
 
 impl ActorStateClient {
-    /// Connects to the server described by `config`.
-    ///
-    /// The connection attempt itself times out after 5 seconds.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the URL is invalid or the connection fails.
-    pub async fn new(config: ActorStateClientConfig) -> Result<Self> {
-        let endpoint = crate::tls::endpoint(&config.server_url, config.tls.as_ref())
-            .map_err(Error::Network)?
-            .timeout(config.timeout)
-            .connect_timeout(Duration::from_secs(5));
-
-        let channel = endpoint.connect().await.map_err(|e| {
-            Error::Network(format!(
-                "Failed to connect to server: {}",
-                crate::tls::with_causes(&e)
-            ))
-        })?;
-
-        // State up to the configured message limit, not tonic's 4 MiB.
-        let max = orcher_sdk_core::limits::default_max_message_bytes();
-        let grpc_client = ActorServiceClient::new(channel)
-            .max_decoding_message_size(max)
-            .max_encoding_message_size(max);
-
-        let cache = if config.enable_cache {
-            Some(Arc::new(
-                Cache::builder()
-                    .max_capacity(config.max_cache_size)
-                    .time_to_live(config.cache_ttl)
-                    .build(),
-            ))
-        } else {
-            None
-        };
-
-        Ok(Self {
-            backend: StateBackend::Grpc(grpc_client),
-            config,
-            cache,
-        })
-    }
-
     /// Creates a client backed by fresh in-memory storage, for tests.
     ///
     /// No server is needed and caching is disabled.
@@ -205,7 +135,7 @@ impl ActorStateClient {
     /// connection and with the worker's TLS and credentials. One is made for
     /// each actor operation the worker runs, so its cache lives as long as
     /// the operation.
-    pub(crate) fn from_host(host: orcher_sdk_host::Host) -> Self {
+    pub(crate) fn from_host(host: orcher_sdk_core::Host) -> Self {
         let config = ActorStateClientConfig::default();
         let cache = config.enable_cache.then(|| {
             Arc::new(
@@ -267,30 +197,6 @@ impl ActorStateClient {
         }
 
         let value_bytes = match &self.backend {
-            StateBackend::Grpc(client) => {
-                let request = tonic::Request::new(GetStateRequest {
-                    actor_name: actor_name.to_string(),
-                    key: key.to_string(),
-                    state_key: state_key.to_string(),
-                    execution_id: execution_id.to_string(),
-                    ..Default::default()
-                });
-
-                let mut grpc_client = client.clone();
-                let response = grpc_client
-                    .get_state(request)
-                    .await
-                    .map_err(|e| Error::Network(format!("gRPC GetState failed: {}", e)))?;
-
-                let state_response = response.into_inner();
-
-                // An empty value is treated as absent.
-                if !state_response.exists || state_response.value.is_empty() {
-                    return Ok(None);
-                }
-
-                state_response.value
-            }
             StateBackend::Mock(mock) => {
                 let storage_key = format!("actor:{}:{}:{}", actor_name, key, state_key);
                 match mock.get(&storage_key).await {
@@ -299,7 +205,7 @@ impl ActorStateClient {
                 }
             }
             StateBackend::Host(host) => {
-                let scope = orcher_sdk_host::StateScope::new(actor_name, key, execution_id);
+                let scope = orcher_sdk_core::StateScope::new(actor_name, key, execution_id);
                 match host
                     .get_actor_state(&scope, state_key)
                     .await
@@ -342,34 +248,6 @@ impl ActorStateClient {
         T: DeserializeOwned,
     {
         match &self.backend {
-            StateBackend::Grpc(client) => {
-                let request = tonic::Request::new(GetStateRequest {
-                    actor_name: actor_name.to_string(),
-                    key: key.to_string(),
-                    state_key: state_key.to_string(),
-                    execution_id: execution_id.to_string(),
-                    ..Default::default()
-                });
-
-                let mut grpc_client = client.clone();
-                let response = grpc_client
-                    .get_state(request)
-                    .await
-                    .map_err(|e| Error::Network(format!("gRPC GetState failed: {}", e)))?;
-
-                let state_response = response.into_inner();
-                let version = state_response.version.clone();
-
-                if !state_response.exists || state_response.value.is_empty() {
-                    return Ok((None, version));
-                }
-
-                let value = serde_json::from_slice(&state_response.value).map_err(|e| {
-                    Error::Serialization(format!("Failed to deserialize state: {}", e))
-                })?;
-
-                Ok((Some(value), version))
-            }
             StateBackend::Mock(mock) => {
                 let storage_key = format!("actor:{}:{}:{}", actor_name, key, state_key);
                 match mock.get(&storage_key).await {
@@ -383,7 +261,7 @@ impl ActorStateClient {
                 }
             }
             StateBackend::Host(host) => {
-                let scope = orcher_sdk_host::StateScope::new(actor_name, key, execution_id);
+                let scope = orcher_sdk_core::StateScope::new(actor_name, key, execution_id);
                 match host
                     .get_actor_state(&scope, state_key)
                     .await
@@ -429,37 +307,12 @@ impl ActorStateClient {
             .map_err(|e| Error::Serialization(format!("Failed to serialize state: {}", e)))?;
 
         match &self.backend {
-            StateBackend::Grpc(client) => {
-                let request = tonic::Request::new(SetStateRequest {
-                    actor_name: actor_name.to_string(),
-                    key: key.to_string(),
-                    state_key: state_key.to_string(),
-                    value: value_bytes.clone(),
-                    execution_id: execution_id.to_string(),
-                    expected_version: expected_version.unwrap_or("").to_string(),
-                    ..Default::default()
-                });
-
-                let mut grpc_client = client.clone();
-                let response = grpc_client
-                    .set_state(request)
-                    .await
-                    .map_err(|e| Error::Network(format!("gRPC SetState failed: {}", e)))?;
-
-                let set_response = response.into_inner();
-                if !set_response.success {
-                    return Err(Error::Actor(format!(
-                        "Failed to set state: {}",
-                        set_response.error_message
-                    )));
-                }
-            }
             StateBackend::Mock(mock) => {
                 let storage_key = format!("actor:{}:{}:{}", actor_name, key, state_key);
                 mock.set(&storage_key, value_bytes.clone()).await;
             }
             StateBackend::Host(host) => {
-                let scope = orcher_sdk_host::StateScope::new(actor_name, key, execution_id);
+                let scope = orcher_sdk_core::StateScope::new(actor_name, key, execution_id);
                 host.set_actor_state(&scope, state_key, value_bytes.clone(), expected_version)
                     .await
                     .map_err(|e| Error::Actor(format!("Failed to set state: {e}")))?;
@@ -495,30 +348,12 @@ impl ActorStateClient {
         }
 
         match &self.backend {
-            StateBackend::Grpc(client) => {
-                let request = tonic::Request::new(DeleteStateRequest {
-                    actor_name: actor_name.to_string(),
-                    key: key.to_string(),
-                    state_key: state_key.to_string(),
-                    execution_id: execution_id.to_string(),
-                    ..Default::default()
-                });
-
-                let mut grpc_client = client.clone();
-                let response = grpc_client
-                    .delete_state(request)
-                    .await
-                    .map_err(|e| Error::Network(format!("gRPC DeleteState failed: {}", e)))?;
-
-                let delete_response = response.into_inner();
-                Ok(delete_response.existed)
-            }
             StateBackend::Mock(mock) => {
                 let storage_key = format!("actor:{}:{}:{}", actor_name, key, state_key);
                 Ok(mock.delete(&storage_key).await)
             }
             StateBackend::Host(host) => {
-                let scope = orcher_sdk_host::StateScope::new(actor_name, key, execution_id);
+                let scope = orcher_sdk_core::StateScope::new(actor_name, key, execution_id);
                 host.delete_actor_state(&scope, state_key)
                     .await
                     .map_err(|e| Error::Network(format!("DeleteState failed: {e}")))
@@ -543,25 +378,6 @@ impl ActorStateClient {
         prefix: Option<&str>,
     ) -> Result<Vec<String>> {
         match &self.backend {
-            StateBackend::Grpc(client) => {
-                let request = tonic::Request::new(ListStateKeysRequest {
-                    actor_name: actor_name.to_string(),
-                    key: key.to_string(),
-                    execution_id: execution_id.to_string(),
-                    prefix: prefix.unwrap_or_default().to_string(),
-                    ..Default::default()
-                });
-
-                let mut grpc_client = client.clone();
-                let response = grpc_client
-                    .list_state_keys(request)
-                    .await
-                    .map_err(|e| Error::Network(format!("gRPC ListStateKeys failed: {}", e)))?;
-
-                let list_response = response.into_inner();
-
-                Ok(list_response.keys)
-            }
             StateBackend::Mock(mock) => {
                 let prefix_str = format!("actor:{}:{}:{}", actor_name, key, prefix.unwrap_or(""));
                 let keys = mock.list_keys(&prefix_str).await;
@@ -578,7 +394,7 @@ impl ActorStateClient {
                 Ok(state_keys)
             }
             StateBackend::Host(host) => {
-                let scope = orcher_sdk_host::StateScope::new(actor_name, key, execution_id);
+                let scope = orcher_sdk_core::StateScope::new(actor_name, key, execution_id);
                 host.actor_state_keys(&scope, prefix.unwrap_or_default())
                     .await
                     .map_err(|e| Error::Network(format!("ListStateKeys failed: {e}")))
@@ -606,7 +422,6 @@ impl Clone for ActorStateClient {
     fn clone(&self) -> Self {
         Self {
             backend: match &self.backend {
-                StateBackend::Grpc(client) => StateBackend::Grpc(client.clone()),
                 StateBackend::Mock(mock) => StateBackend::Mock(mock.clone()),
                 StateBackend::Host(host) => StateBackend::Host(host.clone()),
             },
@@ -623,7 +438,6 @@ mod tests {
     #[test]
     fn test_config_default() {
         let config = ActorStateClientConfig::default();
-        assert_eq!(config.server_url, "http://localhost:8080");
         assert!(config.enable_cache);
     }
 
@@ -636,13 +450,12 @@ mod tests {
     #[tokio::test]
     async fn test_client_config() {
         let config = ActorStateClientConfig {
-            server_url: "http://localhost:9999".to_string(),
-            timeout: Duration::from_secs(5),
             enable_cache: false,
+            cache_ttl: Duration::from_secs(5),
             ..Default::default()
         };
 
-        assert_eq!(config.server_url, "http://localhost:9999");
+        assert_eq!(config.cache_ttl, Duration::from_secs(5));
         assert!(!config.enable_cache);
     }
 }
