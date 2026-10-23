@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.13.0](https://github.com/orcher-io/sdk-rust/compare/v0.12.0...v0.13.0) (2026-10-23)
+
+
+### ⚠ BREAKING CHANGES
+
+* run on sdk-core 0.20 ([#83](https://github.com/orcher-io/sdk-rust/issues/83))
+
+### Features
+
+* run on sdk-core 0.20 ([#83](https://github.com/orcher-io/sdk-rust/issues/83)) ([eec72f8](https://github.com/orcher-io/sdk-rust/commit/eec72f895b0dc780c5feab42974de7b0a4bfcb0e))
+
 ## [0.12.0](https://github.com/orcher-io/sdk-rust/compare/v0.11.4...v0.12.0) (2026-10-21)
 
 
