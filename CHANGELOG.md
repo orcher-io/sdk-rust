@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.13.1](https://github.com/orcher-io/sdk-rust/compare/v0.13.0...v0.13.1) (2026-10-24)
+
+
+### Bug Fixes
+
+* log a workflow's task-result lookup at trace, not warn ([#85](https://github.com/orcher-io/sdk-rust/issues/85)) ([b5a9da7](https://github.com/orcher-io/sdk-rust/commit/b5a9da704ca2e2f3aabe82036cc5eeb85a00003c))
+
 ## [0.13.0](https://github.com/orcher-io/sdk-rust/compare/v0.12.0...v0.13.0) (2026-10-23)
 
 
