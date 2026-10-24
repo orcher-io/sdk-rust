@@ -45,6 +45,10 @@ pub struct TaskOptions {
     pub timeout: Option<Duration>,
 
     /// Stable task ID. If not set, one is generated.
+    ///
+    /// Used only by runs this SDK started before the engine bound runs to a
+    /// step-id scheme: a run under the kernel's scheme has every step named by
+    /// the kernel, from its place in the code.
     pub task_id: Option<String>,
 
     /// How the task is retried on failure.

@@ -131,7 +131,11 @@ where
         // It is taken once, on every path, so the id is identical on every replay as
         // long as the workflow issues its steps in the same order.
         let sequence = ctx.next_sequence();
-        let task_id = format!("{}_{}", step_name, sequence);
+        let task_id = ctx.step_id(
+            orcher_sdk_core::kernel::step_ids::StepKind::Task,
+            sequence,
+            || format!("{}_{}", step_name, sequence),
+        );
         ctx.reach_step(crate::workflow::StepKind::Task, &task_id);
         ctx.cancellation_for(&task_id)?;
 
@@ -351,7 +355,12 @@ where
         .increment(1);
 
         // Sequence-based, so the id is the same on every replay.
-        let step_id = format!("{}_{}", step_name, ctx.next_sequence());
+        let sequence = ctx.next_sequence();
+        let step_id = ctx.step_id(
+            orcher_sdk_core::kernel::step_ids::StepKind::Value,
+            sequence,
+            || format!("{}_{}", step_name, sequence),
+        );
 
         let (replaying, cached_result) = {
             let state = ctx.state.lock().unwrap();

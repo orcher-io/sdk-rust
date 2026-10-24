@@ -14,7 +14,7 @@ categories = ["asynchronous", "concurrency", "network-programming"]
 
 [dependencies]
 # The kernel and worker host every SDK runs on, and the clients.
-orcher-sdk-core = "0.20.1"
+orcher-sdk-core = "0.22"
 
 # Macros (optional, in this workspace; published before this crate)
 orcher-sdk-macros = { workspace = true, optional = true }
@@ -62,7 +62,7 @@ ctor = { version = "0.2", optional = true }
 # The engine's own messages, for the fake engines and recorded journals tests
 # build. The SDK itself speaks only core's types and the kernel and host
 # protocols.
-orcher-proto = "0.12"
+orcher-proto = "0.14"
 tokio-test = "0.4"
 tempfile = "3"
 criterion = "0.5"
