@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.14.0](https://github.com/orcher-io/sdk-rust/compare/v0.13.1...v0.14.0) (2026-10-24)
+
+
+### Features
+
+* run workflows bound to the kernel's step-id scheme ([#87](https://github.com/orcher-io/sdk-rust/issues/87)) ([ef2dca7](https://github.com/orcher-io/sdk-rust/commit/ef2dca75042a80c472507317a216b180a1b25f20)), closes [#43](https://github.com/orcher-io/sdk-rust/issues/43)
+
 ## [0.13.1](https://github.com/orcher-io/sdk-rust/compare/v0.13.0...v0.13.1) (2026-10-24)
 
 
