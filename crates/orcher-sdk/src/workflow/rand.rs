@@ -1,15 +1,16 @@
 //! Deterministic randomness for workflows.
 //!
-//! Every value is derived from the workflow ID and a call counter, so a replay of the same
-//! workflow produces the same values in the same order.
+//! Every value is derived from the run and the order of the calls, so a replay of the
+//! same workflow produces the same values in the same order.
 
+use orcher_sdk_core::kernel::random::RunRandom;
 use rand::distributions::uniform::SampleUniform;
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, MutexGuard};
 use uuid::Uuid;
 
 /// Deterministic random source for workflow code, available as `ctx.rand()`.
@@ -20,16 +21,21 @@ use uuid::Uuid;
 ///
 /// # Determinism
 ///
-/// Each call seeds a fresh RNG from a hash of the workflow ID and a call counter, then
-/// increments the counter. The same workflow therefore gets the same sequence on every
-/// replay, different workflows get different sequences, and successive calls within one
-/// workflow return different values. Because the sequence depends on call order, workflow
-/// code must make its random calls in the same order on every run. Clones share the
-/// counter.
+/// The same run gets the same sequence of values on every replay, different runs get
+/// different sequences, and successive calls within one run return different values.
+/// Because the sequence depends on call order, workflow code must make its random calls
+/// in the same order on every run. Clones continue one sequence.
 ///
-/// The seed uses the standard library's `DefaultHasher` and the `rand` crate's `StdRng`,
-/// neither of which guarantees the same output across releases. Upgrading Rust or `rand`
-/// can therefore change the values a replay produces.
+/// A run under the kernel's step-id scheme (every run a current worker starts) draws
+/// from the kernel's generator instead, seeded once from the run's history lineage: its
+/// values depend on neither the Rust toolchain nor the `rand` release, a reset run draws
+/// the same ones, and any SDK draws the same ones for the run. `random_range` samples
+/// from that generator with `rand`'s uniform sampling.
+///
+/// A run this SDK started before then keeps its own seed, from the standard library's
+/// `DefaultHasher` and the `rand` crate's `StdRng`, neither of which guarantees the same
+/// output across releases. Upgrading Rust or `rand` can therefore change the values a
+/// replay of such a run produces.
 ///
 /// # Security
 ///
@@ -84,10 +90,66 @@ use uuid::Uuid;
 /// ```
 #[derive(Debug, Clone)]
 pub struct WorkflowRand {
-    /// Workflow ID that seeds every value.
-    workflow_id: String,
+    /// Where the values come from.
+    source: Source,
     /// Number of values drawn so far; shared by clones so they continue one sequence.
     step_counter: Arc<AtomicU64>,
+}
+
+/// Where a run's values come from.
+#[derive(Debug, Clone)]
+enum Source {
+    /// This SDK's own generator, seeded per call from the workflow ID: the
+    /// values of a run under this SDK's own step-id scheme.
+    Own {
+        /// Workflow ID that seeds every value.
+        workflow_id: String,
+    },
+    /// The kernel's generator, seeded once from the run's history lineage:
+    /// the values of a run under the kernel's step-id scheme, the ones any
+    /// SDK draws for the run. Clones draw from the one generator.
+    Kernel(Arc<Mutex<RunRandom>>),
+}
+
+/// The seed of this SDK's own generator for draw `counter` of the workflow
+/// `workflow_id`: a hash of the two.
+fn own_seed(workflow_id: &str, counter: u64) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    workflow_id.hash(&mut hasher);
+    counter.hash(&mut hasher);
+    hasher.finish()
+}
+
+/// The generator one draw uses.
+enum Drawn<'a> {
+    Own(Box<StdRng>),
+    Kernel(MutexGuard<'a, RunRandom>),
+}
+
+/// The kernel's generator as a `rand` source, for sampling the kernel has no
+/// algorithm of its own for.
+struct KernelRng<'a>(&'a mut RunRandom);
+
+impl rand::RngCore for KernelRng<'_> {
+    fn next_u32(&mut self) -> u32 {
+        (self.0.next_u64() >> 32) as u32
+    }
+
+    fn next_u64(&mut self) -> u64 {
+        self.0.next_u64()
+    }
+
+    fn fill_bytes(&mut self, dest: &mut [u8]) {
+        for chunk in dest.chunks_mut(8) {
+            let bytes = self.0.next_u64().to_le_bytes();
+            chunk.copy_from_slice(&bytes[..chunk.len()]);
+        }
+    }
+
+    fn try_fill_bytes(&mut self, dest: &mut [u8]) -> Result<(), rand::Error> {
+        self.fill_bytes(dest);
+        Ok(())
+    }
 }
 
 impl WorkflowRand {
@@ -105,24 +167,38 @@ impl WorkflowRand {
     /// ```
     pub fn new(workflow_id: impl Into<String>) -> Self {
         Self {
-            workflow_id: workflow_id.into(),
+            source: Source::Own {
+                workflow_id: workflow_id.into(),
+            },
             step_counter: Arc::new(AtomicU64::new(0)),
         }
     }
 
-    /// Returns an RNG seeded for the current counter value and advances the counter.
-    fn next_rng(&self) -> StdRng {
-        let counter = self.step_counter.fetch_add(1, Ordering::SeqCst);
-        let seed = self.compute_seed(counter);
-        StdRng::seed_from_u64(seed)
+    /// The source of a run under the kernel's step-id scheme, from the seed
+    /// its start carries: the kernel's generator and algorithms, so its values
+    /// depend on neither the Rust toolchain nor the `rand` release.
+    pub(crate) fn from_kernel_seed(seed: [u8; 32]) -> Self {
+        Self {
+            source: Source::Kernel(Arc::new(Mutex::new(RunRandom::from_seed(seed)))),
+            step_counter: Arc::new(AtomicU64::new(0)),
+        }
     }
 
-    /// Hashes the workflow ID and `counter` into a seed.
-    fn compute_seed(&self, counter: u64) -> u64 {
-        let mut hasher = DefaultHasher::new();
-        self.workflow_id.hash(&mut hasher);
-        counter.hash(&mut hasher);
-        hasher.finish()
+    /// The generator for the next draw, advancing the counter: a fresh RNG
+    /// seeded from the workflow ID and the counter, or the kernel's generator.
+    fn next_rng(&self) -> Drawn<'_> {
+        let counter = self.step_counter.fetch_add(1, Ordering::SeqCst);
+        match &self.source {
+            Source::Own { workflow_id } => Drawn::Own(Box::new(StdRng::seed_from_u64(own_seed(
+                workflow_id,
+                counter,
+            )))),
+            Source::Kernel(random) => Drawn::Kernel(
+                random
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner()),
+            ),
+        }
     }
 
     /// Returns a deterministic UUID.
@@ -172,9 +248,10 @@ impl WorkflowRand {
     /// # }
     /// ```
     pub fn uuid(&self) -> Uuid {
-        let mut rng = self.next_rng();
-        let random_u128 = rng.gen();
-        Uuid::from_u128(random_u128)
+        match self.next_rng() {
+            Drawn::Own(mut rng) => Uuid::from_u128(rng.gen()),
+            Drawn::Kernel(mut random) => Uuid::from_bytes(random.uuid_bytes()),
+        }
     }
 
     /// Returns a deterministic random `f64` in `[0.0, 1.0)`.
@@ -210,8 +287,10 @@ impl WorkflowRand {
     /// # }
     /// ```
     pub fn random(&self) -> f64 {
-        let mut rng = self.next_rng();
-        rng.gen()
+        match self.next_rng() {
+            Drawn::Own(mut rng) => rng.gen(),
+            Drawn::Kernel(mut random) => random.next_f64(),
+        }
     }
 
     /// Returns a deterministic random value from `range`, such as `5..20` or `5..=20`.
@@ -251,8 +330,10 @@ impl WorkflowRand {
         T: SampleUniform,
         R: rand::distributions::uniform::SampleRange<T>,
     {
-        let mut rng = self.next_rng();
-        rng.gen_range(range)
+        match self.next_rng() {
+            Drawn::Own(mut rng) => rng.gen_range(range),
+            Drawn::Kernel(mut random) => KernelRng(&mut random).gen_range(range),
+        }
     }
 
     /// Returns a deterministic random boolean, `true` and `false` equally likely.
@@ -284,8 +365,10 @@ impl WorkflowRand {
     /// # }
     /// ```
     pub fn bool(&self) -> bool {
-        let mut rng = self.next_rng();
-        rng.gen()
+        match self.next_rng() {
+            Drawn::Own(mut rng) => rng.gen(),
+            Drawn::Kernel(mut random) => random.next_bool(),
+        }
     }
 
     /// Returns a deterministically chosen element of `items`, or `None` if it is empty.
@@ -329,8 +412,10 @@ impl WorkflowRand {
         if items.is_empty() {
             return None;
         }
-        let mut rng = self.next_rng();
-        let index = rng.gen_range(0..items.len());
+        let index = match self.next_rng() {
+            Drawn::Own(mut rng) => rng.gen_range(0..items.len()),
+            Drawn::Kernel(mut random) => random.below(items.len() as u64) as usize,
+        };
         Some(&items[index])
     }
 
@@ -364,8 +449,10 @@ impl WorkflowRand {
     /// ```
     pub fn shuffle<T>(&self, items: &mut [T]) {
         use rand::seq::SliceRandom;
-        let mut rng = self.next_rng();
-        items.shuffle(&mut rng);
+        match self.next_rng() {
+            Drawn::Own(mut rng) => items.shuffle(&mut *rng),
+            Drawn::Kernel(mut random) => random.shuffle(items),
+        }
     }
 
     /// Returns `count` deterministically chosen elements of `items`, without replacement.
@@ -411,12 +498,18 @@ impl WorkflowRand {
             return vec![];
         }
 
-        let mut rng = self.next_rng();
         let actual_count = count.min(items.len());
-        items
-            .choose_multiple(&mut rng, actual_count)
-            .cloned()
-            .collect()
+        match self.next_rng() {
+            Drawn::Own(mut rng) => items
+                .choose_multiple(&mut *rng, actual_count)
+                .cloned()
+                .collect(),
+            Drawn::Kernel(mut random) => random
+                .sample(items.len(), actual_count)
+                .into_iter()
+                .map(|index| items[index].clone())
+                .collect(),
+        }
     }
 
     /// Returns how many random values have been drawn, across this source and its clones.
@@ -692,10 +785,8 @@ mod tests {
 
     #[test]
     fn test_workflow_rand_compute_seed_consistency() {
-        let rand = WorkflowRand::new("wf-123");
-
-        let seed1 = rand.compute_seed(0);
-        let seed2 = rand.compute_seed(0);
+        let seed1 = own_seed("wf-123", 0);
+        let seed2 = own_seed("wf-123", 0);
 
         // Same counter, same seed.
         assert_eq!(seed1, seed2);
@@ -703,10 +794,8 @@ mod tests {
 
     #[test]
     fn test_workflow_rand_compute_seed_different_counters() {
-        let rand = WorkflowRand::new("wf-123");
-
-        let seed1 = rand.compute_seed(0);
-        let seed2 = rand.compute_seed(1);
+        let seed1 = own_seed("wf-123", 0);
+        let seed2 = own_seed("wf-123", 1);
 
         // Different counters, different seeds.
         assert_ne!(seed1, seed2);

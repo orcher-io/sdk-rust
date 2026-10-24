@@ -112,6 +112,28 @@ pub(crate) fn load(activation: RunActivation, namespace: &str) -> Result<Loaded,
         || started.is_some();
     let ctx =
         WorkflowContext::starting_at(execution, replaying, "1.0.0".to_string(), started_at_ms);
+    // A run the engine bound to the kernel's step-id scheme: its steps are
+    // named the kernel's way and its random values come from the kernel's
+    // generator, seeded from its history lineage.
+    let ctx = match started.map(|(_, started)| started) {
+        Some(started) if started.step_ids == kernel::StepIdScheme::Kernel as i32 => {
+            if started.history_lineage.is_empty() {
+                return Err(
+                    "the run is under the kernel's step-id scheme but has no history lineage"
+                        .to_string(),
+                );
+            }
+            let seed: [u8; 32] = started.random_seed.as_slice().try_into().map_err(|_| {
+                format!(
+                    "the run is under the kernel's step-id scheme but its random seed is {} \
+                     bytes, not 32",
+                    started.random_seed.len()
+                )
+            })?;
+            ctx.under_kernel_scheme(started.history_lineage.clone(), seed)
+        }
+        _ => ctx,
+    };
 
     let mut asked = Vec::new();
     for (position, resolution) in activation.resolutions.iter().enumerate() {
@@ -404,8 +426,22 @@ fn step_of(command: &BridgeCommand) -> Option<(StepKind, &str)> {
     }
 }
 
+/// The call sequence a step id under the kernel's scheme was made from
+/// (`task-3` is call 3), so the call reaches the kernel numbered as it was
+/// named; `None` for an id of this SDK's own, which the kernel does not
+/// derive from the number.
+fn kernel_sequence<N: std::str::FromStr>(kind: &str, step_id: &str) -> Option<N> {
+    step_id.strip_prefix(kind)?.strip_prefix('-')?.parse().ok()
+}
+
 /// A call answered from history: its kind and id, no payloads.
 fn satisfied(step: ReachedStep) -> Command {
+    let seq = match step.kind {
+        StepKind::Task => kernel_sequence("task", &step.id),
+        StepKind::Timer => kernel_sequence("timer", &step.id),
+        StepKind::Child => None,
+    }
+    .unwrap_or_default();
     let (step_id, what) = match step.kind {
         StepKind::Task => (step.id, command::What::RunTask(Default::default())),
         StepKind::Timer => (step.id, command::What::StartTimer(Default::default())),
@@ -418,6 +454,7 @@ fn satisfied(step: ReachedStep) -> Command {
         ),
     };
     Command {
+        seq,
         satisfied: true,
         step_id,
         what: Some(what),
@@ -506,7 +543,7 @@ fn kernel_command(command: &BridgeCommand) -> Result<Command, String> {
             }),
         ),
         BridgeCommand::RecordStepResult(record) => (
-            0,
+            kernel_sequence("value", &record.step_name).unwrap_or_default(),
             record.step_name.clone(),
             command::What::RecordValue(kernel::RecordValue {
                 outcome: Some(Outcome {
@@ -528,7 +565,7 @@ fn kernel_command(command: &BridgeCommand) -> Result<Command, String> {
             }),
         ),
         BridgeCommand::WaitForEvent(wait) => (
-            0,
+            kernel_sequence("await", &wait.step_id).unwrap_or_default(),
             wait.step_id.clone(),
             command::What::AwaitEvent(kernel::AwaitEvent {
                 name: wait.event_name.clone(),
@@ -1171,7 +1208,7 @@ mod tests {
         ctx.restart_fresh_with(8, Some(restart)).unwrap();
         let runtime = ExecutionRuntime::new(RuntimeConfig::default());
         let mut policies = ctx.take_commands().into_iter().map(|issued| {
-            let bridge = runtime.convert_command(issued, "orders").unwrap();
+            let bridge = runtime.convert_command(issued, "orders", false).unwrap();
             match kernel_command(&bridge).unwrap().what {
                 Some(command::What::StartChild(child)) => child.retry_policy,
                 Some(command::What::RestartFresh(restart)) => restart.retry_policy,
@@ -1313,5 +1350,133 @@ mod tests {
             },
         )];
         assert!(commands(&issued, vec![]).is_err());
+    }
+
+    /// A run the engine bound to the kernel's step-id scheme, with history
+    /// lineage `lineage-1`.
+    fn under_the_kernel(lineage: &str) -> RunActivation {
+        let mut activation = started_as(1);
+        if let Some(resolution::What::Started(started)) = &mut activation.resolutions[0].what {
+            started.step_ids = kernel::StepIdScheme::Kernel as i32;
+            started.history_lineage = lineage.into();
+            started.random_seed =
+                orcher_sdk_core::kernel::random::seed_for_lineage(lineage).to_vec();
+        }
+        activation
+    }
+
+    /// Every call of a run under the kernel's scheme reaches the kernel named
+    /// as the kernel names it, numbered as it was named: a task, a timer, a
+    /// child started without an id, an event wait and its deadline timer, each
+    /// taking the next number, whether or not the code chose an id.
+    #[tokio::test]
+    async fn a_run_under_the_kernel_scheme_names_every_call_the_kernels_way() {
+        use crate::worker::runtime::{ExecutionRuntime, RuntimeConfig};
+        let ctx = load(under_the_kernel("lineage-1"), "contract").unwrap().ctx;
+        assert!(ctx.kernel_assigns_ids());
+
+        // The one call that takes a chosen task id, which the kernel's scheme ignores.
+        #[allow(deprecated)]
+        let _: crate::Result<u32> = ctx
+            .execute_task_with_options(
+                "charge",
+                1,
+                crate::workflow::TaskOptions::default().with_task_id("chosen"),
+            )
+            .await;
+        let _ = ctx.sleep(Duration::from_secs(1)).await;
+        ctx.start_child_workflow("ship", 7).await.unwrap();
+        let _: crate::Result<Option<u32>> = ctx
+            .wait_for_event_with_timeout("paid", Duration::from_secs(5))
+            .await;
+
+        let runtime = ExecutionRuntime::new(RuntimeConfig::default());
+        let issued: Vec<BridgeCommand> = ctx
+            .take_commands()
+            .into_iter()
+            .map(|command| runtime.convert_command(command, "orders", true).unwrap())
+            .collect();
+        let calls = commands(&issued, ctx.take_reached_steps()).unwrap();
+
+        let named: Vec<(u64, String)> = calls
+            .iter()
+            .map(|call| {
+                let id = match call.what.as_ref().unwrap() {
+                    command::What::StartChild(child) => child.workflow_id.clone(),
+                    _ => call.step_id.clone(),
+                };
+                (call.seq, id)
+            })
+            .collect();
+        assert_eq!(
+            named,
+            [
+                (0, "task-0".to_string()),
+                (1, "timer-1".into()),
+                (2, "lineage-1-child-2".into()),
+                (3, "await-3".into()),
+                (4, "timer-4".into()),
+            ]
+        );
+        // As the kernel checks them: each id is the one it assigns the call.
+        for call in &calls {
+            let assigned =
+                orcher_sdk_core::kernel::step_ids::step_id(call.what.as_ref().unwrap(), call.seq);
+            if !call.step_id.is_empty() {
+                assert_eq!(Some(call.step_id.clone()), assigned, "{call:?}");
+            }
+        }
+    }
+
+    /// A step answered from history goes back numbered as the kernel named it.
+    #[test]
+    fn a_satisfied_step_under_the_kernel_scheme_keeps_its_number() {
+        assert_eq!(satisfied(reached(StepKind::Timer, "timer-4")).seq, 4);
+        assert_eq!(satisfied(reached(StepKind::Task, "task-12")).seq, 12);
+        // An id of this SDK's own carries no number the kernel reads.
+        assert_eq!(satisfied(reached(StepKind::Task, "charge_3")).seq, 0);
+    }
+
+    /// The run's random values are the kernel's for its lineage, the values
+    /// any SDK draws for it.
+    #[tokio::test]
+    async fn a_run_under_the_kernel_scheme_draws_the_kernels_values() {
+        let ctx = load(under_the_kernel("lineage-1"), "contract").unwrap().ctx;
+        let mut kernel = orcher_sdk_core::kernel::random::RunRandom::for_lineage("lineage-1");
+        assert_eq!(ctx.rand().uuid().to_string(), kernel.uuid());
+        assert_eq!(ctx.rand().random(), kernel.next_f64());
+        assert_eq!(ctx.rand().bool(), kernel.next_bool());
+    }
+
+    /// A run under this SDK's own scheme keeps this SDK's ids.
+    #[tokio::test]
+    async fn a_run_under_the_sdks_own_scheme_keeps_its_ids() {
+        let ctx = load(started_as(1), "contract").unwrap().ctx;
+        assert!(!ctx.kernel_assigns_ids());
+        let _: crate::Result<u32> = ctx.execute_task_by_name("charge", 1).await;
+        let _ = ctx.sleep(Duration::from_secs(1)).await;
+        let ids: Vec<String> = ctx
+            .take_reached_steps()
+            .into_iter()
+            .map(|step| step.id)
+            .collect();
+        assert_eq!(ids, ["charge_0", "timer_1"]);
+    }
+
+    /// The kernel's scheme without a lineage to name children from, or a seed
+    /// of the wrong size, is not a run this SDK can run.
+    #[test]
+    fn a_kernel_run_without_its_lineage_or_seed_is_refused() {
+        let mut no_lineage = under_the_kernel("lineage-1");
+        if let Some(resolution::What::Started(started)) = &mut no_lineage.resolutions[0].what {
+            started.history_lineage.clear();
+        }
+        assert!(load(no_lineage, "contract").is_err());
+
+        let mut short_seed = under_the_kernel("lineage-1");
+        if let Some(resolution::What::Started(started)) = &mut short_seed.resolutions[0].what {
+            started.random_seed.truncate(8);
+        }
+        assert!(load(short_seed, "contract").is_err());
     }
 }

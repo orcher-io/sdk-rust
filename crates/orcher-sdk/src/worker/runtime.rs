@@ -335,7 +335,7 @@ impl ExecutionRuntime {
     ) -> Result<Vec<BridgeCommand>> {
         let mut issued = self.closure_result_commands(ctx, task_queue);
         for cmd in ctx.take_commands() {
-            issued.push(self.convert_command(cmd, task_queue)?);
+            issued.push(self.convert_command(cmd, task_queue, ctx.kernel_assigns_ids())?);
         }
         Ok(issued)
     }
@@ -354,7 +354,7 @@ impl ExecutionRuntime {
         let mut bridge_commands = self.closure_result_commands(&ctx, task_queue);
 
         for cmd in sdk_commands {
-            match self.convert_command(cmd, task_queue) {
+            match self.convert_command(cmd, task_queue, ctx.kernel_assigns_ids()) {
                 Ok(bridge_cmd) => bridge_commands.push(bridge_cmd),
                 Err(e) => {
                     tracing::error!(error = %e, "Failed to convert command");
@@ -429,10 +429,11 @@ impl ExecutionRuntime {
                 return Vec::new();
             }
         };
-        // Extracted from a map; a closure's step id ends in its step number.
+        // Extracted from a map; a closure's step id ends in its step number, after
+        // `_` for this SDK's own ids and `-` for the kernel's.
         closure_commands.sort_by_key(|cmd| {
             cmd.step_name
-                .rsplit('_')
+                .rsplit(['_', '-'])
                 .next()
                 .and_then(|n| n.parse::<u64>().ok())
                 .unwrap_or(u64::MAX)
@@ -440,9 +441,13 @@ impl ExecutionRuntime {
         closure_commands
             .into_iter()
             .filter_map(|cmd| {
-                self.convert_command(WorkflowCommand::RecordStepResult(cmd), task_queue)
-                    .map_err(|e| tracing::warn!(error = %e, "Failed to convert closure command"))
-                    .ok()
+                self.convert_command(
+                    WorkflowCommand::RecordStepResult(cmd),
+                    task_queue,
+                    ctx.kernel_assigns_ids(),
+                )
+                .map_err(|e| tracing::warn!(error = %e, "Failed to convert closure command"))
+                .ok()
             })
             .collect()
     }
@@ -477,7 +482,7 @@ impl ExecutionRuntime {
         let mut bridge_commands = self.closure_result_commands(&ctx, task_queue);
 
         for cmd in sdk_commands {
-            match self.convert_command(cmd, task_queue) {
+            match self.convert_command(cmd, task_queue, ctx.kernel_assigns_ids()) {
                 Ok(bridge_cmd) => bridge_commands.push(bridge_cmd),
                 Err(e) => {
                     tracing::error!(error = %e, "Failed to convert command during suspension");
@@ -677,10 +682,12 @@ impl ExecutionRuntime {
         (query_responses, update_results)
     }
 
+    /// `kernel_ids` says the run is under the kernel's step-id scheme.
     pub(crate) fn convert_command(
         &self,
         cmd: WorkflowCommand,
         default_task_queue: &str,
+        kernel_ids: bool,
     ) -> Result<BridgeCommand> {
         use crate::workflow::CommandOrphanPolicy;
         use orcher_sdk_core::protocol::OrphanPolicy as BridgeOrphanPolicy;
@@ -805,7 +812,14 @@ impl ExecutionRuntime {
 
             WorkflowCommand::WaitForEvent(cmd) => {
                 Ok(BridgeCommand::WaitForEvent(WaitForEventCommand {
-                    step_id: format!("event_{}_{}", cmd.event_name, cmd.sequence),
+                    step_id: if kernel_ids {
+                        orcher_sdk_core::kernel::step_ids::id_for(
+                            orcher_sdk_core::kernel::step_ids::StepKind::AwaitEvent,
+                            cmd.sequence,
+                        )
+                    } else {
+                        format!("event_{}_{}", cmd.event_name, cmd.sequence)
+                    },
                     event_name: cmd.event_name,
                     timeout_ms: cmd.timeout.map(|d| d.as_millis() as i64),
                 }))

@@ -9,6 +9,7 @@ use crate::workflow::{
     ChildWorkflowHandle, ChildWorkflowOptions, RestartFreshOptions, TaskOptions, WorkflowExecution,
 };
 use crate::workflow::{WorkflowRand, WorkflowTime};
+use orcher_sdk_core::kernel::step_ids::{self as kernel_ids, StepKind as KernelStep};
 use serde::{de::DeserializeOwned, Serialize};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::future::Future;
@@ -45,6 +46,8 @@ pub(crate) struct ReachedStep {
 pub struct WorkflowContext {
     execution: WorkflowExecution,
     version: String,
+    /// How the run's step ids are made; see [`StepIds`].
+    step_ids: StepIds,
     /// Random source seeded by the workflow id, so replays draw the same values.
     rand: WorkflowRand,
     /// Journal-derived clock; see [`WorkflowContext::time`]. Shared with the state so a
@@ -185,11 +188,26 @@ impl ContextState {
     }
 }
 
+/// How a run's step ids are made, as the engine bound the run.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum StepIds {
+    /// This SDK's own ids: a run from before the kernel assigned them, or one
+    /// a worker reporting no step-id schemes started.
+    Own,
+    /// The kernel's: every step named by its kind and call sequence, a child
+    /// started without a workflow id named from the run's history lineage.
+    Kernel {
+        /// The run's history lineage.
+        lineage: String,
+    },
+}
+
 impl Clone for WorkflowContext {
     fn clone(&self) -> Self {
         Self {
             execution: self.execution.clone(),
             version: self.version.clone(),
+            step_ids: self.step_ids.clone(),
             rand: self.rand.clone(),
             time: self.time.clone(),
             state: Arc::clone(&self.state),
@@ -251,6 +269,7 @@ impl WorkflowContext {
         let ctx = Self {
             execution,
             version,
+            step_ids: StepIds::Own,
             rand: workflow_rand,
             time: workflow_time,
             state: Arc::new(Mutex::new(context_state)),
@@ -259,6 +278,33 @@ impl WorkflowContext {
         ctx.register_automatic_queries();
 
         ctx
+    }
+
+    /// The context for a run under the kernel's step-id scheme, whose history
+    /// lineage is `lineage` and whose random values come from `seed`.
+    pub(crate) fn under_kernel_scheme(mut self, lineage: String, seed: [u8; 32]) -> Self {
+        self.step_ids = StepIds::Kernel { lineage };
+        self.rand = WorkflowRand::from_kernel_seed(seed);
+        self
+    }
+
+    /// The id of a step of kind `kind` made by the call numbered `sequence`:
+    /// the kernel's for a run under its scheme, `own` otherwise.
+    pub(crate) fn step_id(
+        &self,
+        kind: KernelStep,
+        sequence: u64,
+        own: impl FnOnce() -> String,
+    ) -> String {
+        match self.step_ids {
+            StepIds::Kernel { .. } => kernel_ids::id_for(kind, sequence),
+            StepIds::Own => own(),
+        }
+    }
+
+    /// Whether the run is under the kernel's step-id scheme.
+    pub(crate) fn kernel_assigns_ids(&self) -> bool {
+        matches!(self.step_ids, StepIds::Kernel { .. })
     }
 
     pub(crate) fn next_sequence(&self) -> u64 {
@@ -401,10 +447,14 @@ impl WorkflowContext {
         // One number on every path, cached or not. The id comes from it so it is stable
         // across replays, and taking it unconditionally keeps later ids from shifting.
         let sequence = self.next_sequence();
-        let task_id = options
-            .task_id
-            .clone()
-            .unwrap_or_else(|| format!("task_{}", sequence));
+        // Under the kernel's scheme the kernel names the step; a chosen id
+        // names it only for a run under this SDK's own.
+        let task_id = self.step_id(KernelStep::Task, sequence, || {
+            options
+                .task_id
+                .clone()
+                .unwrap_or_else(|| format!("task_{}", sequence))
+        });
         self.reach_step(StepKind::Task, &task_id);
         self.cancellation_for(&task_id)?;
 
@@ -484,15 +534,22 @@ impl WorkflowContext {
     /// on every replay and matches the engine's fired-timer event.
     pub async fn sleep(&self, duration: Duration) -> Result<()> {
         let sequence = self.next_sequence();
-        let timer_id = format!("timer_{}", sequence);
+        let timer_id = self.step_id(KernelStep::Timer, sequence, || {
+            format!("timer_{}", sequence)
+        });
         self.emit_timer(timer_id, sequence, duration)
     }
 
     /// Sleeps on a durable timer with an explicit id, for example to address it for
     /// cancellation. Prefer [`sleep`](Self::sleep) unless you need a known id.
+    ///
+    /// The id names the timer only in runs this SDK started before the engine bound
+    /// runs to a step-id scheme; a run under the kernel's scheme has the timer named
+    /// by the kernel, as [`sleep`](Self::sleep) does.
     pub async fn sleep_with_id(&self, timer_id: &str, duration: Duration) -> Result<()> {
         let sequence = self.next_sequence();
-        self.emit_timer(timer_id.to_string(), sequence, duration)
+        let timer_id = self.step_id(KernelStep::Timer, sequence, || timer_id.to_string());
+        self.emit_timer(timer_id, sequence, duration)
     }
 
     /// Emits a StartTimer command and suspends, or returns at once if the timer has
@@ -763,6 +820,9 @@ impl WorkflowContext {
     where
         T: DeserializeOwned,
     {
+        // Under the kernel's scheme a wait is a durable call like any other,
+        // and takes its number on every path, found or parked.
+        let kernel_sequence = self.kernel_assigns_ids().then(|| self.next_sequence());
         // Scoped deliberately: the suspend path below locks `state` again, and
         // std::sync::Mutex is not reentrant. Holding this guard past the early
         // return deadlocks the worker thread.
@@ -815,11 +875,11 @@ impl WorkflowContext {
         // command; the server releases its claim on the workflow and queues it again
         // when SendEvent delivers an EventReceived entry.
         //
-        // A wait is not an engine step (events are matched to waits by name), so it takes
-        // no number from the step counter on any path. If parking took one and finding
-        // the event did not, a step issued beside the wait would get another id once the
-        // event had arrived.
-        let seq = self.state.lock().unwrap().sequence;
+        // Under this SDK's own scheme a wait is not an engine step (events are matched
+        // to waits by name), so it takes no number from the step counter on any path. If
+        // parking took one and finding the event did not, a step issued beside the wait
+        // would get another id once the event had arrived.
+        let seq = kernel_sequence.unwrap_or_else(|| self.state.lock().unwrap().sequence);
 
         tracing::debug!(
             workflow_id = %self.execution.workflow_id,
@@ -876,14 +936,26 @@ impl WorkflowContext {
         // different id on replay than it had live, and that wait would find an earlier
         // wait's fired timer and time out for no reason. It is not the step sequence: a
         // wait takes no number from the step counter on any path (see `wait_for_event`).
+        //
+        // Under the kernel's scheme the wait and its deadline timer are two durable
+        // calls, each taking its number on every path, and the timer is named by its
+        // number like any other.
+        let kernel_sequences = self
+            .kernel_assigns_ids()
+            .then(|| (self.next_sequence(), self.next_sequence()));
         let (timer_id, buffered, timer_fired) = {
             let mut state = self.state.lock().unwrap();
-            let n = state
-                .event_timeout_waits
-                .entry(event_name.to_string())
-                .or_insert(0);
-            *n += 1;
-            let timer_id = format!("event_timeout_{}_{}", event_name, n);
+            let timer_id = match kernel_sequences {
+                Some((_, timer_sequence)) => kernel_ids::id_for(KernelStep::Timer, timer_sequence),
+                None => {
+                    let n = state
+                        .event_timeout_waits
+                        .entry(event_name.to_string())
+                        .or_insert(0);
+                    *n += 1;
+                    format!("event_timeout_{}_{}", event_name, n)
+                }
+            };
             // Reached on every path, whichever of the event and the deadline wins: the
             // journal holds this timer whenever an earlier activation parked here.
             state.reached_steps.push(ReachedStep {
@@ -977,10 +1049,12 @@ impl WorkflowContext {
         // Neither has arrived: park on the event and start the deadline timer.
         // The timer is not cancelled if the event wins. For a finished workflow the
         // engine marks the timer done without journaling it; for an unfinished one it
-        // costs a single extra replay. The sequence fields only label the commands; the
-        // counter is not advanced (see `wait_for_event`).
-        let wait_seq = self.state.lock().unwrap().sequence;
-        let timer_seq = wait_seq;
+        // costs a single extra replay. Under this SDK's own scheme the sequence fields
+        // only label the commands; the counter is not advanced (see `wait_for_event`).
+        let (wait_seq, timer_seq) = kernel_sequences.unwrap_or_else(|| {
+            let seq = self.state.lock().unwrap().sequence;
+            (seq, seq)
+        });
 
         tracing::debug!(
             workflow_id = %self.execution.workflow_id,
@@ -1192,7 +1266,9 @@ impl WorkflowContext {
 
         let sequence = self.next_sequence();
         let session_id = format!("session_{}", sequence);
-        let task_id = format!("{}_{}", SESSION_CREATE_TASK, sequence);
+        let task_id = self.step_id(KernelStep::Task, sequence, || {
+            format!("{}_{}", SESSION_CREATE_TASK, sequence)
+        });
         self.reach_step(StepKind::Task, &task_id);
         self.cancellation_for(&task_id)?;
 
@@ -1898,6 +1974,9 @@ impl WorkflowContext {
     /// the child at this sequence is that one, so a run that began under the old default
     /// replays to the same child rather than starting another.
     pub(crate) fn default_child_workflow_id(&self, sequence: u64) -> String {
+        if let StepIds::Kernel { lineage } = &self.step_ids {
+            return kernel_ids::default_child_workflow_id(lineage, sequence);
+        }
         let legacy = format!("child_{}", sequence);
         if self
             .state

@@ -470,7 +470,13 @@ impl Worker {
             .with_sdk("rust", env!("CARGO_PKG_VERSION"))
             // A workflow failure is marked non-retryable only when the
             // workflow code raised it so (see `workflow_failure`).
-            .with_protocol_version(orcher_sdk_core::worker_protocol::WORKFLOW_FAILURE_RETRYABILITY);
+            .with_protocol_version(orcher_sdk_core::worker_protocol::WORKFLOW_FAILURE_RETRYABILITY)
+            // New runs take the kernel's step ids, random values and child
+            // ids; runs this SDK started before keep its own.
+            .with_step_ids([
+                orcher_sdk_core::StepIdScheme::Kernel,
+                orcher_sdk_core::StepIdScheme::RustV0,
+            ]);
         if let Some(api_key) = &c.api_key {
             config = config.with_api_key(api_key);
         }
