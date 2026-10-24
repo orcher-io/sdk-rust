@@ -145,14 +145,14 @@ where
             state.observe(&task_id);
         }
 
-        tracing::warn!(
+        tracing::trace!(
             task_id = %task_id,
             step_name = %step_name,
             replaying = replaying,
             has_cached = cached_result.is_some(),
             cached_len = cached_result.as_ref().map(|v| v.len()).unwrap_or(0),
             total_pending = state.pending_task_results.len(),
-            "🔍 TASK_EXEC: Checking for cached result"
+            "Looking up the task's recorded result"
         );
 
         drop(state); // Do not hold the state lock across an await.
