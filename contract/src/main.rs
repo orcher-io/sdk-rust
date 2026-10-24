@@ -62,6 +62,35 @@ struct Args {
     /// worker process down.
     #[arg(long)]
     worker_only: bool,
+
+    /// API key every client and worker of the harness sends, for an engine
+    /// that authenticates callers. Unset, they send none.
+    #[arg(long, env = "ORCHER_API_KEY")]
+    api_key: Option<String>,
+}
+
+impl Args {
+    /// A client configuration for the engine, carrying the API key if set.
+    fn client_config(&self) -> ClientConfig {
+        let config = ClientConfig::new(self.server_url.clone());
+        match &self.api_key {
+            Some(key) => config.with_api_key(key.clone()),
+            None => config,
+        }
+    }
+
+    /// A worker builder for the engine on `task_queue`, carrying the API key
+    /// if set.
+    fn worker(&self, task_queue: &str) -> orcher_sdk::WorkerBuilder {
+        let builder = Worker::builder()
+            .server_url(&self.server_url)
+            .task_queue(task_queue)
+            .namespace(&self.namespace);
+        match &self.api_key {
+            Some(key) => builder.api_key(key.clone()),
+            None => builder,
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -192,8 +221,8 @@ fn default_parallel() -> usize {
 }
 
 /// Create `name` unless it already exists.
-async fn ensure_namespace(server_url: &str, name: &str) -> Result<()> {
-    let client = Client::with_config(ClientConfig::new(server_url.to_string()))
+async fn ensure_namespace(args: &Args, name: &str) -> Result<()> {
+    let client = Client::with_config(args.client_config())
         .await
         .context("connecting client to create the namespace")?;
     match client.create_namespace(name, 7).await {
@@ -215,15 +244,10 @@ async fn main() -> Result<()> {
 
     // Before the worker starts polling it, and with nothing outside the
     // harness: the suite used to need the CLI just for this.
-    ensure_namespace(&args.server_url, &args.namespace).await?;
+    ensure_namespace(&args, &args.namespace).await?;
 
     if args.worker_only {
-        let worker = Worker::builder()
-            .server_url(&args.server_url)
-            .task_queue(&args.task_queue)
-            .namespace(&args.namespace)
-            .build()
-            .await?;
+        let worker = args.worker(&args.task_queue).build().await?;
         return Ok(worker.run().await?);
     }
 
@@ -241,14 +265,7 @@ async fn main() -> Result<()> {
 
     // Start the worker in the background. The catalog registers itself through
     // the macros' auto-registration.
-    let worker = std::sync::Arc::new(
-        Worker::builder()
-            .server_url(&args.server_url)
-            .task_queue(&args.task_queue)
-            .namespace(&args.namespace)
-            .build()
-            .await?,
-    );
+    let worker = std::sync::Arc::new(args.worker(&args.task_queue).build().await?);
     let worker_handle = tokio::spawn({
         let worker = std::sync::Arc::clone(&worker);
         async move { worker.run().await }
@@ -258,7 +275,7 @@ async fn main() -> Result<()> {
     tokio::time::sleep(Duration::from_secs(2)).await;
 
     let client = Client::with_config(
-        ClientConfig::new(args.server_url.clone())
+        args.client_config()
             .with_namespace(args.namespace.clone())
             .with_timeout(Duration::from_secs(args.result_timeout_secs + 10)),
     )
@@ -840,10 +857,8 @@ async fn start_local_worker(
     task_queue: &str,
     run_tasks: bool,
 ) -> Result<(std::sync::Arc<Worker>, tokio::task::JoinHandle<()>)> {
-    let worker = Worker::builder()
-        .server_url(&args.server_url)
-        .task_queue(task_queue)
-        .namespace(&args.namespace)
+    let worker = args
+        .worker(task_queue)
         .build()
         .await
         .context("building a worker")?;
@@ -1228,6 +1243,12 @@ fn spawn_worker(args: &Args, task_queue: &str, doomed: bool) -> Result<std::proc
     } else {
         command.env_remove("ORCHER_CONTRACT_DOOMED_WORKER");
     }
+    // Through the environment, not the command line, where other processes
+    // could read it.
+    match &args.api_key {
+        Some(key) => command.env("ORCHER_API_KEY", key),
+        None => command.env_remove("ORCHER_API_KEY"),
+    };
     command
         .args([
             "--worker-only",
