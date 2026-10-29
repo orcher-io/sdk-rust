@@ -22,6 +22,10 @@ name = "tenancy"
 path = "src/bin/tenancy.rs"
 
 [[bin]]
+name = "events_before_wait"
+path = "src/bin/events_before_wait.rs"
+
+[[bin]]
 name = "handle_ops"
 path = "src/bin/handle_ops.rs"
 
