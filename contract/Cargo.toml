@@ -26,6 +26,10 @@ name = "events_before_wait"
 path = "src/bin/events_before_wait.rs"
 
 [[bin]]
+name = "short_timers"
+path = "src/bin/short_timers.rs"
+
+[[bin]]
 name = "handle_ops"
 path = "src/bin/handle_ops.rs"
 
