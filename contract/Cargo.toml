@@ -34,6 +34,10 @@ name = "session_worker_death"
 path = "src/bin/session_worker_death.rs"
 
 [[bin]]
+name = "poller_disconnect"
+path = "src/bin/poller_disconnect.rs"
+
+[[bin]]
 name = "handle_ops"
 path = "src/bin/handle_ops.rs"
 
