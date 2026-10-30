@@ -30,6 +30,10 @@ name = "short_timers"
 path = "src/bin/short_timers.rs"
 
 [[bin]]
+name = "session_worker_death"
+path = "src/bin/session_worker_death.rs"
+
+[[bin]]
 name = "handle_ops"
 path = "src/bin/handle_ops.rs"
 
