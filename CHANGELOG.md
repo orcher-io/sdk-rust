@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.14.1](https://github.com/orcher-io/sdk-rust/compare/v0.14.0...v0.14.1) (2026-10-31)
+
+
+### Features
+
+* build on orcher-sdk-core 0.22.1 and orcher-proto 0.15 ([#94](https://github.com/orcher-io/sdk-rust/issues/94)) ([6733e35](https://github.com/orcher-io/sdk-rust/commit/6733e357b5f5b05e0c4b482a07418ad771059bb1))
+
 ## [0.14.0](https://github.com/orcher-io/sdk-rust/compare/v0.13.1...v0.14.0) (2026-10-24)
 
 
