@@ -22,10 +22,10 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::Arc;
 
+use orcher_proto::kernel::v1::RunActivation;
+use orcher_proto::prost::Message;
 use orcher_sdk::worker::{ExecutionRuntime, Registry, RuntimeConfig};
 use orcher_sdk_core::kernel::encoded;
-use orcher_sdk_core::proto::kernel::v1::RunActivation;
-use orcher_sdk_core::proto::prost::Message;
 use orcher_sdk_core::worker::record::{read_runs, Recorded};
 
 const NAMESPACE: &str = "contract";
@@ -58,13 +58,13 @@ async fn main() -> ExitCode {
                 };
                 checked += 1;
                 let key = format!("{}/{}#{index}", run.workflow_id, run.run_id);
-                let activation = resolve(recorded);
+                let (bytes, activation) = resolve(recorded);
                 let workflow_type = activation
                     .run
                     .as_ref()
                     .map(|run| run.workflow_type.clone())
                     .unwrap_or_default();
-                let result = match answer(&runtime, &run.run_id, activation).await {
+                let result = match answer(&runtime, &run.run_id, &bytes).await {
                     Ok(result) => result,
                     Err(problem) => {
                         problems.push(format!("{key} ({workflow_type}): {problem}"));
@@ -138,22 +138,24 @@ async fn runtime() -> Arc<ExecutionRuntime> {
     runtime
 }
 
-/// A recorded activation as the worker host hands it to the SDK.
-fn resolve(recorded: &[u8]) -> RunActivation {
+/// A recorded activation as the worker host hands it to the SDK, encoded,
+/// and decoded for the workflow type it names.
+fn resolve(recorded: &[u8]) -> (Vec<u8>, RunActivation) {
     let bytes = encoded::resolve_recorded(recorded, NAMESPACE).expect("a recorded activation");
-    RunActivation::decode(bytes.as_slice()).expect("a RunActivation")
+    let activation = RunActivation::decode(bytes.as_slice()).expect("a RunActivation");
+    (bytes, activation)
 }
 
 /// The SDK's answer to a recorded activation, as what goes to the engine.
 async fn answer(
     runtime: &ExecutionRuntime,
     run_id: &str,
-    activation: RunActivation,
+    activation: &[u8],
 ) -> Result<serde_json::Value, String> {
     // Some catalog workflows count their activations in the process; each
     // activation is answered as if it were the run's next.
     catalog::ACTIVATIONS.lock().unwrap().clear();
-    let answer = runtime.run_activation(activation).await.encode_to_vec();
+    let answer = runtime.run_encoded_activation(activation).await;
     let result = encoded::execution_result(run_id, &answer)
         .map_err(|error| format!("the kernel refused the answer: {error}"))?;
     Ok(serde_json::to_value(&result).unwrap())

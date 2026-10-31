@@ -346,22 +346,6 @@ impl std::fmt::Display for TaskFailureCode {
     }
 }
 
-impl From<orcher_sdk_core::proto::kernel::v1::FailureCode> for TaskFailureCode {
-    fn from(code: orcher_sdk_core::proto::kernel::v1::FailureCode) -> Self {
-        use orcher_sdk_core::proto::kernel::v1::FailureCode;
-        match code {
-            FailureCode::Unspecified => Self::Unspecified,
-            FailureCode::Application => Self::Application,
-            FailureCode::TimedOut => Self::TimedOut,
-            FailureCode::Cancelled => Self::Cancelled,
-            FailureCode::Terminated => Self::Terminated,
-            FailureCode::NonDeterminism => Self::NonDeterminism,
-            FailureCode::PayloadTooLarge => Self::PayloadTooLarge,
-            FailureCode::InvalidCommand => Self::InvalidCommand,
-        }
-    }
-}
-
 /// Errors that can occur during workflow execution.
 #[derive(Debug, Clone, thiserror::Error)]
 #[non_exhaustive]

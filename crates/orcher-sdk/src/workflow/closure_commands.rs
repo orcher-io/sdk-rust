@@ -215,7 +215,7 @@ pub fn extract_failed_closure_commands(
     ctx: &WorkflowContext,
 ) -> Result<Vec<RecordStepResultCommand>> {
     let (pending_failures, step_attempt_counts): (
-        HashMap<String, orcher_sdk_core::protocol::StepFailure>,
+        HashMap<String, crate::workflow::StepFailure>,
         HashMap<String, i32>,
     ) = {
         let state = ctx.state.lock().map_err(|e| {

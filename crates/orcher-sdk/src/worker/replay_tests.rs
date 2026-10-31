@@ -10,6 +10,7 @@
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use orcher_proto::kernel::v1::{command, RunActivation};
 use orcher_proto::orcher::v1::journal_entry::Attributes;
 use orcher_proto::orcher::v1::{
     ChildWorkflowExecutionCompletedEventAttributes, ChildWorkflowExecutionStartedEventAttributes,
@@ -17,11 +18,11 @@ use orcher_proto::orcher::v1::{
     TaskScheduledEventAttributes, TimerFiredEventAttributes, TimerStartedEventAttributes,
     WorkflowExecutionStartedEventAttributes,
 };
+use orcher_proto::prost::Message;
 use orcher_sdk_core::kernel::encoded;
-use orcher_sdk_core::proto::kernel::v1::RunActivation;
-use orcher_sdk_core::proto::prost::Message;
-use orcher_sdk_core::protocol::{Command, ExecutionErrorType, ExecutionResult};
-use orcher_sdk_core::DeterminismViolation;
+// What core turns the SDK's answer into for the engine: the replay check's
+// view of an answer, read here as core's own result, never built.
+use orcher_sdk_core::{Command, DeterminismViolation, ExecutionResult};
 
 use crate::payload::Payload;
 use crate::worker::registration::WorkflowHandlerFn;
@@ -252,13 +253,10 @@ async fn activate(runtime: &ExecutionRuntime, engine: &FakeEngine) -> ExecutionR
     let answered = answer(runtime, engine.activation()).await;
     let result = &answered.result;
     if let Some(error) = &result.error {
-        assert_ne!(
-            error.error_type,
-            ExecutionErrorType::NonDeterminism,
-            "the activation failed as non-deterministic: {}",
-            error.message
+        panic!(
+            "the activation failed ({:?}): {}",
+            error.error_type, error.message
         );
-        panic!("the activation failed: {}", error.message);
     }
     assert!(result.successful);
     assert!(
@@ -709,12 +707,8 @@ async fn a_failure_that_left_a_recorded_step_behind_is_held() {
     let kinds: Vec<(bool, &str)> = calls
         .iter()
         .map(|c| match &c.what {
-            Some(orcher_sdk_core::proto::kernel::v1::command::What::RunTask(_)) => {
-                (c.satisfied, "task")
-            }
-            Some(orcher_sdk_core::proto::kernel::v1::command::What::RecordValue(_)) => {
-                (c.satisfied, "value")
-            }
+            Some(command::What::RunTask(_)) => (c.satisfied, "task"),
+            Some(command::What::RecordValue(_)) => (c.satisfied, "value"),
             _ => (c.satisfied, "other"),
         })
         .collect();

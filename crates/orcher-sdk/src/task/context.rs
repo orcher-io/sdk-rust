@@ -58,7 +58,7 @@ pub struct TaskContext {
 
     /// The worker host running the task, and the task's token: `heartbeat`
     /// reports through it.
-    host: Option<(orcher_sdk_core::Host, Vec<u8>)>,
+    host: Option<(orcher_sdk_core::EncodedHost, Vec<u8>)>,
 }
 
 /// A heartbeat sent through `heartbeat_tx`.
@@ -73,6 +73,39 @@ pub(crate) struct HeartbeatMessage {
 
     /// When the heartbeat was sent.
     pub timestamp: SystemTime,
+}
+
+/// Records a heartbeat with the worker host, as the encoded host messages
+/// carry it, and returns the host's answer. The host encodes its answer from
+/// the same protocol, so one that does not decode is a bug on one side or the
+/// other: logged as an error, and the heartbeat reported as failed.
+fn heartbeat_through(
+    host: &orcher_sdk_core::EncodedHost,
+    token: &[u8],
+    details: Option<Vec<u8>>,
+) -> Result<orcher_proto::host::v1::HeartbeatAnswer> {
+    use orcher_proto::prost::Message;
+    let heartbeat = orcher_proto::host::v1::TaskHeartbeat {
+        token: token.to_vec(),
+        details: details.map(|data| orcher_proto::kernel::v1::Payload {
+            data,
+            metadata: [("encoding".to_string(), b"json".to_vec())].into(),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let failed = |message: String| {
+        tracing::error!("{message}");
+        Error::Task(crate::error::TaskError::HeartbeatFailed(message))
+    };
+    let answer = host
+        .heartbeat(&heartbeat.encode_to_vec())
+        .map_err(|e| failed(format!("The worker host refused the heartbeat: {e}")))?;
+    orcher_proto::host::v1::HeartbeatAnswer::decode(answer.as_slice()).map_err(|e| {
+        failed(format!(
+            "The worker host answered the heartbeat with bytes that are not a HeartbeatAnswer: {e}"
+        ))
+    })
 }
 
 /// The attempt a task runs, counted from 1.
@@ -116,7 +149,7 @@ impl TaskContext {
         task_id: String,
         attempt: i32,
         heartbeat_timeout: Option<Duration>,
-        host: orcher_sdk_core::Host,
+        host: orcher_sdk_core::EncodedHost,
         token: Vec<u8>,
     ) -> Self {
         let cancellation_token = tokio_util::sync::CancellationToken::new();
@@ -245,12 +278,7 @@ impl TaskContext {
 
         // Handed to the driver, which sends it with the next heartbeat due.
         if let Some((host, token)) = &self.host {
-            let details = details_bytes.map(|data| orcher_sdk_core::proto::kernel::v1::Payload {
-                data,
-                metadata: [("encoding".to_string(), b"json".to_vec())].into(),
-                ..Default::default()
-            });
-            if host.heartbeat(token, details).cancel_requested {
+            if heartbeat_through(host, token, details_bytes)?.cancel_requested {
                 self.cancellation_token.cancel();
             }
         } else if let Some(tx) = &self.heartbeat_tx {
