@@ -32,8 +32,9 @@
 //!
 //! The worker host (`orcher-sdk-host`, shared with the Python and TypeScript
 //! SDKs) does the polling and all gRPC traffic, worker registration,
-//! sessions, actor registration and shutdown; it hands work over by pull.
-//! This crate runs the handlers, through [`ExecutionRuntime`]: workflow
+//! sessions, actor registration and shutdown; it hands work over by pull, as
+//! encoded protocol messages. This crate decodes them with its own generated
+//! code and runs the handlers, through [`ExecutionRuntime`]: workflow
 //! activations as the kernel protocol carries them, tasks and actor
 //! operations as host messages.
 
@@ -65,10 +66,13 @@ use crate::interceptor::InterceptorChain;
 
 use crate::error::{Error, Result};
 
+use orcher_proto::host::v1::{
+    actor_result, task_outcome, ActorMode, ActorOperation, ActorResult, TaskAssignment,
+};
+use orcher_proto::kernel::v1::run_activation_result;
+use orcher_proto::prost::Message;
 use orcher_sdk_core::observability::WireMetricsSnapshot;
-use orcher_sdk_core::proto::host::v1::{actor_result, ActorMode, ActorOperation, ActorResult};
-use orcher_sdk_core::proto::kernel::v1::{run_activation_result, Payload as KernelPayload};
-use orcher_sdk_core::{Host, HostConfig, Registrations};
+use orcher_sdk_core::{EncodedHost, Host, HostConfig, Registrations};
 
 /// Health status of a worker, as reported by [`Worker::get_health`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -570,14 +574,14 @@ impl Worker {
         }
 
         let workflows = tokio::spawn(run_workflows(
-            host.clone(),
+            host.encoded(),
             Arc::clone(&self.runtime),
             Arc::clone(&self.interceptor_chain),
             self.config.max_concurrent_workflows,
             self.config.namespace.clone(),
         ));
         let tasks = tokio::spawn(run_tasks(
-            host.clone(),
+            host.encoded(),
             Arc::clone(&self.runtime),
             Arc::clone(&self.interceptor_chain),
             self.config.max_concurrent_tasks,
@@ -586,7 +590,7 @@ impl Worker {
         #[cfg(feature = "auto-register")]
         let actors = self.actor_executor.clone().map(|executor| {
             tokio::spawn(run_actors(
-                host.clone(),
+                host.encoded(),
                 executor,
                 self.config.max_concurrent_actor_operations,
             ))
@@ -657,7 +661,7 @@ impl Worker {
 /// Runs the workflow activations the host hands over, at most `limit` at a
 /// time: a pull is made only with room to run what it brings.
 async fn run_workflows(
-    host: Host,
+    host: EncodedHost,
     runtime: Arc<ExecutionRuntime>,
     interceptors: Arc<InterceptorChain>,
     limit: usize,
@@ -668,7 +672,7 @@ async fn run_workflows(
         let Ok(permit) = Arc::clone(&room).acquire_owned().await else {
             return;
         };
-        let Some(activation) = host.next_activation().await else {
+        let Some(encoded) = host.next_activation().await else {
             return;
         };
         let (host, runtime, interceptors, namespace) = (
@@ -678,6 +682,20 @@ async fn run_workflows(
             namespace.clone(),
         );
         tokio::spawn(async move {
+            // What the host hands over is answered whether or not it can be
+            // read: bytes that are not an activation are refused as a
+            // protocol error, logged as one.
+            let activation = match activation::decode_activation(&encoded) {
+                Ok(activation) => activation,
+                Err(message) => {
+                    let refused = activation::unreadable(message).encode_to_vec();
+                    if let Err(e) = host.complete_activation(&refused).await {
+                        tracing::error!(error = %e, "Failed to refuse the unreadable activation");
+                    }
+                    drop(permit);
+                    return;
+                }
+            };
             let run = activation.run.clone().unwrap_or_default();
             let ictx = orcher_sdk_core::interceptor::InterceptorContext::workflow(
                 &run.workflow_id,
@@ -702,7 +720,7 @@ async fn run_workflows(
                 }
                 None => interceptors.on_error(&ictx, "no outcome", duration_ms),
             }
-            if let Err(e) = host.complete_activation(answer).await {
+            if let Err(e) = host.complete_activation(&answer.encode_to_vec()).await {
                 tracing::error!(error = %e, "Failed to hand the workflow activation's answer back");
             }
             drop(permit);
@@ -712,7 +730,7 @@ async fn run_workflows(
 
 /// Runs the tasks the host hands over, at most `limit` at a time.
 async fn run_tasks(
-    host: Host,
+    host: EncodedHost,
     runtime: Arc<ExecutionRuntime>,
     interceptors: Arc<InterceptorChain>,
     limit: usize,
@@ -725,6 +743,18 @@ async fn run_tasks(
         };
         let Some(assignment) = host.next_task().await else {
             return;
+        };
+        // A task that cannot be read has no token to report an outcome
+        // under: logged as the bug it is, and left to the engine's timeout.
+        let assignment = match TaskAssignment::decode(assignment.as_slice()) {
+            Ok(assignment) => assignment,
+            Err(e) => {
+                tracing::error!(
+                    error = %e,
+                    "The worker host handed over bytes that are not a TaskAssignment"
+                );
+                continue;
+            }
         };
         let (host, runtime, interceptors, namespace) = (
             host.clone(),
@@ -750,12 +780,12 @@ async fn run_tasks(
             let outcome = runtime.execute_assignment(assignment, &host).await;
             let duration_ms = start.elapsed().as_millis() as u64;
             match &outcome.result {
-                Some(orcher_sdk_core::proto::host::v1::task_outcome::Result::Failure(failure)) => {
+                Some(task_outcome::Result::Failure(failure)) => {
                     interceptors.on_error(&ictx, &failure.message, duration_ms)
                 }
                 _ => interceptors.after_execution(&ictx, duration_ms),
             }
-            if let Err(e) = host.complete_task(outcome).await {
+            if let Err(e) = host.complete_task(&outcome.encode_to_vec()).await {
                 tracing::error!(error = %e, "Failed to report the task's outcome");
             }
             drop(permit);
@@ -766,7 +796,7 @@ async fn run_tasks(
 /// Runs the actor operations the host hands over, at most `limit` at a time.
 /// State is read and written through the host.
 #[cfg(feature = "auto-register")]
-async fn run_actors(host: Host, executor: Arc<crate::actor::ActorExecutor>, limit: usize) {
+async fn run_actors(host: EncodedHost, executor: Arc<crate::actor::ActorExecutor>, limit: usize) {
     let room = Arc::new(tokio::sync::Semaphore::new(limit.max(1)));
     loop {
         let Ok(permit) = Arc::clone(&room).acquire_owned().await else {
@@ -775,18 +805,28 @@ async fn run_actors(host: Host, executor: Arc<crate::actor::ActorExecutor>, limi
         let Some(operation) = host.next_actor_operation().await else {
             return;
         };
+        // An operation that cannot be read has no id to report a result
+        // under: logged as the bug it is, and left to the engine's timeout.
+        let operation = match ActorOperation::decode(operation.as_slice()) {
+            Ok(operation) => operation,
+            Err(e) => {
+                tracing::error!(
+                    error = %e,
+                    "The worker host handed over bytes that are not an ActorOperation"
+                );
+                continue;
+            }
+        };
         let (host, executor) = (host.clone(), Arc::clone(&executor));
         tokio::spawn(async move {
-            let result = run_actor_operation(&host, &executor, &operation).await;
-            if let Err(e) = host
-                .complete_actor_operation(ActorResult {
-                    operation_id: operation.operation_id,
-                    execution_id: operation.execution_id,
-                    result: Some(result),
-                    ..Default::default()
-                })
-                .await
-            {
+            let result = run_actor_operation(host.host(), &executor, &operation).await;
+            let result = ActorResult {
+                operation_id: operation.operation_id,
+                execution_id: operation.execution_id,
+                result: Some(result),
+                ..Default::default()
+            };
+            if let Err(e) = host.complete_actor_operation(&result.encode_to_vec()).await {
                 tracing::error!(error = %e, "Failed to report the actor operation's result");
             }
             drop(permit);
@@ -830,10 +870,7 @@ async fn run_actor_operation(
         )
         .await
     {
-        Ok(data) => actor_result::Result::Value(KernelPayload {
-            data,
-            ..Default::default()
-        }),
+        Ok(output) => actor_result::Result::Value(activation::data(output)),
         Err(error) => actor_result::Result::Failure(runtime::failure_of(error)),
     }
 }

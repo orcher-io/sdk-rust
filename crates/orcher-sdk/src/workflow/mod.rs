@@ -83,7 +83,7 @@ pub use command::{
     CancelChildWorkflowCommand, CancelTimerCommand, CompleteWorkflowCommand, FailWorkflowCommand,
     OrphanPolicy as CommandOrphanPolicy, RecordStepResultCommand, RestartFreshCommand,
     ScheduleTaskCommand, SendEventCommand, StartChildWorkflowCommand, StartTimerCommand,
-    TaskRetryPolicy, WaitForEventCommand, WorkflowCommand,
+    StepFailure, TaskRetryPolicy, WaitForEventCommand, WorkflowCommand,
 };
 
 #[cfg(test)]

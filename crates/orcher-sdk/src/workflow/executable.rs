@@ -441,7 +441,7 @@ where
             Err(e) => {
                 // Record the failure before propagating the error, so
                 // extract_failed_closure_commands can report which step failed.
-                let failure = orcher_sdk_core::protocol::StepFailure {
+                let failure = crate::workflow::StepFailure {
                     message: e.to_string(),
                     stack_trace: String::new(),
                     source: "ClosureExecution".to_string(),

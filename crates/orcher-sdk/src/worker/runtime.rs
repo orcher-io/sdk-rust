@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::{RwLock, Semaphore};
 
-use crate::error::{Error, Result};
+use crate::error::Error;
 use crate::payload::Payload;
 use crate::worker::registration::{TaskHandlerFn, WorkflowHandlerFn};
 use crate::workflow::closure_commands::extract_closure_commands;
@@ -14,12 +14,12 @@ use crate::workflow::ReachedStep;
 use crate::workflow::{WorkflowCommand, WorkflowContext};
 use crate::TaskContext;
 
-use orcher_sdk_core::proto::host::v1::{task_outcome, TaskAssignment, TaskOutcome};
-use orcher_sdk_core::proto::kernel::v1::{Failure as KernelFailure, Payload as KernelPayload};
-use orcher_sdk_core::protocol::{
-    CancelWorkflowCommand, Command as BridgeCommand, CompleteWorkflowCommand, ExecutionResult,
-    FailWorkflowCommand, QueryResponse, QueryResult, ScheduleTaskCommand, StartTimerCommand,
-    TaskRetryPolicy as BridgeRetryPolicy, UpdateResponse, UpdateResult, WaitForEventCommand,
+use crate::worker::activation::{data, is_terminal, kernel_command, Produced};
+
+use orcher_proto::host::v1::{task_outcome, TaskAssignment, TaskOutcome};
+use orcher_proto::kernel::v1::{
+    command, query_answer, update_answer, Command, EndCancelled, Failure, FailureCode, QueryAnswer,
+    UpdateAnswer,
 };
 
 /// Limits and defaults for an [`ExecutionRuntime`].
@@ -161,11 +161,10 @@ impl ExecutionRuntime {
     /// answers with.
     pub(crate) async fn execute_activation(
         &self,
-        activation: orcher_sdk_core::proto::kernel::v1::RunActivation,
-    ) -> std::result::Result<(ExecutionResult, Vec<ReachedStep>), String> {
+        activation: orcher_proto::kernel::v1::RunActivation,
+    ) -> std::result::Result<(Produced, Vec<ReachedStep>), String> {
         let loaded = crate::worker::activation::load(activation, &self.config.namespace)?;
         let execution = loaded.ctx.execution().clone();
-        let run_id = execution.run_id.clone();
         self.workflows_executed.fetch_add(1, Ordering::Relaxed);
 
         let _permit = self
@@ -183,19 +182,10 @@ impl ExecutionRuntime {
                 "No handler registered for workflow type"
             );
             return Ok((
-                ExecutionResult::failed(
-                    run_id,
-                    orcher_sdk_core::protocol::ExecutionError {
-                        message: format!(
-                            "No handler registered for workflow type: {}",
-                            execution.workflow_type
-                        ),
-                        error_type: orcher_sdk_core::protocol::ExecutionErrorType::WorkflowCode,
-                        details: None,
-                        // Not raised as non-retryable by the workflow code.
-                        retryable: true,
-                    },
-                ),
+                Produced::failed(code_failure(format!(
+                    "No handler registered for workflow type: {}",
+                    execution.workflow_type
+                ))),
                 Vec::new(),
             ));
         };
@@ -231,10 +221,9 @@ impl ExecutionRuntime {
         input: Payload,
         handler: WorkflowHandlerFn,
         asked: &[Asked],
-    ) -> (ExecutionResult, Vec<ReachedStep>) {
+    ) -> (Produced, Vec<ReachedStep>) {
         let execution = ctx.execution().clone();
-        let (run_id, workflow_id, task_queue) = (
-            execution.run_id,
+        let (workflow_id, task_queue) = (
             execution.workflow_id.as_str(),
             execution.task_queue.as_str(),
         );
@@ -242,21 +231,19 @@ impl ExecutionRuntime {
 
         // Queries and updates run after the handler, because the handler is
         // what registers their handlers on the context.
-        let (query_responses, update_results) = self.answer_asked(&ctx, asked).await;
+        let (queries, updates) = self.answer_asked(&ctx, asked).await;
         // The steps the code reached, which sdk-core checks against the
         // journal to tell code that no longer replays the run.
         let reached = ctx.take_reached_steps();
-        let reached_steps = reached.iter().map(|step| step.id.clone()).collect();
 
-        let mut result = match handler_result {
+        let produced = match handler_result {
             Ok(output) => {
                 let r = self.handle_workflow_completion(
                     Ending::Completed(output),
                     ctx,
-                    run_id,
                     task_queue,
-                    query_responses,
-                    update_results,
+                    queries,
+                    updates,
                 );
                 self.workflows_succeeded.fetch_add(1, Ordering::Relaxed);
                 *self.last_success_time.lock().unwrap() = Some(Instant::now());
@@ -273,10 +260,9 @@ impl ExecutionRuntime {
                 self.handle_workflow_completion(
                     Ending::Cancelled,
                     ctx,
-                    run_id,
                     task_queue,
-                    query_responses,
-                    update_results,
+                    queries,
+                    updates,
                 )
             }
             Err(Error::Workflow(crate::error::WorkflowError::Suspended {
@@ -290,124 +276,79 @@ impl ExecutionRuntime {
                     "Workflow suspended"
                 );
                 // Suspension is not a failure, so it is not counted as one.
-                self.handle_workflow_suspension(
-                    ctx,
-                    run_id,
-                    task_queue,
-                    query_responses,
-                    update_results,
-                )
+                self.handle_workflow_suspension(ctx, task_queue, queries, updates)
             }
             Err(e) => {
                 tracing::error!(error = %e, "Workflow handler failed");
                 self.workflows_failed.fetch_add(1, Ordering::Relaxed);
-                let mut failed = ExecutionResult::failed(run_id, workflow_failure(&e));
                 // The calls the code made before it failed go with the
                 // failure, for sdk-core to check against history; they are
-                // never sent. A call that cannot be converted leaves the
-                // failure unchecked, rather than reported wrong.
-                match self.issued_commands(&ctx, task_queue) {
-                    Ok(issued) => {
-                        failed.commands = issued;
-                        failed.set_reached_steps(reached_steps);
-                    }
-                    Err(e) => {
-                        tracing::warn!(error = %e, "The calls made before the failure cannot be reported");
-                    }
-                }
-                return (failed, reached);
+                // never sent. The queries and updates asked go unanswered.
+                return (
+                    Produced {
+                        issued: self.issued_commands(&ctx, task_queue),
+                        calls_known: true,
+                        ..Produced::failed(workflow_failure(&e))
+                    },
+                    reached,
+                );
             }
         };
-        // A result that failed on the way (a command that cannot be
-        // converted) carries no calls, so it says nothing of the steps.
-        if result.successful {
-            result.set_reached_steps(reached_steps);
-        }
-        (result, reached)
+        (produced, reached)
     }
 
     /// Every command the code issued in this activation, the closures that
-    /// ran first, as the engine would receive them.
-    fn issued_commands(
-        &self,
-        ctx: &WorkflowContext,
-        task_queue: &str,
-    ) -> Result<Vec<BridgeCommand>> {
+    /// ran first, as the kernel protocol carries them.
+    fn issued_commands(&self, ctx: &WorkflowContext, task_queue: &str) -> Vec<Command> {
         let mut issued = self.closure_result_commands(ctx, task_queue);
-        for cmd in ctx.take_commands() {
-            issued.push(self.convert_command(cmd, task_queue, ctx.kernel_assigns_ids())?);
-        }
-        Ok(issued)
+        let kernel_ids = ctx.kernel_assigns_ids();
+        issued.extend(
+            ctx.take_commands()
+                .into_iter()
+                .map(|cmd| kernel_command(cmd, task_queue, kernel_ids)),
+        );
+        issued
     }
 
     fn handle_workflow_completion(
         &self,
         ending: Ending,
         ctx: WorkflowContext,
-        run_id: String,
         task_queue: &str,
-        query_responses: Vec<QueryResponse>,
-        update_results: Vec<UpdateResponse>,
-    ) -> ExecutionResult {
-        let sdk_commands = ctx.take_commands();
-
-        let mut bridge_commands = self.closure_result_commands(&ctx, task_queue);
-
-        for cmd in sdk_commands {
-            match self.convert_command(cmd, task_queue, ctx.kernel_assigns_ids()) {
-                Ok(bridge_cmd) => bridge_commands.push(bridge_cmd),
-                Err(e) => {
-                    tracing::error!(error = %e, "Failed to convert command");
-                    return ExecutionResult::failed(
-                        run_id,
-                        orcher_sdk_core::protocol::ExecutionError {
-                            message: format!("Command conversion failed: {}", e),
-                            error_type: orcher_sdk_core::protocol::ExecutionErrorType::WorkflowCode,
-                            details: None,
-                            // Not raised as non-retryable by the workflow code.
-                            retryable: true,
-                        },
-                    );
-                }
-            }
-        }
+        queries: Vec<QueryAnswer>,
+        updates: Vec<UpdateAnswer>,
+    ) -> Produced {
+        let mut issued = self.issued_commands(&ctx, task_queue);
 
         // Complete the workflow only if it did not already emit a terminal
         // command. A workflow that calls `restart_fresh` emits RestartFresh and
-        // then returns normally; adding CompleteWorkflow as well would give two
-        // terminal commands, which the bridge rejects ("Cannot have multiple
-        // terminal commands"). When the workflow restarts, its return value is
-        // deliberately discarded.
-        let already_terminal = bridge_commands.iter().any(|c| {
-            matches!(
-                c,
-                BridgeCommand::CompleteWorkflow(_)
-                    | BridgeCommand::FailWorkflow(_)
-                    | BridgeCommand::RestartFresh(_)
-                    | BridgeCommand::CancelWorkflowExecution(_)
-            )
-        });
-        if !already_terminal {
-            bridge_commands.push(match ending {
-                Ending::Completed(output) => {
-                    BridgeCommand::CompleteWorkflow(CompleteWorkflowCommand {
-                        result: Payload::new_data(output.data),
-                    })
-                }
-                Ending::Cancelled => {
-                    BridgeCommand::CancelWorkflowExecution(CancelWorkflowCommand { details: None })
-                }
+        // then returns normally; adding a completion as well would give two
+        // terminal commands, which the kernel refuses. When the workflow
+        // restarts, its return value is deliberately discarded.
+        if !issued.iter().any(is_terminal) {
+            issued.push(match ending {
+                Ending::Completed(output) => kernel_command(
+                    crate::workflow::WorkflowCommand::CompleteWorkflow(
+                        crate::workflow::CompleteWorkflowCommand {
+                            result: output.data,
+                        },
+                    ),
+                    task_queue,
+                    ctx.kernel_assigns_ids(),
+                ),
+                Ending::Cancelled => Command {
+                    what: Some(command::What::EndCancelled(EndCancelled::default())),
+                    ..Default::default()
+                },
             });
         }
 
-        let mut result = ExecutionResult::success(run_id, bridge_commands);
-        for qr in query_responses {
-            result.add_query_response(qr);
+        Produced {
+            issued,
+            queries,
+            updates,
+            ..Default::default()
         }
-        for ur in update_results {
-            result.add_update_response(ur);
-        }
-        result
     }
 
     /// `RecordStepResult` commands for the closures that ran in this activation, in the
@@ -417,11 +358,7 @@ impl ExecutionRuntime {
     /// command, which must come last, and the step the workflow suspended on, which it
     /// issued after the closures had finished. A closure command that cannot be
     /// converted is logged and skipped.
-    fn closure_result_commands(
-        &self,
-        ctx: &WorkflowContext,
-        task_queue: &str,
-    ) -> Vec<BridgeCommand> {
+    fn closure_result_commands(&self, ctx: &WorkflowContext, task_queue: &str) -> Vec<Command> {
         let mut closure_commands = match extract_closure_commands(ctx) {
             Ok(cmds) => cmds,
             Err(e) => {
@@ -440,14 +377,12 @@ impl ExecutionRuntime {
         });
         closure_commands
             .into_iter()
-            .filter_map(|cmd| {
-                self.convert_command(
+            .map(|cmd| {
+                kernel_command(
                     WorkflowCommand::RecordStepResult(cmd),
                     task_queue,
                     ctx.kernel_assigns_ids(),
                 )
-                .map_err(|e| tracing::warn!(error = %e, "Failed to convert closure command"))
-                .ok()
             })
             .collect()
     }
@@ -455,59 +390,36 @@ impl ExecutionRuntime {
     fn handle_workflow_suspension(
         &self,
         ctx: WorkflowContext,
-        run_id: String,
         task_queue: &str,
-        query_responses: Vec<QueryResponse>,
-        update_results: Vec<UpdateResponse>,
-    ) -> ExecutionResult {
+        queries: Vec<QueryAnswer>,
+        updates: Vec<UpdateAnswer>,
+    ) -> Produced {
         let sdk_commands = ctx.take_commands();
 
         if sdk_commands.is_empty() {
-            return ExecutionResult::failed(
-                run_id,
-                orcher_sdk_core::protocol::ExecutionError {
-                    message: "Workflow suspended without generating commands".to_string(),
-                    error_type: orcher_sdk_core::protocol::ExecutionErrorType::WorkflowCode,
-                    details: None,
-                    // Not raised as non-retryable by the workflow code.
-                    retryable: true,
-                },
-            );
+            return Produced::failed(code_failure(
+                "Workflow suspended without generating commands".to_string(),
+            ));
         }
 
         // The closures that ran in this activation are reported with it. A result
         // reported only on completion is not in the journal the next activation
         // replays, so the closure would run again on every activation until the
         // workflow finished.
-        let mut bridge_commands = self.closure_result_commands(&ctx, task_queue);
+        let mut issued = self.closure_result_commands(&ctx, task_queue);
+        let kernel_ids = ctx.kernel_assigns_ids();
+        issued.extend(
+            sdk_commands
+                .into_iter()
+                .map(|cmd| kernel_command(cmd, task_queue, kernel_ids)),
+        );
 
-        for cmd in sdk_commands {
-            match self.convert_command(cmd, task_queue, ctx.kernel_assigns_ids()) {
-                Ok(bridge_cmd) => bridge_commands.push(bridge_cmd),
-                Err(e) => {
-                    tracing::error!(error = %e, "Failed to convert command during suspension");
-                    return ExecutionResult::failed(
-                        run_id,
-                        orcher_sdk_core::protocol::ExecutionError {
-                            message: format!("Command conversion failed: {}", e),
-                            error_type: orcher_sdk_core::protocol::ExecutionErrorType::WorkflowCode,
-                            details: None,
-                            // Not raised as non-retryable by the workflow code.
-                            retryable: true,
-                        },
-                    );
-                }
-            }
+        Produced {
+            issued,
+            queries,
+            updates,
+            ..Default::default()
         }
-
-        let mut result = ExecutionResult::success(run_id, bridge_commands);
-        for qr in query_responses {
-            result.add_query_response(qr);
-        }
-        for ur in update_results {
-            result.add_update_response(ur);
-        }
-        result
     }
 
     /// The workflow types registered.
@@ -528,10 +440,10 @@ impl ExecutionRuntime {
     /// Runs a task the worker host handed over and returns its outcome: its
     /// value, or its failure with the type and retryability the task gave.
     /// Heartbeats the task records, and its cancellation, go through `host`.
-    pub async fn execute_assignment(
+    pub(crate) async fn execute_assignment(
         &self,
         assignment: TaskAssignment,
-        host: &orcher_sdk_core::Host,
+        host: &orcher_sdk_core::EncodedHost,
     ) -> TaskOutcome {
         let token = assignment.token.clone();
         let run = assignment.run.clone().unwrap_or_default();
@@ -554,10 +466,7 @@ impl ExecutionRuntime {
             .map(|payload| payload.data)
             .unwrap_or_default();
         let result = match self.run_task(ctx, &assignment.task_type, input).await {
-            Ok(data) => task_outcome::Result::Value(KernelPayload {
-                data,
-                ..Default::default()
-            }),
+            Ok(output) => task_outcome::Result::Value(data(output)),
             Err(error) => task_outcome::Result::Failure(reported_failure(&error)),
         };
         TaskOutcome {
@@ -635,222 +544,38 @@ impl ExecutionRuntime {
         &self,
         ctx: &WorkflowContext,
         asked: &[Asked],
-    ) -> (Vec<QueryResponse>, Vec<UpdateResponse>) {
-        let mut query_responses = Vec::new();
-        let mut update_results = Vec::new();
+    ) -> (Vec<QueryAnswer>, Vec<UpdateAnswer>) {
+        let mut queries = Vec::new();
+        let mut updates = Vec::new();
 
         for asked in asked {
             match asked {
-                Asked::Query { id, name, args } => {
-                    let response = match ctx.handle_query_request(name, args) {
-                        Ok(output) => QueryResponse {
-                            query_id: id.clone(),
-                            result: QueryResult::Success {
-                                output: Payload::new_data(output),
-                            },
-                        },
-                        Err(e) => QueryResponse {
-                            query_id: id.clone(),
-                            result: QueryResult::Failed {
-                                message: e.to_string(),
-                                details: None,
-                            },
-                        },
-                    };
-                    query_responses.push(response);
-                }
-                Asked::Update { id, name, args } => {
-                    let response = match ctx.handle_update_request(name, args.clone()).await {
-                        Ok(output) => UpdateResponse {
-                            update_id: id.clone(),
-                            result: UpdateResult::Completed {
-                                output: Payload::new_data(output),
-                            },
-                        },
-                        Err(e) => UpdateResponse {
-                            update_id: id.clone(),
-                            result: UpdateResult::Rejected {
-                                message: e.to_string(),
-                            },
-                        },
-                    };
-                    update_results.push(response);
-                }
-            }
-        }
-
-        (query_responses, update_results)
-    }
-
-    /// `kernel_ids` says the run is under the kernel's step-id scheme.
-    pub(crate) fn convert_command(
-        &self,
-        cmd: WorkflowCommand,
-        default_task_queue: &str,
-        kernel_ids: bool,
-    ) -> Result<BridgeCommand> {
-        use crate::workflow::CommandOrphanPolicy;
-        use orcher_sdk_core::protocol::OrphanPolicy as BridgeOrphanPolicy;
-
-        match cmd {
-            WorkflowCommand::RecordStepResult(cmd) => Ok(BridgeCommand::RecordStepResult(
-                orcher_sdk_core::protocol::RecordStepResultCommand {
-                    step_name: cmd.step_name,
-                    step_type: cmd.step_type,
-                    result: cmd.result,
-                    failure: cmd.failure,
-                    execution_attempt: cmd.execution_attempt,
-                },
-            )),
-
-            WorkflowCommand::ScheduleTask(task) => {
-                let retry_policy = task.retry_policy.as_ref().map(|rp| BridgeRetryPolicy {
-                    max_attempts: rp.max_attempts,
-                    initial_interval: rp.initial_interval,
-                    max_interval: rp.max_interval,
-                    backoff_coefficient: rp.backoff_coefficient,
-                    non_retryable_errors: rp.non_retryable_errors.clone(),
-                });
-
-                let headers = task
-                    .headers
-                    .into_iter()
-                    .map(|(k, v)| (k, Payload::new_data(v)))
-                    .collect();
-
-                Ok(BridgeCommand::ScheduleTask(ScheduleTaskCommand {
-                    sequence: task.sequence as u32,
-                    task_id: task.task_id,
-                    task_type: task.task_type,
-                    task_queue: if task.task_queue.is_empty() {
-                        default_task_queue.to_string()
-                    } else {
-                        task.task_queue
-                    },
-                    input: vec![Payload::new_data(task.input)],
-                    timeout: task.timeout,
-                    heartbeat_timeout: task.heartbeat_timeout,
-                    queue_timeout: task.queue_timeout,
-                    retry_policy,
-                    headers,
-                }))
-            }
-
-            WorkflowCommand::StartTimer(timer) => {
-                Ok(BridgeCommand::StartTimer(StartTimerCommand {
-                    sequence: timer.sequence as u32,
-                    timer_id: timer.timer_id,
-                    duration: timer.duration,
-                }))
-            }
-
-            WorkflowCommand::CancelTimer(cancel) => Ok(BridgeCommand::CancelTimer(
-                orcher_sdk_core::protocol::CancelTimerCommand {
-                    sequence: cancel.sequence as u32,
-                    timer_id: cancel.timer_id,
-                },
-            )),
-
-            WorkflowCommand::CompleteWorkflow(complete) => {
-                Ok(BridgeCommand::CompleteWorkflow(CompleteWorkflowCommand {
-                    result: Payload::new_data(complete.result),
-                }))
-            }
-
-            WorkflowCommand::FailWorkflow(fail) => {
-                Ok(BridgeCommand::FailWorkflow(FailWorkflowCommand {
-                    message: fail.message,
-                    details: fail.details.map(Payload::new_data),
-                    error_type: String::new(),
-                }))
-            }
-
-            WorkflowCommand::StartChildWorkflow(child) => {
-                let orphan_policy = match child.orphan_policy {
-                    CommandOrphanPolicy::Terminate => BridgeOrphanPolicy::Terminate,
-                    CommandOrphanPolicy::Abandon => BridgeOrphanPolicy::Abandon,
-                    CommandOrphanPolicy::Cancel => BridgeOrphanPolicy::Cancel,
-                };
-
-                Ok(BridgeCommand::StartChildWorkflow(
-                    orcher_sdk_core::protocol::StartChildWorkflowCommand {
-                        sequence: child.sequence as u32,
-                        workflow_id: child.workflow_id,
-                        workflow_type: child.workflow_type,
-                        task_queue: if child.task_queue.is_empty() {
-                            default_task_queue.to_string()
-                        } else {
-                            child.task_queue
-                        },
-                        input: vec![Payload::new_data(child.input)],
-                        timeout: child.timeout,
-                        orphan_policy,
-                        retry_policy: child.retry_policy.as_ref().map(workflow_retry_policy),
-                        ..Default::default()
-                    },
-                ))
-            }
-
-            WorkflowCommand::SendEvent(event) => Ok(BridgeCommand::SendEvent(
-                orcher_sdk_core::protocol::SendEventCommand {
-                    workflow_id: event.workflow_id,
-                    run_id: None,
-                    event_name: event.event_name,
-                    payload: Payload::new_data(event.data),
-                    headers: vec![],
-                },
-            )),
-
-            // The engine identifies the child by the id its parent gave it; the run id
-            // is left empty because the child's run changes when it is retried.
-            WorkflowCommand::CancelChildWorkflow(cancel) => Ok(BridgeCommand::CancelChildWorkflow(
-                orcher_sdk_core::protocol::CancelChildWorkflowCommand {
-                    workflow_id: cancel.workflow_id,
-                    run_id: String::new(),
-                },
-            )),
-
-            WorkflowCommand::WaitForEvent(cmd) => {
-                Ok(BridgeCommand::WaitForEvent(WaitForEventCommand {
-                    step_id: if kernel_ids {
-                        orcher_sdk_core::kernel::step_ids::id_for(
-                            orcher_sdk_core::kernel::step_ids::StepKind::AwaitEvent,
-                            cmd.sequence,
-                        )
-                    } else {
-                        format!("event_{}_{}", cmd.event_name, cmd.sequence)
-                    },
-                    event_name: cmd.event_name,
-                    timeout_ms: cmd.timeout.map(|d| d.as_millis() as i64),
-                }))
-            }
-
-            WorkflowCommand::RestartFresh(restart) => Ok(BridgeCommand::RestartFresh(
-                orcher_sdk_core::protocol::RestartFreshCommand {
-                    workflow_type: restart.workflow_type.unwrap_or_default(),
-                    task_queue: restart.task_queue,
-                    input: vec![Payload::new_data(restart.input)],
-                    timeout: restart.timeout,
-                    retry_policy: restart.retry_policy.as_ref().map(workflow_retry_policy),
+                Asked::Query { id, name, args } => queries.push(QueryAnswer {
+                    query_id: id.clone(),
+                    answer: Some(match ctx.handle_query_request(name, args) {
+                        Ok(output) => query_answer::Answer::Value(data(output)),
+                        Err(e) => query_answer::Answer::Failure(Failure {
+                            message: e.to_string(),
+                            ..Default::default()
+                        }),
+                    }),
                     ..Default::default()
-                },
-            )),
+                }),
+                Asked::Update { id, name, args } => updates.push(UpdateAnswer {
+                    update_id: id.clone(),
+                    answer: Some(match ctx.handle_update_request(name, args.clone()).await {
+                        Ok(output) => update_answer::Answer::Value(data(output)),
+                        Err(e) => update_answer::Answer::Rejected(Failure {
+                            message: e.to_string(),
+                            ..Default::default()
+                        }),
+                    }),
+                    ..Default::default()
+                }),
+            }
         }
-    }
-}
 
-/// A child's or a fresh run's retry policy, sent as a workflow start sends
-/// one: `max_attempts` as given (the first run included, 0 unlimited), so a
-/// policy left at its default count sends 3.
-fn workflow_retry_policy(
-    policy: &crate::task::RetryPolicy,
-) -> orcher_sdk_core::protocol::WorkflowRetryPolicy {
-    orcher_sdk_core::protocol::WorkflowRetryPolicy {
-        max_attempts: policy.max_attempts,
-        initial_interval: Some(policy.initial_interval),
-        max_interval: Some(policy.max_interval),
-        backoff_coefficient: policy.backoff_coefficient,
-        non_retryable_errors: policy.non_retryable_errors.clone(),
+        (queries, updates)
     }
 }
 
@@ -914,19 +639,19 @@ fn task_failure(error: crate::Error) -> orcher_sdk_core::Error {
 /// A handler's error as the failure the host reports: the type and
 /// retryability a [`TaskError::Application`](crate::error::TaskError::Application)
 /// names, or only the message for any other error.
-pub(crate) fn failure_of(error: crate::Error) -> KernelFailure {
+pub(crate) fn failure_of(error: crate::Error) -> Failure {
     reported_failure(&task_failure(error))
 }
 
-fn reported_failure(error: &orcher_sdk_core::Error) -> KernelFailure {
+fn reported_failure(error: &orcher_sdk_core::Error) -> Failure {
     match error.task_failure() {
-        Some(failure) => KernelFailure {
+        Some(failure) => Failure {
             message: failure.message.clone(),
             error_type: failure.error_type.clone().unwrap_or_default(),
             non_retryable: failure.non_retryable,
             ..Default::default()
         },
-        None => KernelFailure {
+        None => Failure {
             message: error.to_string(),
             ..Default::default()
         },
@@ -944,24 +669,37 @@ fn reported_failure(error: &orcher_sdk_core::Error) -> KernelFailure {
 /// does: a [`TaskError::non_retryable`](crate::error::TaskError::non_retryable).
 /// A task's failure the workflow passes on is the workflow's own failure,
 /// retryable like any other.
-fn workflow_failure(error: &Error) -> orcher_sdk_core::protocol::ExecutionError {
-    use orcher_sdk_core::protocol::{ExecutionError, ExecutionErrorType};
+fn workflow_failure(error: &Error) -> Failure {
     match error {
-        Error::Workflow(crate::error::WorkflowError::NonDeterministic(_)) => {
-            ExecutionError::non_determinism(error.to_string(), None)
-        }
-        _ => ExecutionError {
+        Error::Workflow(crate::error::WorkflowError::NonDeterministic(_)) => Failure {
             message: error.to_string(),
-            error_type: ExecutionErrorType::WorkflowCode,
-            details: None,
-            retryable: !matches!(
+            non_retryable: true,
+            code: FailureCode::NonDeterminism as i32,
+            ..Default::default()
+        },
+        _ => Failure {
+            message: error.to_string(),
+            non_retryable: matches!(
                 error,
                 Error::Task(crate::error::TaskError::Application {
                     non_retryable: true,
                     ..
                 })
             ),
+            code: FailureCode::Application as i32,
+            ..Default::default()
         },
+    }
+}
+
+/// A failure of the workflow's run that its code did not raise: retryable,
+/// so the workflow's retry policy decides.
+fn code_failure(message: String) -> Failure {
+    Failure {
+        message,
+        non_retryable: false,
+        code: FailureCode::Application as i32,
+        ..Default::default()
     }
 }
 
@@ -992,19 +730,17 @@ mod tests {
 
     #[test]
     fn a_non_deterministic_workflow_is_reported_as_non_determinism() {
-        use orcher_sdk_core::protocol::ExecutionErrorType;
-
         let reported = workflow_failure(&Error::Workflow(
             crate::error::WorkflowError::non_deterministic("step 3 changed"),
         ));
-        assert_eq!(reported.error_type, ExecutionErrorType::NonDeterminism);
-        assert!(!reported.retryable);
+        assert_eq!(reported.code, FailureCode::NonDeterminism as i32);
+        assert!(reported.non_retryable);
         assert!(reported.message.contains("step 3 changed"));
 
         let reported = workflow_failure(&Error::Workflow(crate::error::WorkflowError::Panic(
             "boom".into(),
         )));
-        assert_eq!(reported.error_type, ExecutionErrorType::WorkflowCode);
+        assert_eq!(reported.code, FailureCode::Application as i32);
     }
 
     /// A workflow's failure is non-retryable only when its code raised it as
@@ -1013,7 +749,7 @@ mod tests {
     #[test]
     fn a_workflow_failure_is_non_retryable_only_when_raised_so() {
         let raised = workflow_failure(&TaskError::non_retryable("OutOfStock", "gone").into());
-        assert!(!raised.retryable);
+        assert!(raised.non_retryable);
         assert!(raised.message.contains("gone"));
 
         for error in [
@@ -1025,7 +761,10 @@ mod tests {
             )),
         ] {
             let reported = workflow_failure(&error);
-            assert!(reported.retryable, "{error:?} was reported non-retryable");
+            assert!(
+                !reported.non_retryable,
+                "{error:?} was reported non-retryable"
+            );
         }
     }
 

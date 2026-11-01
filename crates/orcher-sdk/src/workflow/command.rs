@@ -1,8 +1,8 @@
 //! Commands a workflow run produces for the engine.
 //!
 //! `WorkflowContext` queues these as the workflow schedules tasks, starts
-//! timers and so on. The worker converts them to sdk-core bridge commands when
-//! the run completes or suspends.
+//! timers and so on. The worker converts them to the kernel protocol's
+//! commands when the run completes or suspends.
 //!
 //! These types are public for testing support. Workflow code should use the
 //! `WorkflowContext` methods instead.
@@ -127,10 +127,26 @@ pub struct RecordStepResultCommand {
     pub result: Vec<u8>,
 
     /// Failure details, set when the step failed.
-    pub failure: Option<orcher_sdk_core::protocol::StepFailure>,
+    pub failure: Option<StepFailure>,
 
     /// How many times the step has run, including this attempt.
     pub execution_attempt: i32,
+}
+
+/// Details of a failed step.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StepFailure {
+    /// Error message.
+    pub message: String,
+
+    /// Stack trace, or empty if none is available.
+    pub stack_trace: String,
+
+    /// Where the error came from, for example `"ClosureExecution"`.
+    pub source: String,
+
+    /// Application-specific failure type.
+    pub failure_type: String,
 }
 
 /// Starts a durable timer.
