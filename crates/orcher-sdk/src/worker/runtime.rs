@@ -639,6 +639,7 @@ fn task_failure(error: crate::Error) -> orcher_sdk_core::Error {
 /// A handler's error as the failure the host reports: the type and
 /// retryability a [`TaskError::Application`](crate::error::TaskError::Application)
 /// names, or only the message for any other error.
+#[cfg(feature = "auto-register")]
 pub(crate) fn failure_of(error: crate::Error) -> Failure {
     reported_failure(&task_failure(error))
 }
