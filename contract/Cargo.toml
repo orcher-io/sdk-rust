@@ -52,7 +52,7 @@ path = "src/bin/replay_check.rs"
 [dependencies]
 orcher-sdk = { path = "../crates/orcher-sdk", features = ["auto-register"] }
 # For ListWorkflowsOptions in the tenancy check; follows the SDK's own version.
-orcher-sdk-core = "0.22.1"
+orcher-sdk-core = "0.23.0"
 # To read the recorded activations replay_check replays; follows the SDK's own.
 orcher-proto = "0.15"
 
