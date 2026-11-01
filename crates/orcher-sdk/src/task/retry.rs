@@ -54,8 +54,9 @@ pub struct RetryPolicy {
     ///
     /// A value of 1 means no retries, and the default of 3 allows two. When the
     /// engine applies the policy (to a task or a workflow), 0 retries without
-    /// limit. [`retry_with_policy`] runs in process and treats 0 differently: it
-    /// never calls the operation.
+    /// limit. [`retry_with_policy`] also retries without limit when this is 0.
+    /// Engine versions through 0.5.5 instead interpret 0 as the default three
+    /// attempts; unlimited retries require an engine release with the fix.
     pub max_attempts: u32,
 
     /// Wait before the first retry.
@@ -317,9 +318,8 @@ impl RetryPolicy {
 ///
 /// # Errors
 ///
-/// Returns the first non-retryable error, or the last error once all attempts
-/// have failed. If `max_attempts` is 0 the operation is never called and an
-/// [`Error::Other`](crate::Error::Other) is returned.
+/// Returns the first non-retryable error, or the last error once all finite
+/// attempts have failed. A `max_attempts` of 0 retries without limit.
 ///
 /// # Example
 ///
@@ -342,14 +342,16 @@ where
     F: Fn() -> Fut,
     Fut: Future<Output = crate::error::Result<T>>,
 {
-    let mut last_error = None;
     let mut prev_interval = policy.initial_interval;
 
-    for attempt in 1..=policy.max_attempts {
+    let mut attempt = 0u32;
+    loop {
+        attempt = attempt.saturating_add(1);
         match f().await {
             Ok(value) => return Ok(value),
             Err(e) => {
-                if !e.is_retryable() || attempt == policy.max_attempts {
+                if !e.is_retryable() || (policy.max_attempts != 0 && attempt >= policy.max_attempts)
+                {
                     return Err(e);
                 }
 
@@ -369,15 +371,10 @@ where
                     "Retrying after error"
                 );
 
-                last_error = Some(e);
                 tokio::time::sleep(interval).await;
             }
         }
     }
-
-    Err(last_error.unwrap_or_else(|| {
-        crate::Error::Other("Retry policy exhausted without any attempts".to_string())
-    }))
 }
 
 #[cfg(test)]
@@ -526,6 +523,36 @@ mod tests {
                 let n = attempts.fetch_add(1, Ordering::SeqCst) + 1;
                 if n < 3 {
                     // Use a retryable error variant (connection failure)
+                    Err(crate::Error::Client(
+                        crate::error::ClientError::ConnectionFailed {
+                            url: "http://test".to_string(),
+                            reason: "transient".to_string(),
+                        },
+                    ))
+                } else {
+                    Ok(42)
+                }
+            }
+        })
+        .await;
+
+        assert_eq!(result.unwrap(), 42);
+        assert_eq!(attempts.load(Ordering::SeqCst), 3);
+    }
+
+    #[tokio::test]
+    async fn zero_max_attempts_retries_until_success() {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        let attempts = std::sync::Arc::new(AtomicU32::new(0));
+        let attempts_clone = attempts.clone();
+        let policy = RetryPolicy::default()
+            .with_max_attempts(0)
+            .with_initial_interval(Duration::ZERO);
+
+        let result = retry_with_policy(&policy, || {
+            let attempts = attempts_clone.clone();
+            async move {
+                if attempts.fetch_add(1, Ordering::SeqCst) < 2 {
                     Err(crate::Error::Client(
                         crate::error::ClientError::ConnectionFailed {
                             url: "http://test".to_string(),

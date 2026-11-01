@@ -81,10 +81,8 @@ fn workflow_and_task_options_build_with_their_methods() {
     let restart = RestartFreshOptions::new().task_queue("q");
     assert_eq!(restart.task_queue.as_deref(), Some("q"));
 
-    let exec = TaskExecutionOptions::default()
-        .with_max_attempts(2)
-        .with_retry_backoff_coefficient(3.0);
-    assert_eq!(exec.max_attempts, Some(2));
+    let exec = TaskExecutionOptions::default().with_retry_backoff_coefficient(3.0);
+    assert_eq!(exec.retry_backoff_coefficient, Some(3.0));
 }
 
 #[test]

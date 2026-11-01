@@ -218,6 +218,19 @@ async fn charge(_ctx: TaskContext, order_id: String) -> Result<String> {
 Any other error is retried. `RetryPolicy::with_non_retryable_errors` sets the
 same list on a policy built in code.
 
+To remove the attempt limit for a task, use the explicit `unlimited` value:
+
+```rust
+#[task(retry_policy(max_attempts = unlimited))]
+async fn retry_until_available(_ctx: TaskContext) -> Result<()> {
+    // ...
+    Ok(())
+}
+```
+
+This requires an engine release that interprets a zero attempt count as
+unlimited. Engines through 0.5.5 instead apply the default three attempts.
+
 A workflow is marked the same way: a `TaskError::non_retryable` returned from
 workflow code fails the workflow without a retry, whatever its retry policy
 allows. Any other error a workflow returns is retried as its policy says.

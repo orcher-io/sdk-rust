@@ -250,7 +250,7 @@ pub fn expand_task_shortcuts(attrs: &mut TaskAttrs) -> Result<(), String> {
     if let Some(max_attempts) = attrs.retry {
         if attrs.retry_policy.is_none() {
             attrs.retry_policy = Some(RetryPolicyAttr {
-                max_attempts,
+                max_attempts: RetryAttempts::Finite(max_attempts),
                 initial_interval: 1,
                 max_interval: 60,
                 backoff_coefficient: 2.0,
@@ -289,11 +289,13 @@ pub fn expand_task_shortcuts(attrs: &mut TaskAttrs) -> Result<(), String> {
 }
 
 /// Retry policy arguments, such as `retry_policy(max_attempts = 5, initial_interval = 2)`.
+///
+/// Set `max_attempts = unlimited` for no attempt limit.
 #[derive(Debug, Clone, FromMeta)]
 pub struct RetryPolicyAttr {
     /// Maximum number of attempts, including the first one.
     #[darling(default = "default_max_attempts")]
-    pub max_attempts: u32,
+    pub max_attempts: RetryAttempts,
 
     /// Delay before the first retry, in seconds.
     #[darling(default = "default_initial_interval")]
@@ -306,6 +308,56 @@ pub struct RetryPolicyAttr {
     /// Factor applied to the delay after each retry.
     #[darling(default = "default_backoff_coefficient")]
     pub backoff_coefficient: f64,
+}
+
+/// Finite retry count, or the explicit `unlimited` setting.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RetryAttempts {
+    /// A finite number of attempts.
+    Finite(u32),
+    /// Retry without an attempt limit.
+    Unlimited,
+}
+
+impl RetryAttempts {
+    /// The number encoded for the engine; zero means unlimited there.
+    pub fn engine_value(self) -> u32 {
+        match self {
+            Self::Finite(attempts) => attempts,
+            Self::Unlimited => 0,
+        }
+    }
+}
+
+impl FromMeta for RetryAttempts {
+    fn from_expr(expr: &Expr) -> darling::Result<Self> {
+        match expr {
+            Expr::Path(path) if path.path.is_ident("unlimited") => Ok(Self::Unlimited),
+            Expr::Lit(lit) => Self::from_value(&lit.lit),
+            _ => Err(
+                darling::Error::custom("expected a positive attempt count or `unlimited`")
+                    .with_span(expr),
+            ),
+        }
+    }
+
+    fn from_value(value: &Lit) -> darling::Result<Self> {
+        match value {
+            Lit::Int(attempts) => attempts
+                .base10_parse()
+                .map(Self::Finite)
+                .map_err(|error| darling::Error::custom(error.to_string()).with_span(attempts)),
+            Lit::Str(value) if value.value() == "unlimited" => Ok(Self::Unlimited),
+            Lit::Str(_) => Err(darling::Error::custom(
+                "expected a positive attempt count or `unlimited`",
+            )
+            .with_span(value)),
+            _ => Err(
+                darling::Error::custom("expected a positive attempt count or `unlimited`")
+                    .with_span(value),
+            ),
+        }
+    }
 }
 
 /// Resource requirements, such as `resources(cpu = 2.0, memory = "512Mi")`.
@@ -701,8 +753,8 @@ pub struct WorkflowAttrs {
 }
 
 // Defaults referenced by the darling attributes above.
-fn default_max_attempts() -> u32 {
-    3
+fn default_max_attempts() -> RetryAttempts {
+    RetryAttempts::Finite(3)
 }
 
 fn default_initial_interval() -> u64 {
@@ -938,8 +990,10 @@ impl FromMeta for WorkflowAttrs {
 /// Checks that a retry policy has at least one attempt, a non-zero initial interval, and a
 /// maximum interval no smaller than the initial one.
 pub fn validate_retry_policy(policy: &RetryPolicyAttr) -> Result<(), String> {
-    if policy.max_attempts == 0 {
-        return Err("max_attempts must be greater than 0".to_string());
+    if policy.max_attempts == RetryAttempts::Finite(0) {
+        return Err(
+            "max_attempts must be greater than 0; use `unlimited` for no limit".to_string(),
+        );
     }
 
     if policy.initial_interval == 0 {
@@ -1186,7 +1240,7 @@ mod tests {
     #[test]
     fn test_retry_policy_defaults() {
         let policy = RetryPolicyAttr::default();
-        assert_eq!(policy.max_attempts, 3);
+        assert_eq!(policy.max_attempts, RetryAttempts::Finite(3));
         assert_eq!(policy.initial_interval, 1);
         assert_eq!(policy.max_interval, 60);
         assert_eq!(policy.backoff_coefficient, 2.0);
@@ -1201,10 +1255,29 @@ mod tests {
     #[test]
     fn test_validate_retry_policy_zero_attempts() {
         let policy = RetryPolicyAttr {
-            max_attempts: 0,
+            max_attempts: RetryAttempts::Finite(0),
             ..Default::default()
         };
         assert!(validate_retry_policy(&policy).is_err());
+    }
+
+    #[test]
+    fn retry_policy_accepts_explicit_unlimited_attempts() {
+        let meta: Meta = syn::parse_quote!(retry_policy(max_attempts = unlimited));
+        let policy = RetryPolicyAttr::from_meta(&meta).unwrap();
+
+        assert_eq!(policy.max_attempts, RetryAttempts::Unlimited);
+        assert_eq!(policy.max_attempts.engine_value(), 0);
+        assert!(validate_retry_policy(&policy).is_ok());
+    }
+
+    #[test]
+    fn retry_policy_rejects_implicit_zero_attempts() {
+        let meta: Meta = syn::parse_quote!(retry_policy(max_attempts = 0));
+        let policy = RetryPolicyAttr::from_meta(&meta).unwrap();
+        let error = validate_retry_policy(&policy).unwrap_err();
+
+        assert!(error.to_string().contains("use `unlimited`"));
     }
 
     #[test]
