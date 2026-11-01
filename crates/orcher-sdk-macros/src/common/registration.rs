@@ -130,7 +130,7 @@ pub fn generate_sdk_task_registration(
     // to the schedule command.
     let non_retryable_errors = &attrs.non_retryable_errors;
     let retry_policy_tokens = if let Some(ref retry_attr) = attrs.retry_policy {
-        let max_attempts = retry_attr.max_attempts;
+        let max_attempts = retry_attr.max_attempts.engine_value();
         let initial_interval = retry_attr.initial_interval;
         let max_interval = retry_attr.max_interval;
         let backoff_coefficient = retry_attr.backoff_coefficient;
@@ -293,7 +293,7 @@ pub fn generate_sdk_workflow_registration(
         .unwrap_or_else(|| quote! { None });
 
     let _retry_policy = if let Some(ref retry_attr) = attrs.retry_policy {
-        let max_attempts = retry_attr.max_attempts;
+        let max_attempts = retry_attr.max_attempts.engine_value();
         let initial_interval = retry_attr.initial_interval;
         let max_interval = retry_attr.max_interval;
         let backoff_coefficient = retry_attr.backoff_coefficient;

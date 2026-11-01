@@ -40,6 +40,14 @@ async fn task_with_retry_shortcut(_ctx: TaskContext, input: String) -> orcher_sd
     Ok(input)
 }
 
+#[task(retry_policy(max_attempts = unlimited))]
+async fn task_with_unlimited_retries(
+    _ctx: TaskContext,
+    input: String,
+) -> orcher_sdk::Result<String> {
+    Ok(input)
+}
+
 #[task(preset = "quick")]
 async fn task_with_quick_preset(_ctx: TaskContext, input: String) -> orcher_sdk::Result<String> {
     Ok(input)
@@ -74,6 +82,15 @@ fn retry_shortcut_registers_policy_with_defaults() {
     assert_eq!(policy.initial_interval, Duration::from_secs(1));
     assert_eq!(policy.max_interval, Duration::from_secs(60));
     assert_eq!(policy.backoff_coefficient, 2.0);
+}
+
+#[test]
+fn unlimited_policy_registers_engine_unlimited_value() {
+    ensure_registered();
+    let policy = task_retry_policy("task_with_unlimited_retries")
+        .expect("the explicit unlimited policy should be registered");
+
+    assert_eq!(policy.max_attempts, 0);
 }
 
 #[test]

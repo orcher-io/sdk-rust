@@ -409,6 +409,14 @@ mod tests {
     }
 
     #[test]
+    fn task_policy_can_explicitly_retry_without_a_limit() {
+        let expanded = expand(parse_quote!(task(retry_policy(max_attempts = unlimited))))
+            .expect("unlimited retry policy should expand");
+
+        assert!(expanded.contains("with_max_attempts (0u32)"), "{expanded}");
+    }
+
+    #[test]
     fn namespace_is_rejected_with_where_to_set_it() {
         let meta: Meta = parse_quote!(task(name = "t", namespace = "production"));
         let message = parse_task_attrs(&meta)
@@ -423,7 +431,10 @@ mod tests {
         let meta: Meta = parse_quote!(task(preset = "quick"));
         let mut attrs = parse_task_attrs(&meta).unwrap();
         expand_task_shortcuts(&mut attrs).unwrap();
-        assert_eq!(attrs.retry_policy.unwrap().max_attempts, 1);
+        assert_eq!(
+            attrs.retry_policy.unwrap().max_attempts,
+            crate::common::attrs::RetryAttempts::Finite(1)
+        );
         assert_eq!(attrs.timeout, Some(60));
 
         assert!(expand(parse_quote!(task(preset = "quick"))).is_ok());

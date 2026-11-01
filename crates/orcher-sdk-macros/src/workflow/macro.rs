@@ -333,6 +333,19 @@ mod tests {
     }
 
     #[test]
+    fn workflow_retry_policy_attribute_points_to_start_options() {
+        let expanded = expand(parse_quote!(workflow(
+            name = "w",
+            retry_policy(max_attempts = unlimited)
+        )));
+
+        assert!(
+            expanded.contains("StartWorkflowOptions::with_retry_policy"),
+            "{expanded}"
+        );
+    }
+
+    #[test]
     fn timeout_does_not_bound_the_workflow_by_wall_clock() {
         // A workflow suspends between activations, so a wall-clock bound in the handler
         // would limit one activation and make replay depend on timing.

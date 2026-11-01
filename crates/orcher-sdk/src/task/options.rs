@@ -12,7 +12,6 @@ use std::time::Duration;
 /// let options = TaskExecutionOptions::default()
 ///     .with_timeout(Duration::from_secs(300))
 ///     .with_heartbeat_timeout(Duration::from_secs(30))
-///     .with_max_attempts(3)
 ///     .with_retry_initial_interval(Duration::from_secs(1));
 /// ```
 #[derive(Debug, Clone, Default)]
@@ -23,9 +22,6 @@ pub struct TaskExecutionOptions {
 
     /// How long the task may go without a heartbeat before it is considered lost.
     pub heartbeat_timeout: Option<Duration>,
-
-    /// Maximum number of attempts, including the first.
-    pub max_attempts: Option<u32>,
 
     /// Delay before the first retry.
     pub retry_initial_interval: Option<Duration>,
@@ -47,12 +43,6 @@ impl TaskExecutionOptions {
     /// Set the heartbeat timeout.
     pub fn with_heartbeat_timeout(mut self, timeout: Duration) -> Self {
         self.heartbeat_timeout = Some(timeout);
-        self
-    }
-
-    /// Set the maximum number of attempts.
-    pub fn with_max_attempts(mut self, max_attempts: u32) -> Self {
-        self.max_attempts = Some(max_attempts);
         self
     }
 
@@ -106,7 +96,6 @@ mod tests {
         let options = TaskExecutionOptions::default();
         assert!(options.timeout.is_none());
         assert!(options.heartbeat_timeout.is_none());
-        assert!(options.max_attempts.is_none());
         assert!(options.retry_initial_interval.is_none());
         assert!(options.retry_max_interval.is_none());
         assert!(options.retry_backoff_coefficient.is_none());
