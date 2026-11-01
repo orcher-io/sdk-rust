@@ -100,6 +100,7 @@ enum StateBackend {
     Mock(MockStateBackend),
 
     /// The worker host, on its connection, with the worker's credentials.
+    #[cfg(feature = "auto-register")]
     Host(orcher_sdk_core::Host),
 }
 
@@ -135,6 +136,7 @@ impl ActorStateClient {
     /// connection and with the worker's TLS and credentials. One is made for
     /// each actor operation the worker runs, so its cache lives as long as
     /// the operation.
+    #[cfg(feature = "auto-register")]
     pub(crate) fn from_host(host: orcher_sdk_core::Host) -> Self {
         let config = ActorStateClientConfig::default();
         let cache = config.enable_cache.then(|| {
@@ -177,7 +179,7 @@ impl ActorStateClient {
         actor_name: &str,
         key: &str,
         state_key: &str,
-        execution_id: &str,
+        _execution_id: &str,
     ) -> Result<Option<T>>
     where
         T: DeserializeOwned,
@@ -204,8 +206,9 @@ impl ActorStateClient {
                     None => return Ok(None),
                 }
             }
+            #[cfg(feature = "auto-register")]
             StateBackend::Host(host) => {
-                let scope = orcher_sdk_core::StateScope::new(actor_name, key, execution_id);
+                let scope = orcher_sdk_core::StateScope::new(actor_name, key, _execution_id);
                 match host
                     .get_actor_state(&scope, state_key)
                     .await
@@ -242,7 +245,7 @@ impl ActorStateClient {
         actor_name: &str,
         key: &str,
         state_key: &str,
-        execution_id: &str,
+        _execution_id: &str,
     ) -> Result<(Option<T>, String)>
     where
         T: DeserializeOwned,
@@ -260,8 +263,9 @@ impl ActorStateClient {
                     None => Ok((None, String::new())),
                 }
             }
+            #[cfg(feature = "auto-register")]
             StateBackend::Host(host) => {
-                let scope = orcher_sdk_core::StateScope::new(actor_name, key, execution_id);
+                let scope = orcher_sdk_core::StateScope::new(actor_name, key, _execution_id);
                 match host
                     .get_actor_state(&scope, state_key)
                     .await
@@ -295,8 +299,8 @@ impl ActorStateClient {
         key: &str,
         state_key: &str,
         value: &T,
-        execution_id: &str,
-        expected_version: Option<&str>,
+        _execution_id: &str,
+        _expected_version: Option<&str>,
     ) -> Result<()>
     where
         T: Serialize,
@@ -311,9 +315,10 @@ impl ActorStateClient {
                 let storage_key = format!("actor:{}:{}:{}", actor_name, key, state_key);
                 mock.set(&storage_key, value_bytes.clone()).await;
             }
+            #[cfg(feature = "auto-register")]
             StateBackend::Host(host) => {
-                let scope = orcher_sdk_core::StateScope::new(actor_name, key, execution_id);
-                host.set_actor_state(&scope, state_key, value_bytes.clone(), expected_version)
+                let scope = orcher_sdk_core::StateScope::new(actor_name, key, _execution_id);
+                host.set_actor_state(&scope, state_key, value_bytes.clone(), _expected_version)
                     .await
                     .map_err(|e| Error::Actor(format!("Failed to set state: {e}")))?;
             }
@@ -339,7 +344,7 @@ impl ActorStateClient {
         actor_name: &str,
         key: &str,
         state_key: &str,
-        execution_id: &str,
+        _execution_id: &str,
     ) -> Result<bool> {
         let cache_key = format!("{}:{}:{}", actor_name, key, state_key);
 
@@ -352,8 +357,9 @@ impl ActorStateClient {
                 let storage_key = format!("actor:{}:{}:{}", actor_name, key, state_key);
                 Ok(mock.delete(&storage_key).await)
             }
+            #[cfg(feature = "auto-register")]
             StateBackend::Host(host) => {
-                let scope = orcher_sdk_core::StateScope::new(actor_name, key, execution_id);
+                let scope = orcher_sdk_core::StateScope::new(actor_name, key, _execution_id);
                 host.delete_actor_state(&scope, state_key)
                     .await
                     .map_err(|e| Error::Network(format!("DeleteState failed: {e}")))
@@ -374,7 +380,7 @@ impl ActorStateClient {
         &self,
         actor_name: &str,
         key: &str,
-        execution_id: &str,
+        _execution_id: &str,
         prefix: Option<&str>,
     ) -> Result<Vec<String>> {
         match &self.backend {
@@ -393,8 +399,9 @@ impl ActorStateClient {
 
                 Ok(state_keys)
             }
+            #[cfg(feature = "auto-register")]
             StateBackend::Host(host) => {
-                let scope = orcher_sdk_core::StateScope::new(actor_name, key, execution_id);
+                let scope = orcher_sdk_core::StateScope::new(actor_name, key, _execution_id);
                 host.actor_state_keys(&scope, prefix.unwrap_or_default())
                     .await
                     .map_err(|e| Error::Network(format!("ListStateKeys failed: {e}")))
@@ -423,6 +430,7 @@ impl Clone for ActorStateClient {
         Self {
             backend: match &self.backend {
                 StateBackend::Mock(mock) => StateBackend::Mock(mock.clone()),
+                #[cfg(feature = "auto-register")]
                 StateBackend::Host(host) => StateBackend::Host(host.clone()),
             },
             config: self.config.clone(),

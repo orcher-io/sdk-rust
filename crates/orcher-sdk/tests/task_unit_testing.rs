@@ -1,5 +1,6 @@
 //! A `#[task]` body, kept as `<name>_impl`, can be called directly in a test
 //! with a `TestTaskContext`, from outside the crate as a user would.
+#![cfg(all(feature = "testing", feature = "auto-register"))]
 
 use orcher_sdk::prelude::*;
 use orcher_sdk::testing::TestTaskContext;

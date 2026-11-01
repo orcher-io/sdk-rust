@@ -1,5 +1,6 @@
 //! A mocked task failure reaches the workflow as `TaskFailed`, as a task that
 //! fails for good does on a real engine, rather than aborting the test run.
+#![cfg(feature = "testing")]
 
 use orcher_sdk::error::WorkflowError;
 use orcher_sdk::prelude::*;
