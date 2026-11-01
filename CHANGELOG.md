@@ -1,5 +1,28 @@
 # Changelog
 
+## [0.15.1](https://github.com/orcher-io/sdk-rust/compare/v0.15.0...v0.15.1) (2026-11-01)
+
+
+### Features
+
+* build on orcher-sdk-core 0.23.0 ([#100](https://github.com/orcher-io/sdk-rust/issues/100)) ([417e93f](https://github.com/orcher-io/sdk-rust/commit/417e93f665489bda61d1d4feac0046430fdebbad))
+
+## [0.15.0](https://github.com/orcher-io/sdk-rust/compare/v0.14.0...v0.15.0) (2026-11-01)
+
+
+### ⚠ BREAKING CHANGES
+
+* ExecutionRuntime::run_activation and execute_assignment are no longer public, since they put generated types in this crate's API; use ExecutionRuntime::run_encoded_activation, which takes and returns the encoded messages. TaskFailureCode no longer implements From for the kernel protocol's FailureCode. RecordStepResultCommand::failure is now this crate's own
+
+### Features
+
+* build on orcher-sdk-core 0.22.1 and orcher-proto 0.15 ([#94](https://github.com/orcher-io/sdk-rust/issues/94)) ([6733e35](https://github.com/orcher-io/sdk-rust/commit/6733e357b5f5b05e0c4b482a07418ad771059bb1))
+
+
+### Changes
+
+* run the worker on the encoded host with this SDK's own orcher-proto ([#98](https://github.com/orcher-io/sdk-rust/issues/98)) ([54da688](https://github.com/orcher-io/sdk-rust/commit/54da6880edbe92f4e7d0ae98f8ea7312cddb03d6))
+
 ## [0.14.0](https://github.com/orcher-io/sdk-rust/compare/v0.13.1...v0.14.0) (2026-10-24)
 
 
