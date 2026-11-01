@@ -125,6 +125,7 @@ impl TaskRegistration {
     }
 }
 
+#[cfg(feature = "auto-register")]
 impl std::fmt::Debug for TaskRegistration {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("TaskRegistration")
@@ -185,6 +186,7 @@ impl WorkflowRegistration {
     }
 }
 
+#[cfg(feature = "auto-register")]
 impl std::fmt::Debug for WorkflowRegistration {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("WorkflowRegistration")
@@ -242,6 +244,7 @@ impl UpdateRegistration {
     }
 }
 
+#[cfg(feature = "auto-register")]
 impl std::fmt::Debug for UpdateRegistration {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("UpdateRegistration")

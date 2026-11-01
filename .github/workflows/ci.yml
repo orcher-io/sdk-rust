@@ -37,6 +37,9 @@ jobs:
           components: clippy, rustfmt
       - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --all --check
+      # The SDK's core worker API must also compile without the optional
+      # macro-driven registration feature.
+      - run: cargo check -p orcher-sdk --no-default-features
       # Every target in the workspace, tests and the contract runner included,
       # with warnings as errors.
       - run: cargo clippy --workspace --all-targets --all-features -- -D warnings

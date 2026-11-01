@@ -55,7 +55,6 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::RwLock;
 
-#[cfg(feature = "auto-register")]
 pub mod registration;
 
 pub use builder::WorkerBuilder;
@@ -66,9 +65,9 @@ use crate::interceptor::InterceptorChain;
 
 use crate::error::{Error, Result};
 
-use orcher_proto::host::v1::{
-    actor_result, task_outcome, ActorMode, ActorOperation, ActorResult, TaskAssignment,
-};
+#[cfg(feature = "auto-register")]
+use orcher_proto::host::v1::{actor_result, ActorMode, ActorOperation, ActorResult};
+use orcher_proto::host::v1::{task_outcome, TaskAssignment};
 use orcher_proto::kernel::v1::run_activation_result;
 use orcher_proto::prost::Message;
 use orcher_sdk_core::observability::WireMetricsSnapshot;
@@ -616,6 +615,7 @@ impl Worker {
 
     /// Copies the handlers collected in the registry into the runtime.
     async fn register_handlers_from_registry(&self) -> Result<()> {
+        #[cfg(feature = "auto-register")]
         let registry = self.registry.read().await;
 
         #[cfg(feature = "auto-register")]

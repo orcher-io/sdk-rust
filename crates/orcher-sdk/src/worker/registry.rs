@@ -49,6 +49,7 @@
 //! ```
 
 use std::collections::HashMap;
+#[cfg(feature = "auto-register")]
 use std::sync::RwLock;
 
 #[cfg(feature = "auto-register")]

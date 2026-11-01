@@ -49,10 +49,11 @@ impl WorkerBuilder {
     pub fn new() -> Self {
         let config = WorkerConfig::default();
 
-        let mut registry = Registry::new();
+        let registry = Registry::new();
 
         #[cfg(feature = "auto-register")]
-        {
+        let registry = {
+            let mut registry = registry;
             registry.collect_from_global_registry();
 
             tracing::debug!(
@@ -61,7 +62,8 @@ impl WorkerBuilder {
                 actors = registry.actor_count(),
                 "Auto-registered handlers from global registry"
             );
-        }
+            registry
+        };
 
         Self {
             config,
