@@ -81,7 +81,9 @@ use proc_macro::TokenStream;
 ///   coefficient 2.0).
 /// - `retry_policy(...)`: an explicit policy; takes precedence over `retry`.
 ///   - `max_attempts`: maximum attempts, including the first (default: 3).
-///     Use `max_attempts = unlimited` for no attempt limit.
+///     Use `max_attempts = unlimited` for no attempt limit. This requires an
+///     engine release that treats zero attempts as unlimited; engines through
+///     0.5.5 interpret zero as the default three attempts.
 ///   - `initial_interval`: first retry delay in seconds (default: 1)
 ///   - `max_interval`: cap on the retry delay in seconds (default: 60)
 ///   - `backoff_coefficient`: multiplier applied to the delay after each retry (default: 2.0)
