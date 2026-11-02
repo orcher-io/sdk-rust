@@ -1,18 +1,5 @@
 # Changelog
 
-## Unreleased
-
-### Features
-
-* Allow task retry policies to specify `max_attempts = unlimited`. This requires
-  an engine release that interprets zero as unlimited; engines through 0.5.5
-  instead use the default three attempts. `retry_with_policy` also treats zero
-  as unlimited.
-
-### ⚠ BREAKING CHANGES
-
-* Remove the unused `TaskExecutionOptions.max_attempts` field and builder.
-
 ## [0.16.0](https://github.com/orcher-io/sdk-rust/compare/v0.15.1...v0.16.0) (2026-11-02)
 
 
