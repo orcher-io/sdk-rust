@@ -162,7 +162,7 @@ impl Scenario {
     }
 }
 
-#[derive(Deserialize, Clone)]
+#[derive(Deserialize, Clone, Default)]
 struct Expect {
     /// "completed" or "failed". Absent for `kind: "client_error"`, which
     /// asserts on `error_code` instead of a terminal workflow state.
@@ -201,6 +201,27 @@ struct Expect {
     /// whose workflow ends cancelled and so returns no result.
     #[serde(default)]
     observed: Value,
+}
+
+impl Expect {
+    /// Check the whole-run wall clock against the scenario's optional bounds.
+    fn check_elapsed_bounds(&self, elapsed_ms: u128) -> std::result::Result<(), String> {
+        if let Some(min) = self.min_elapsed_ms {
+            if elapsed_ms < min {
+                return Err(format!(
+                    "completed too fast: {elapsed_ms}ms < {min}ms (the wait did not happen)"
+                ));
+            }
+        }
+        if let Some(max) = self.max_elapsed_ms {
+            if elapsed_ms > max {
+                return Err(format!(
+                    "took too long: {elapsed_ms}ms > {max}ms (waited far longer than asked)"
+                ));
+            }
+        }
+        Ok(())
+    }
 }
 
 /// One step of an actor scenario: `parallel` concurrent invocations of
@@ -470,20 +491,9 @@ async fn run_scenario(client: &Client, args: &Args, scenario: &Scenario) -> Resu
             // Duration is part of the contract for timer scenarios: asserting
             // only the result would accept a 1s timer that takes 30s.
             let elapsed_ms = started_at.elapsed().as_millis();
-            if let Some(min) = expect.min_elapsed_ms {
-                if elapsed_ms < min {
-                    return Err(anyhow!(
-                        "completed too fast: {elapsed_ms}ms < {min}ms (the wait did not happen)"
-                    ));
-                }
-            }
-            if let Some(max) = expect.max_elapsed_ms {
-                if elapsed_ms > max {
-                    return Err(anyhow!(
-                        "took too long: {elapsed_ms}ms > {max}ms (waited far longer than asked)"
-                    ));
-                }
-            }
+            expect
+                .check_elapsed_bounds(elapsed_ms)
+                .map_err(anyhow::Error::msg)?;
 
             let matched = if expect.result_exact {
                 expect.result == result
@@ -995,6 +1005,7 @@ async fn run_event_scenario(client: &Client, args: &Args, scenario: &Scenario) -
     let options = StartWorkflowOptions::new(args.task_queue.clone())
         .with_workflow_id(workflow_id.clone())
         .with_namespace(args.namespace.clone());
+    let started_at = std::time::Instant::now();
     let handle = client
         .start_workflow_with_options(workflow, input, options)
         .await
@@ -1031,6 +1042,10 @@ async fn run_event_scenario(client: &Client, args: &Args, scenario: &Scenario) -
             return Err(anyhow!("expected completion after the event but got: {e}"));
         }
     };
+
+    expect
+        .check_elapsed_bounds(started_at.elapsed().as_millis())
+        .map_err(anyhow::Error::msg)?;
 
     if !json_matches(&expect.result, &result) {
         return Err(anyhow!(
@@ -1381,4 +1396,29 @@ fn wire_metrics_check(worker: &Worker) -> std::result::Result<(), String> {
         return Err(format!("no work counted: {:?}", wire.work));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Expect;
+
+    #[test]
+    fn elapsed_bounds_are_inclusive_and_enforced_at_both_ends() {
+        let expect = Expect {
+            min_elapsed_ms: Some(1_000),
+            max_elapsed_ms: Some(15_000),
+            ..Expect::default()
+        };
+
+        assert!(expect.check_elapsed_bounds(1_000).is_ok());
+        assert!(expect.check_elapsed_bounds(15_000).is_ok());
+        assert!(expect
+            .check_elapsed_bounds(999)
+            .unwrap_err()
+            .contains("completed too fast"));
+        assert!(expect
+            .check_elapsed_bounds(15_001)
+            .unwrap_err()
+            .contains("took too long"));
+    }
 }

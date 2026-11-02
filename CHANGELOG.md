@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.16.0](https://github.com/orcher-io/sdk-rust/compare/v0.15.1...v0.16.0) (2026-11-02)
+
+
+### ⚠ BREAKING CHANGES
+
+* support explicit unlimited task retries ([#102](https://github.com/orcher-io/sdk-rust/issues/102))
+
+### Features
+
+* support explicit unlimited task retries ([#102](https://github.com/orcher-io/sdk-rust/issues/102)) ([10065c1](https://github.com/orcher-io/sdk-rust/commit/10065c1211d46bcee91048d951567c3a56ec5c45))
+
+
+### Bug Fixes
+
+* build SDK without default features ([#99](https://github.com/orcher-io/sdk-rust/issues/99)) ([cd56934](https://github.com/orcher-io/sdk-rust/commit/cd569342aaaed5b237740fd55f8c4edc2cc7017d))
+* enforce event scenario elapsed bounds ([#104](https://github.com/orcher-io/sdk-rust/issues/104)) ([1e9c2f9](https://github.com/orcher-io/sdk-rust/commit/1e9c2f9182424f686de5e35b675c623b186596b1))
+
 ## [0.15.1](https://github.com/orcher-io/sdk-rust/compare/v0.15.0...v0.15.1) (2026-11-01)
 
 
