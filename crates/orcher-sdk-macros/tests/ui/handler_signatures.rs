@@ -1,4 +1,4 @@
-// A workflow or task whose handler could not call it is a compile error, not a
+// A workflow, task or actor operation whose handler could not call it is a compile error, not a
 // failure when it runs.
 use orcher_sdk::prelude::*;
 
@@ -20,6 +20,17 @@ async fn task_two_inputs(_ctx: TaskContext, a: u32, b: u32) -> Result<u32> {
 #[task]
 async fn task_not_a_result(_ctx: TaskContext, input: u32) -> u32 {
     input
+}
+
+#[actor]
+pub struct Counter;
+
+#[operations]
+impl Counter {
+    #[operation(exclusive)]
+    pub async fn operation_two_inputs(_ctx: ActorContext, a: i64, b: i64) -> Result<i64> {
+        Ok(a + b)
+    }
 }
 
 fn main() {}

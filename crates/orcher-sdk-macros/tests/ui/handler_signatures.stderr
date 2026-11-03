@@ -21,3 +21,9 @@ error: a task must return `Result<T>`, such as `orcher_sdk::Result<T>`
    |
 21 | async fn task_not_a_result(_ctx: TaskContext, input: u32) -> u32 {
    |                                                           ^^^^^^
+
+error: an operation takes at most one input after its context; pass several values as one struct or tuple
+  --> tests/ui/handler_signatures.rs:31:67
+   |
+31 |     pub async fn operation_two_inputs(_ctx: ActorContext, a: i64, b: i64) -> Result<i64> {
+   |                                                                   ^^^^^^

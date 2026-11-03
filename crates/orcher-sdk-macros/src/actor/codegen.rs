@@ -48,8 +48,8 @@ pub struct OperationInfo {
     pub name: syn::Ident,
     /// Concurrency mode.
     pub mode: crate::actor::attrs::OperationModeAttr,
-    /// Parameters after the context, as name and type.
-    pub inputs: Vec<(syn::Ident, Type)>,
+    /// The one parameter after the context, as name and type, if any.
+    pub input: Option<(syn::Ident, Type)>,
     /// Declared return type.
     pub output: ReturnType,
     /// Whether the method is async (always true after validation).
@@ -94,7 +94,7 @@ pub fn extract_operations(impl_block: &ItemImpl) -> syn::Result<Vec<OperationInf
 /// Parses and validates one operation method.
 ///
 /// An operation must be async and take `ActorContext` or `SharedActorContext` as its first
-/// parameter. Every other parameter must be a plain identifier.
+/// parameter, then at most one input, a plain identifier: a call carries one argument value.
 fn extract_operation_info(
     method: &ImplItemFn,
     mode: crate::actor::attrs::OperationModeAttr,
@@ -110,7 +110,7 @@ fn extract_operation_info(
         ));
     }
 
-    let mut inputs = Vec::new();
+    let mut input = None;
     let mut iter = method.sig.inputs.iter();
 
     if let Some(FnArg::Typed(pat_type)) = iter.next() {
@@ -131,8 +131,15 @@ fn extract_operation_info(
 
     for arg in iter {
         if let FnArg::Typed(pat_type) = arg {
+            if input.is_some() {
+                return Err(syn::Error::new_spanned(
+                    arg,
+                    "an operation takes at most one input after its context; \
+                     pass several values as one struct or tuple",
+                ));
+            }
             if let syn::Pat::Ident(pat_ident) = &*pat_type.pat {
-                inputs.push((pat_ident.ident.clone(), (*pat_type.ty).clone()));
+                input = Some((pat_ident.ident.clone(), (*pat_type.ty).clone()));
             } else {
                 return Err(syn::Error::new_spanned(
                     arg,
@@ -147,7 +154,7 @@ fn extract_operation_info(
     Ok(OperationInfo {
         name,
         mode,
-        inputs,
+        input,
         output,
         is_async,
         vis,
@@ -266,28 +273,16 @@ pub fn generate_typed_client(
             let send_method_name = format_ident!("send_{}", method_name);
             let return_type = extract_inner_result_type(&op.output);
 
-            let param_names: Vec<&syn::Ident> = op.inputs.iter().map(|(name, _)| name).collect();
-            let param_types: Vec<&Type> = op.inputs.iter().map(|(_, ty)| ty).collect();
-
             let params: Vec<TokenStream> = op
-                .inputs
+                .input
                 .iter()
                 .map(|(name, ty)| quote! { #name: #ty })
                 .collect();
 
-            // Arguments are always sent as a tuple, because the server-side handler
-            // deserializes its input as one.
-            let (input_type, input_value) = if param_types.is_empty() {
-                (quote! { () }, quote! { &() })
-            } else if param_types.len() == 1 {
-                let ty = &param_types[0];
-                let name = &param_names[0];
-                (quote! { (#ty,) }, quote! { &(#name,) })
-            } else {
-                (
-                    quote! { (#(#param_types,)*) },
-                    quote! { &(#(#param_names,)*) },
-                )
+            // The input is sent as it is: a call carries one argument value.
+            let (input_type, input_value) = match &op.input {
+                None => (quote! { () }, quote! { &() }),
+                Some((name, ty)) => (quote! { #ty }, quote! { &#name }),
             };
 
             quote! {
