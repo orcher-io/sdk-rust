@@ -109,6 +109,13 @@ impl Cart {
     }
 }
 
+/// One metadata entry to set on a session.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MetadataEntry {
+    pub key: String,
+    pub value: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionData {
     pub user_id: String,
@@ -408,7 +415,8 @@ impl Session {
 
     /// Update session metadata (exclusive operation)
     #[operation(exclusive)]
-    pub async fn update(ctx: ActorContext, key: String, value: String) -> Result<SessionData> {
+    pub async fn update(ctx: ActorContext, entry: MetadataEntry) -> Result<SessionData> {
+        let MetadataEntry { key, value } = entry;
         let mut session: SessionData = ctx
             .state()
             .get("session")
@@ -694,7 +702,10 @@ async fn run_client(args: Args) -> anyhow::Result<()> {
 
     info!("Updating session metadata");
     let _session = session_client
-        .update("browser".to_string(), "Chrome".to_string())
+        .update(MetadataEntry {
+            key: "browser".to_string(),
+            value: "Chrome".to_string(),
+        })
         .await?;
     info!("Session updated");
     info!("");

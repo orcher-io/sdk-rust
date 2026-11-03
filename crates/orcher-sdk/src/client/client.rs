@@ -552,7 +552,8 @@ impl Client {
     /// Invokes an actor operation by name and waits for its result.
     ///
     /// This is the untyped form; prefer [`Client::actor`] when a typed actor
-    /// is available.
+    /// is available. `input` is the operation's one argument value, sent as it
+    /// is; an operation that wants several values takes one struct or tuple.
     pub async fn invoke_actor<I, O>(
         &self,
         actor_name: impl Into<String>,
@@ -566,12 +567,13 @@ impl Client {
     {
         let handle =
             ActorInvocationClient::new(self.actor_client.clone(), actor_name.into(), key.into());
-        handle.invoke(&operation.into(), &(input,), None).await
+        handle.invoke(&operation.into(), &input, None).await
     }
 
     /// Sends an actor operation without waiting for it to run.
     ///
     /// The server still executes the operation; only the caller does not wait.
+    /// `input` is the operation's one argument value, sent as it is.
     pub async fn send_actor<I>(
         &self,
         actor_name: impl Into<String>,
@@ -584,7 +586,7 @@ impl Client {
     {
         let handle =
             ActorInvocationClient::new(self.actor_client.clone(), actor_name.into(), key.into());
-        handle.send(&operation.into(), &(input,), None).await
+        handle.send(&operation.into(), &input, None).await
     }
 
     // ============================================================================

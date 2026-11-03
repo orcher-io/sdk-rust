@@ -37,8 +37,8 @@
 //!                 mode: ::orcher_sdk::actor::OperationMode::Exclusive,
 //!                 handler: ::std::sync::Arc::new(|ctx, payload| {
 //!                     ::std::boxed::Box::pin(async move {
-//!                         // Arguments arrive as a JSON tuple.
-//!                         let (item,): (Item,) = ::serde_json::from_slice(&payload)
+//!                         // The argument arrives as one JSON value.
+//!                         let item: Item = ::serde_json::from_slice(&payload)
 //!                             .map_err(|e| ::orcher_sdk::error::Error::Worker(
 //!                                 ::orcher_sdk::error::WorkerError::InvalidConfiguration(
 //!                                     format!("Failed to deserialize parameters: {}", e)
@@ -96,38 +96,7 @@ pub fn generate_handler_registration(
         }
     };
 
-    let param_types: Vec<_> = operation.inputs.iter().map(|(_, ty)| ty).collect();
-
-    // Arguments always arrive as a JSON tuple, matching what the typed client sends.
-    let (deserialize_params, param_values) = if param_types.is_empty() {
-        (quote! {}, quote! {})
-    } else if param_types.len() == 1 {
-        let param_ty = &param_types[0];
-        (
-            quote! {
-                let (param,): (#param_ty,) = ::orcher_sdk::__private::serde_json::from_slice(&payload)
-                    .map_err(|e| ::orcher_sdk::error::Error::Worker(
-                        ::orcher_sdk::error::WorkerError::InvalidConfiguration(
-                            format!("Failed to deserialize parameters: {}", e)
-                        )
-                    ))?;
-            },
-            quote! { param },
-        )
-    } else {
-        let indices: Vec<_> = (0..param_types.len()).map(syn::Index::from).collect();
-        (
-            quote! {
-                let params: (#(#param_types,)*) = ::orcher_sdk::__private::serde_json::from_slice(&payload)
-                    .map_err(|e| ::orcher_sdk::error::Error::Worker(
-                        ::orcher_sdk::error::WorkerError::InvalidConfiguration(
-                            format!("Failed to deserialize parameters: {}", e)
-                        )
-                    ))?;
-            },
-            quote! { #(params.#indices),* },
-        )
-    };
+    let (deserialize_params, param_values) = decode_input(operation);
 
     quote! {
         #[allow(non_snake_case)]
@@ -163,6 +132,28 @@ pub fn generate_handler_registration(
                 );
         }
     }
+}
+
+/// Decodes an operation's payload into its input, if it takes one.
+///
+/// A call carries one argument value, sent as it is, so the payload is the input's JSON.
+/// Returns the statements that decode it and the argument to pass on.
+#[cfg(feature = "auto-register")]
+fn decode_input(operation: &OperationInfo) -> (TokenStream, TokenStream) {
+    let Some((_, input_ty)) = &operation.input else {
+        return (quote! {}, quote! {});
+    };
+    (
+        quote! {
+            let input: #input_ty = ::orcher_sdk::__private::serde_json::from_slice(&payload)
+                .map_err(|e| ::orcher_sdk::error::Error::Worker(
+                    ::orcher_sdk::error::WorkerError::InvalidConfiguration(
+                        format!("Failed to deserialize the operation's input: {}", e)
+                    )
+                ))?;
+        },
+        quote! { input },
+    )
 }
 
 /// Generates the registration functions for every operation of an actor.
@@ -218,37 +209,7 @@ pub fn generate_register_handlers_method(
             let operation_name_str = operation_name.to_string();
             let method_name_impl = format_ident!("{}_impl", operation_name);
 
-            let param_types: Vec<_> = op.inputs.iter().map(|(_, ty)| ty).collect();
-
-            let (deserialize_params, param_values) = if param_types.is_empty() {
-                (quote! {}, quote! {})
-            } else if param_types.len() == 1 {
-                let param_ty = &param_types[0];
-                (
-                    quote! {
-                        let (param,): (#param_ty,) = ::orcher_sdk::__private::serde_json::from_slice(&payload)
-                            .map_err(|e| ::orcher_sdk::error::Error::Worker(
-                                ::orcher_sdk::error::WorkerError::InvalidConfiguration(
-                                    format!("Failed to deserialize parameters: {}", e)
-                                )
-                            ))?;
-                    },
-                    quote! { param },
-                )
-            } else {
-                let indices: Vec<_> = (0..param_types.len()).map(syn::Index::from).collect();
-                (
-                    quote! {
-                        let params: (#(#param_types,)*) = ::orcher_sdk::__private::serde_json::from_slice(&payload)
-                            .map_err(|e| ::orcher_sdk::error::Error::Worker(
-                                ::orcher_sdk::error::WorkerError::InvalidConfiguration(
-                                    format!("Failed to deserialize parameters: {}", e)
-                                )
-                            ))?;
-                    },
-                    quote! { #(params.#indices),* },
-                )
-            };
+            let (deserialize_params, param_values) = decode_input(op);
 
             quote! {
                 executor.register_handler(
@@ -306,7 +267,7 @@ mod tests {
         let operation = OperationInfo {
             name: format_ident!("get_count"),
             mode: crate::actor::attrs::OperationModeAttr::Shared,
-            inputs: vec![],
+            input: None,
             output: syn::parse_quote! { -> Result<i64> },
             is_async: true,
             vis: syn::parse_quote! { pub },
@@ -332,7 +293,7 @@ mod tests {
         let operation = OperationInfo {
             name: format_ident!("increment"),
             mode: crate::actor::attrs::OperationModeAttr::Exclusive,
-            inputs: vec![(format_ident!("delta"), syn::parse_quote! { i64 })],
+            input: Some((format_ident!("delta"), syn::parse_quote! { i64 })),
             output: syn::parse_quote! { -> Result<i64> },
             is_async: true,
             vis: syn::parse_quote! { pub },
@@ -355,7 +316,7 @@ mod tests {
             OperationInfo {
                 name: format_ident!("increment"),
                 mode: crate::actor::attrs::OperationModeAttr::Exclusive,
-                inputs: vec![(format_ident!("delta"), syn::parse_quote! { i64 })],
+                input: Some((format_ident!("delta"), syn::parse_quote! { i64 })),
                 output: syn::parse_quote! { -> Result<i64> },
                 is_async: true,
                 vis: syn::parse_quote! { pub },
@@ -363,7 +324,7 @@ mod tests {
             OperationInfo {
                 name: format_ident!("get_count"),
                 mode: crate::actor::attrs::OperationModeAttr::Shared,
-                inputs: vec![],
+                input: None,
                 output: syn::parse_quote! { -> Result<i64> },
                 is_async: true,
                 vis: syn::parse_quote! { pub },
@@ -385,7 +346,7 @@ mod tests {
         let operations = vec![OperationInfo {
             name: format_ident!("increment"),
             mode: crate::actor::attrs::OperationModeAttr::Exclusive,
-            inputs: vec![(format_ident!("delta"), syn::parse_quote! { i64 })],
+            input: Some((format_ident!("delta"), syn::parse_quote! { i64 })),
             output: syn::parse_quote! { -> Result<i64> },
             is_async: true,
             vis: syn::parse_quote! { pub },

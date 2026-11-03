@@ -46,8 +46,8 @@
 //! // registers every actor in the binary on its own.
 //! Counter::register_handlers(&executor);
 //!
-//! // Arguments travel as a JSON tuple, results as JSON.
-//! let payload = serde_json::to_vec(&(5,)).unwrap();
+//! // The argument travels as one JSON value, the result as JSON.
+//! let payload = serde_json::to_vec(&5).unwrap();
 //! let context = create_test_context("Counter", "user-123").await;
 //! let result = executor
 //!     .execute("Counter", "user-123", "increment", payload, context)
