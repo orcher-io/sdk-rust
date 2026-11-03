@@ -690,7 +690,10 @@ impl ContractProbe {
 
     /// Returns its one argument as it received it (sdk-core#149).
     #[operation(shared)]
-    pub async fn echo_argument(_ctx: ActorContext, argument: serde_json::Value) -> Result<serde_json::Value> {
+    pub async fn echo_argument(
+        _ctx: ActorContext,
+        argument: serde_json::Value,
+    ) -> Result<serde_json::Value> {
         Ok(serde_json::json!({ "received": argument }))
     }
 
