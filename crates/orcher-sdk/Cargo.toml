@@ -8,7 +8,7 @@ homepage.workspace = true
 repository.workspace = true
 documentation.workspace = true
 description = "Rust SDK for Orcher, a durable workflow engine: workflows, tasks, actors, workers and a client"
-readme = "../../README.md"
+readme = "../../README.registry.md"
 keywords = ["workflow", "orchestration", "durable-execution", "async", "sdk"]
 categories = ["asynchronous", "concurrency", "network-programming"]
 
