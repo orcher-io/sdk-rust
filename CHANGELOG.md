@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.17.0](https://github.com/orcher-io/sdk-rust/compare/v0.16.0...v0.17.0) (2026-11-03)
+
+
+### ⚠ BREAKING CHANGES
+
+* an operation with several inputs no longer compiles, and a Rust worker no longer accepts the array-of-one encoding from older clients.
+
+### Bug Fixes
+
+* an actor operation takes one argument value ([#108](https://github.com/orcher-io/sdk-rust/issues/108)) ([9fa9743](https://github.com/orcher-io/sdk-rust/commit/9fa9743289f88e2dfd82dc80116849e74c5e4e2e))
+
+
+### Documentation
+
+* leave the changelog to release-please ([#105](https://github.com/orcher-io/sdk-rust/issues/105)) ([3e987b7](https://github.com/orcher-io/sdk-rust/commit/3e987b714133ec31caab0de9be7cbef305b03077))
+
 ## [0.16.0](https://github.com/orcher-io/sdk-rust/compare/v0.15.1...v0.16.0) (2026-11-02)
 
 
