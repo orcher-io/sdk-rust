@@ -361,7 +361,7 @@ async fn a_replayed_workflow_issues_every_step_under_the_id_it_first_had() {
 /// A saga whose steps all succeed never compensates. Each step suspends the
 /// workflow the first time it runs (its task is scheduled and the activation
 /// ends); a suspension is control flow, not a failure, and must not trigger
-/// the compensations of the steps before it (orcher#4).
+/// the compensations of the steps before it.
 #[tokio::test]
 async fn a_healthy_saga_completes_without_compensating() {
     let handler: WorkflowHandlerFn = Arc::new(|ctx: WorkflowContext, _input| {

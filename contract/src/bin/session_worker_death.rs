@@ -1,5 +1,5 @@
 //! Checks that a workflow learns its session is gone when the session's worker
-//! dies (orcher-io/orcher#303).
+//! dies.
 //!
 //! The workflow opens a session and runs one long task on it, catching the
 //! task's failure. A worker process takes the session and starts the task;

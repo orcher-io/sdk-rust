@@ -1,5 +1,4 @@
-//! Checks that workers dying with long polls open do not stall other work
-//! (orcher-io/orcher#285).
+//! Checks that workers dying with long polls open do not stall other work.
 //!
 //! Idle worker processes long-poll one task queue; a worker in this process
 //! runs a steady stream of short workflows on another. Part way through, the
