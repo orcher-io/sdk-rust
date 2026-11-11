@@ -1,5 +1,5 @@
 //! Checks that events sent before a run waits for them are delivered when it
-//! does (orcher-io/orcher#376).
+//! does.
 //!
 //! Each run waits for `--events` events in turn. The client sends all of them
 //! as soon as the run is started, once each, so most arrive before the run

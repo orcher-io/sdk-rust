@@ -1,4 +1,4 @@
-//! Checks that short timers work when the engine is busy (orcher-io/orcher#375).
+//! Checks that short timers work when the engine is busy.
 //!
 //! Each run sleeps `--sleeps` times for `--ms` milliseconds, and `--runs` run at
 //! once. A timer is recorded after the engine has begun its transaction; when

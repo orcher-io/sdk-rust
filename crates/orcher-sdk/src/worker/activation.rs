@@ -161,7 +161,7 @@ pub(crate) fn load(activation: RunActivation, namespace: &str) -> Result<Loaded,
         workflow_type: run.workflow_type.clone(),
         // The engine counts a run's attempt from 1 (2 for the run of its
         // first workflow-level retry) and the kernel hands it over as is.
-        // Engines before orcher#356 numbered the first run 0; it reads as 1,
+        // Engines before 0.6.0 numbered the first run 0; it reads as 1,
         // so a first run is still the first attempt there. On a current engine
         // the floor never applies.
         attempt: started.map_or(1, |(_, started)| {
@@ -875,7 +875,7 @@ mod tests {
         assert!(!retry.execution().is_first_attempt());
         assert!(retry.execution().is_retry());
 
-        // An engine before orcher#356 numbers the first run 0.
+        // An engine before 0.6.0 numbers the first run 0.
         let older_engine = load(started_as(0), "contract").unwrap().ctx;
         assert_eq!(older_engine.attempt(), 1);
         assert!(older_engine.execution().is_first_attempt());

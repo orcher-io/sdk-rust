@@ -296,9 +296,7 @@ async fn main() -> anyhow::Result<()> {
             let unbound = client(&args, &args.key_unbound, None).await?;
             let handle = unbound.get_workflow_handle(&workflow_id).await?;
             match handle.status().await {
-                Ok(_) => bail!(
-                    "an ownerless key naming no organisation saw organisation A's run (orcher#294)"
-                ),
+                Ok(_) => bail!("an ownerless key naming no organisation saw organisation A's run"),
                 Err(e) if is_permission_denied(&e) => Ok(()),
                 Err(e) => bail!("expected permission-denied, got {e}"),
             }
