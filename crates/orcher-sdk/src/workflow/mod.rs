@@ -53,7 +53,7 @@ mod command;
 mod context;
 pub mod executable;
 mod execution;
-mod handle;
+pub(crate) mod handle;
 pub mod handler;
 mod options;
 mod rand;
