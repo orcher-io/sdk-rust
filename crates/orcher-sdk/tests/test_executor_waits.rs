@@ -1,5 +1,6 @@
 //! `TestWorkflowExecutor` drives timers, events and child workflows, with virtual
 //! time, from outside the crate as a user would.
+#![cfg(feature = "testing")]
 
 use orcher_sdk::error::WorkflowError;
 use orcher_sdk::prelude::*;
