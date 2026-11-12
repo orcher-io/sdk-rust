@@ -727,3 +727,44 @@ async fn a_failure_that_left_a_recorded_step_behind_is_held() {
     };
     assert_eq!(violation.step_id.as_deref(), Some("charge_0"));
 }
+
+#[tokio::test]
+async fn is_replaying_reports_each_point_as_new_exactly_once() {
+    // Each point the code reaches records whether it reads as a replay there.
+    let readings: Arc<Mutex<Vec<(&'static str, bool)>>> = Arc::default();
+    let seen = Arc::clone(&readings);
+    let handler: WorkflowHandlerFn = Arc::new(move |ctx: WorkflowContext, _input| {
+        let seen = Arc::clone(&seen);
+        Box::pin(async move {
+            let read = |label: &'static str| seen.lock().unwrap().push((label, ctx.is_replaying()));
+            read("start");
+            ctx.execute_task_by_name::<u32, String>("step_a", 1).await?;
+            read("after task");
+            ctx.sleep(Duration::from_secs(60)).await?;
+            read("after timer");
+            ctx.execute("closure_c", || async { Ok(1u32) }).await?;
+            read("after closure");
+            output_of(true)
+        })
+    });
+    let runtime = runtime_with(handler).await;
+    let mut engine = FakeEngine::new();
+
+    run_to_completion(&runtime, &mut engine).await;
+
+    // Activation 1 starts the run; 2 delivers the task's result; 3 the timer's.
+    let readings = readings.lock().unwrap().clone();
+    assert_eq!(
+        readings,
+        vec![
+            ("start", false),
+            ("start", true),
+            ("after task", false),
+            ("start", true),
+            ("after task", true),
+            ("after timer", false),
+            ("after closure", false),
+        ],
+        "a point reads as new on the activation that first reaches it, and as a replay after"
+    );
+}

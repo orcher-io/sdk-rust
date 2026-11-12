@@ -174,13 +174,19 @@ pub(crate) fn load(activation: RunActivation, namespace: &str) -> Result<Loaded,
         },
         task_queue: run.task_queue.clone(),
     };
-    // History holds more than the start: the code runs again over what it
-    // already did.
-    let replaying = activation
-        .resolutions
-        .iter()
-        .any(|resolution| !matches!(resolution.what, Some(resolution::What::Started(_))))
-        || started.is_some();
+    // History holds an outcome the code waits on: the code runs again over
+    // what it already did. The run's start alone is a first activation.
+    let replaying = activation.resolutions.iter().any(|resolution| {
+        matches!(
+            resolution.what,
+            Some(
+                resolution::What::Step(_)
+                    | resolution::What::Child(_)
+                    | resolution::What::Timer(_)
+                    | resolution::What::Event(_)
+            )
+        )
+    });
     let ctx =
         WorkflowContext::starting_at(execution, replaying, "1.0.0".to_string(), started_at_ms);
     // A run the engine bound to the kernel's step-id scheme: its steps are
@@ -240,6 +246,17 @@ fn order(position: usize, resolution: &Resolution) -> u64 {
 }
 
 fn load_one(ctx: &WorkflowContext, order: u64, resolution: &Resolution, asked: &mut Vec<Asked>) {
+    if matches!(
+        resolution.what,
+        Some(
+            resolution::What::Step(_)
+                | resolution::What::Child(_)
+                | resolution::What::Timer(_)
+                | resolution::What::Event(_)
+        )
+    ) {
+        ctx.note_outcome(order, resolution.replaying);
+    }
     let at_ms = resolution.at.as_ref().map(millis);
     let step_id = &resolution.step_id;
     match &resolution.what {
