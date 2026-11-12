@@ -366,6 +366,10 @@ where
             let state = ctx.state.lock().unwrap();
             let replaying = state.replaying;
             let cached_result = state.pending_task_results.get(&step_id).cloned();
+            if replaying && cached_result.is_some() {
+                // Read back, not waited for: the clock stays where the first run had it.
+                state.received(&step_id);
+            }
             (replaying, cached_result)
         }; // Released before the closure is awaited.
 

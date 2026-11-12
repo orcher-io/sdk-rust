@@ -82,6 +82,45 @@ fn encode_query_result<R: Serialize>(query: &str, result: &R) -> Result<Vec<u8>>
 /// the client sent none) and returns its JSON result.
 pub(crate) type QueryHandlerFn = Arc<dyn Fn(&[u8]) -> Result<Vec<u8>> + Send + Sync>;
 
+/// The outcomes an activation holds for the code to receive, by their place in the run's
+/// order of outcomes: what [`WorkflowContext::is_replaying`] is decided from.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct OutcomeMarks {
+    /// The latest place of any outcome; 0 if there is none.
+    newest: u64,
+    /// The earliest place of an outcome the activation marks as new to the run.
+    first_new: Option<u64>,
+    /// Whether the activation marks any outcome as observed in an earlier activation.
+    any_seen_before: bool,
+}
+
+impl OutcomeMarks {
+    fn note(&mut self, order: u64, seen_before: bool) {
+        self.newest = self.newest.max(order);
+        if seen_before {
+            self.any_seen_before = true;
+        } else {
+            self.first_new = Some(self.first_new.map_or(order, |first| first.min(order)));
+        }
+    }
+
+    /// Whether the code is still re-running what an earlier activation ran, once it has
+    /// received every outcome up to `received_through`; `None` if no outcome was noted.
+    fn replaying(&self, received_through: u64) -> Option<bool> {
+        if self.any_seen_before {
+            // The activation says which outcomes the run saw before: the code replays
+            // until it receives the first that is new, and throughout if there is none
+            // (an activation for a query, an update or a cancellation request).
+            Some(self.first_new.is_none_or(|first| received_through < first))
+        } else if self.newest > 0 {
+            // Unmarked: take the newest outcome as what is new.
+            Some(received_through < self.newest)
+        } else {
+            None
+        }
+    }
+}
+
 /// Mutable interior state for `WorkflowContext`, wrapped in `Arc<Mutex<>>`.
 #[derive(Clone)]
 pub(crate) struct ContextState {
@@ -101,6 +140,12 @@ pub(crate) struct ContextState {
     /// a result and a cancellation request came first is decided by it, never by times,
     /// which tie within a millisecond.
     pub(crate) resolved_order: HashMap<String, u64>,
+    /// The outcomes this activation holds for the code to receive (task, value, child and
+    /// timer results, and events), by their place in that order; see
+    /// [`WorkflowContext::is_replaying`].
+    pub(crate) outcomes: OutcomeMarks,
+    /// The latest place in that order of an outcome the code has received so far.
+    pub(crate) received_through: std::cell::Cell<u64>,
     pub(crate) commands: Vec<WorkflowCommand>,
     pub(crate) workflow_state: HashMap<String, Vec<u8>>,
     pub(crate) pending_task_results: HashMap<String, Vec<u8>>,
@@ -182,8 +227,25 @@ impl ContextState {
     /// The workflow received what was journaled under `key`: its clock moves
     /// to when that was journaled.
     pub(crate) fn observe(&self, key: &str) {
+        self.received(key);
         if let Some(at_ms) = self.resolved_at.get(key) {
             self.clock.advance_to(*at_ms);
+        }
+    }
+
+    /// The code received the outcome held under `key`, without its clock moving: a
+    /// recorded value, which the code reads back on replay but did not wait for when it
+    /// first ran.
+    pub(crate) fn received(&self, key: &str) {
+        if let Some(order) = self.resolved_order.get(key) {
+            self.received_at_order(*order);
+        }
+    }
+
+    /// The code received the outcome at `order` in the run's order of outcomes.
+    pub(crate) fn received_at_order(&self, order: u64) {
+        if order > self.received_through.get() {
+            self.received_through.set(order);
         }
     }
 }
@@ -245,6 +307,8 @@ impl WorkflowContext {
             clock: workflow_time.clone(),
             resolved_at: HashMap::new(),
             resolved_order: HashMap::new(),
+            outcomes: OutcomeMarks::default(),
+            received_through: std::cell::Cell::new(0),
             commands: Vec::new(),
             workflow_state: HashMap::new(),
             pending_task_results: HashMap::new(),
@@ -846,7 +910,10 @@ impl WorkflowContext {
                 .event_buffer
                 .get_mut(event_name)
                 .and_then(|events| events.pop_front());
-            event.map(|(_, payload, at_ms)| {
+            event.map(|(position, payload, at_ms)| {
+                if let Some(position) = position {
+                    state.received_at_order(position as u64);
+                }
                 if let Some(at_ms) = at_ms {
                     state.clock.advance_to(at_ms);
                 }
@@ -1004,7 +1071,10 @@ impl WorkflowContext {
                     .event_buffer
                     .get_mut(event_name)
                     .and_then(|events| events.pop_front());
-                event.map(|(_, payload, at_ms)| {
+                event.map(|(position, payload, at_ms)| {
+                    if let Some(position) = position {
+                        state.received_at_order(position as u64);
+                    }
                     if let Some(at_ms) = at_ms {
                         state.clock.advance_to(at_ms);
                     }
@@ -1787,12 +1857,33 @@ impl WorkflowContext {
         &self.execution.run_id
     }
 
-    /// Returns `true` if this activation is replaying recorded history.
+    /// Returns `true` while the code is re-running what an earlier activation of the
+    /// run already ran, and `false` once it is past that and doing something for the
+    /// first time.
     ///
-    /// During replay, workflow code must not perform side effects of its own.
+    /// A run's code runs again from the start each time it is activated, receiving the
+    /// outcomes it waited for from its history. Until it has received the newest outcome
+    /// this activation holds, everything it does was done before; from then on it is new.
+    /// So it is `false` throughout a run's first activation, and in a later one it turns
+    /// `false` at the point the code reaches work the history has no outcome for.
+    ///
+    /// Use it to avoid repeating logs or metrics on replay. Do not use it to decide
+    /// whether to perform an effect: run effects as tasks, which the engine records, so
+    /// they happen once whatever the code's replays.
+    ///
+    /// It is exact when the engine marks which of an activation's outcomes the run has
+    /// already observed. Without those marks the newest outcome is taken as the new one,
+    /// which is off in two cases: an activation with several new outcomes (two tasks that
+    /// finished together) reads `true` until the code has received the newest, and one
+    /// with no new outcome at all (for a query) reads `false` past the newest outcome.
     pub fn is_replaying(&self) -> bool {
         let state = self.state.lock().unwrap();
-        state.replaying
+        state
+            .outcomes
+            .replaying(state.received_through.get())
+            // No outcome noted: a context built by hand rather than from an activation,
+            // which says itself whether it replays.
+            .unwrap_or(state.replaying)
     }
 
     /// Returns the attempt number, starting at 1.
@@ -2021,6 +2112,13 @@ impl WorkflowContext {
             .resolved_order
             .entry(key)
             .or_insert(order);
+    }
+
+    /// Notes that this activation holds an outcome for the code to receive, at `order`
+    /// in the run's order of outcomes, and whether the run already observed it in an
+    /// earlier activation as the activation marks it.
+    pub(crate) fn note_outcome(&self, order: u64, seen_before: bool) {
+        self.state.lock().unwrap().outcomes.note(order, seen_before);
     }
 
     /// Marks a durable timer as fired, with its place in the order the run observes its
@@ -2792,6 +2890,49 @@ mod tests {
             Error::Workflow(crate::error::WorkflowError::QueryError { ref reason, .. })
                 if reason.contains("could not be serialized")
         ));
+    }
+
+    #[test]
+    fn outcome_marks_take_the_newest_outcome_as_new_when_unmarked() {
+        let mut marks = OutcomeMarks::default();
+        assert_eq!(marks.replaying(0), None, "no outcome: the context says");
+        marks.note(2, false);
+        marks.note(5, false);
+        assert_eq!(marks.replaying(0), Some(true));
+        assert_eq!(marks.replaying(2), Some(true));
+        assert_eq!(marks.replaying(5), Some(false));
+    }
+
+    #[test]
+    fn outcome_marks_replay_until_the_first_new_outcome_when_marked() {
+        let mut marks = OutcomeMarks::default();
+        marks.note(1, true);
+        marks.note(3, false);
+        marks.note(4, false);
+        assert_eq!(marks.replaying(1), Some(true));
+        // Two outcomes new together: new from the first of them.
+        assert_eq!(marks.replaying(3), Some(false));
+    }
+
+    #[test]
+    fn outcome_marks_replay_throughout_an_activation_with_nothing_new() {
+        // An activation for a query: every outcome was seen before.
+        let mut marks = OutcomeMarks::default();
+        marks.note(1, true);
+        marks.note(2, true);
+        assert_eq!(marks.replaying(2), Some(true));
+    }
+
+    #[test]
+    fn an_event_seen_before_and_never_received_does_not_hold_replay() {
+        // An event that came after its wait gave up stays unreceived; the code is new
+        // once it receives what is new, whatever is left behind.
+        let mut marks = OutcomeMarks::default();
+        marks.note(2, true); // the timer that ended the wait
+        marks.note(3, true); // the late event, never received
+        marks.note(4, false); // a task result that is new
+        assert_eq!(marks.replaying(2), Some(true));
+        assert_eq!(marks.replaying(4), Some(false));
     }
 
     #[test]
