@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.17.1](https://github.com/orcher-io/sdk-rust/compare/v0.17.0...v0.17.1) (2026-11-12)
+
+
+### Features
+
+* drive timers, events and child workflows in TestWorkflowExecutor ([#113](https://github.com/orcher-io/sdk-rust/issues/113)) ([306054e](https://github.com/orcher-io/sdk-rust/commit/306054e8ed33528f812540dff9e9776a19282f19))
+
+
+### Bug Fixes
+
+* report is_replaying only while the code re-runs what it already ran ([#112](https://github.com/orcher-io/sdk-rust/issues/112)) ([e5a5623](https://github.com/orcher-io/sdk-rust/commit/e5a562389b1978d1c1d17a055c5f65969f133bc3)), closes [#56](https://github.com/orcher-io/sdk-rust/issues/56)
+
+
+### Documentation
+
+* the banner follows the GitHub theme, not the computer's ([#109](https://github.com/orcher-io/sdk-rust/issues/109)) ([35205a9](https://github.com/orcher-io/sdk-rust/commit/35205a9d190c643ada2a0259afbb51ab78b34386))
+
 ## [0.17.0](https://github.com/orcher-io/sdk-rust/compare/v0.16.0...v0.17.0) (2026-11-03)
 
 
