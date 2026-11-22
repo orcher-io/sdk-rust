@@ -31,13 +31,13 @@ pub struct ClientConfig {
     /// serialization format.
     pub data_converter: Option<crate::client::client::DataConverterType>,
 
-    /// Codec chain applied to workflow inputs and outputs (default: None).
+    /// Codec chain applied to every payload sent to the engine and removed
+    /// from every payload received (default: None).
     ///
-    /// Use it to compress payloads (for example with gzip) or to encrypt them
-    /// in transit (for example with AES-256-GCM).
-    ///
-    /// The server decodes payloads and stores plain JSON so that they stay
-    /// queryable; this is not end-to-end encryption.
+    /// Use it to compress payloads (gzip) or to encrypt them (AES-256-GCM).
+    /// The engine stores what the chain produces and never reads it, so an
+    /// encrypting chain keeps values out of the engine's database and
+    /// dashboard. Workers must be given the same chain.
     pub codec_chain: Option<Arc<orcher_sdk_core::payload::codec::CodecChain>>,
 
     /// API key that authenticates with the server (default: None).

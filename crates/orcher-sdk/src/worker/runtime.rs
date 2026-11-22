@@ -34,11 +34,6 @@ pub struct RuntimeConfig {
     pub default_task_queue: String,
     /// Namespace this runtime executes in.
     pub namespace: String,
-    /// Codec chain that decodes compressed or encrypted inputs.
-    ///
-    /// If decoding fails, a warning is logged and the handler gets the input
-    /// as received.
-    pub codec_chain: Option<Arc<orcher_sdk_core::payload::codec::CodecChain>>,
 }
 
 impl Default for RuntimeConfig {
@@ -48,7 +43,6 @@ impl Default for RuntimeConfig {
             max_concurrent_tasks: 200,
             default_task_queue: "default".to_string(),
             namespace: "default".to_string(),
-            codec_chain: None,
         }
     }
 }
@@ -189,27 +183,11 @@ impl ExecutionRuntime {
                 Vec::new(),
             ));
         };
-        let input = self.decode_input(loaded.input.unwrap_or(serde_json::Value::Null));
+        let input = Payload::from_json(&loaded.input.unwrap_or(serde_json::Value::Null))
+            .unwrap_or_else(|_| Payload::new_data(Vec::new()));
         Ok(self
             .run_handler(loaded.ctx, input, handler, &loaded.asked)
             .await)
-    }
-
-    /// The run's input as a payload, decoded by the codec chain when one is
-    /// set; on a decode failure, logged and passed on undecoded.
-    fn decode_input(&self, input: serde_json::Value) -> Payload {
-        let mut payload =
-            Payload::from_json(&input).unwrap_or_else(|_| Payload::new_data(Vec::new()));
-        if let Some(ref codec) = self.config.codec_chain {
-            use orcher_sdk_core::payload::codec::PayloadCodec;
-            match codec.decode(&payload) {
-                Ok(decoded) => payload = decoded,
-                Err(e) => {
-                    tracing::warn!(error = %e, "Failed to decode workflow input with codec chain");
-                }
-            }
-        }
-        payload
     }
 
     /// Runs the workflow's code once its context holds what history
@@ -510,18 +488,7 @@ impl ExecutionRuntime {
             )));
         };
 
-        let mut input = Payload::new_data(input);
-        if let Some(ref codec) = self.config.codec_chain {
-            use orcher_sdk_core::payload::codec::PayloadCodec;
-            match codec.decode(&input) {
-                Ok(decoded) => {
-                    input = decoded;
-                }
-                Err(e) => {
-                    tracing::warn!(error = %e, "Failed to decode task input with codec chain");
-                }
-            }
-        }
+        let input = Payload::new_data(input);
         match handler(ctx, input).await {
             Ok(output) => {
                 self.tasks_succeeded.fetch_add(1, Ordering::Relaxed);

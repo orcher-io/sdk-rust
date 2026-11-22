@@ -357,25 +357,46 @@ impl WorkerBuilder {
         self
     }
 
-    /// Decrypts incoming payloads with AES-256-GCM.
+    /// Encrypts every payload this worker sends with AES-256-GCM and
+    /// decrypts every payload it receives: workflow and task inputs and
+    /// results, event payloads, query and update arguments and answers,
+    /// recorded step values, heartbeat details, actor operations and state.
     ///
-    /// The key must match the one used by the client that started the workflow.
-    /// Without this, encrypted payloads reach handlers as opaque bytes. Replaces
-    /// any codec chain already configured.
-    pub fn with_encryption(mut self, key: &[u8; 32]) -> Self {
-        use orcher_sdk_core::payload::codec::{CodecChain, EncryptionPayloadCodec};
-        let chain = CodecChain::new().with_codec(EncryptionPayloadCodec::new(key));
-        self.config.codec_chain = Some(Arc::new(chain));
-        self
-    }
-
-    /// Decompresses incoming gzip payloads.
+    /// The engine never holds the key and stores only ciphertext. The key
+    /// must be the one the clients that start and call these workflows use
+    /// ([`Client::with_encryption`]). A payload that cannot be decrypted
+    /// fails the workflow step or task it belongs to; it never reaches a
+    /// handler undecrypted. A payload stored before encryption was turned on
+    /// is read as it is.
     ///
     /// Replaces any codec chain already configured.
-    pub fn with_gzip_compression(mut self) -> Self {
+    ///
+    /// [`Client::with_encryption`]: crate::client::Client::with_encryption
+    pub fn with_encryption(self, key: &[u8; 32]) -> Self {
+        use orcher_sdk_core::payload::codec::{CodecChain, EncryptionPayloadCodec};
+        self.with_codec_chain(Arc::new(
+            CodecChain::new().with_codec(EncryptionPayloadCodec::new(key)),
+        ))
+    }
+
+    /// Compresses every payload this worker sends with gzip and
+    /// decompresses every payload it receives.
+    ///
+    /// Replaces any codec chain already configured.
+    pub fn with_gzip_compression(self) -> Self {
         use orcher_sdk_core::payload::codec::{CodecChain, GzipPayloadCodec};
-        let chain = CodecChain::new().with_codec(GzipPayloadCodec::default());
-        self.config.codec_chain = Some(Arc::new(chain));
+        self.with_codec_chain(Arc::new(
+            CodecChain::new().with_codec(GzipPayloadCodec::default()),
+        ))
+    }
+
+    /// Applies `chain` to every payload this worker sends and removes it
+    /// from every payload it receives. It must be the chain its clients use.
+    pub fn with_codec_chain(
+        mut self,
+        chain: Arc<orcher_sdk_core::payload::codec::CodecChain>,
+    ) -> Self {
+        self.config.codec_chain = Some(chain);
         self
     }
 
@@ -451,7 +472,6 @@ impl WorkerBuilder {
             max_concurrent_tasks: self.config.max_concurrent_tasks,
             default_task_queue: self.config.task_queue.clone(),
             namespace: self.config.namespace.clone(),
-            codec_chain: self.config.codec_chain.clone(),
         };
         let runtime = Arc::new(ExecutionRuntime::new(runtime_config));
 
