@@ -219,7 +219,7 @@ pub struct WorkerConfig {
     ///
     /// It must match the codec chain of the clients that start and call the
     /// worker's workflows.
-    pub codec_chain: Option<Arc<orcher_sdk_core::payload::codec::CodecChain>>,
+    pub codec_chain: Option<Arc<crate::payload::codec::CodecChain>>,
 
     /// The code release this worker is running (optional).
     ///
