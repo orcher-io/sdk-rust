@@ -209,7 +209,7 @@ impl Client {
     ///
     /// [`WorkerBuilder::with_gzip_compression`]: crate::worker::WorkerBuilder::with_gzip_compression
     pub fn with_gzip_compression(self) -> Self {
-        use orcher_sdk_core::payload::codec::{CodecChain, GzipPayloadCodec};
+        use crate::payload::codec::{CodecChain, GzipPayloadCodec};
 
         self.with_codec_chain(Arc::new(
             CodecChain::new().with_codec(GzipPayloadCodec::default()),
@@ -236,9 +236,9 @@ impl Client {
     /// [`Client::with_codec_chain`].
     ///
     /// [`WorkerBuilder::with_encryption`]: crate::worker::WorkerBuilder::with_encryption
-    /// [`EncryptionPayloadCodec`]: orcher_sdk_core::payload::codec::EncryptionPayloadCodec
+    /// [`EncryptionPayloadCodec`]: crate::payload::codec::EncryptionPayloadCodec
     pub fn with_encryption(self, key: &[u8; 32]) -> Self {
-        use orcher_sdk_core::payload::codec::{CodecChain, EncryptionPayloadCodec};
+        use crate::payload::codec::{CodecChain, EncryptionPayloadCodec};
 
         self.with_codec_chain(Arc::new(
             CodecChain::new().with_codec(EncryptionPayloadCodec::new(key)),
@@ -251,10 +251,7 @@ impl Client {
     /// The clients are rebuilt on a new lazy connection that carries the
     /// chain, so it applies from the next call on. Clones taken before this
     /// call keep the chain they had.
-    pub fn with_codec_chain(
-        mut self,
-        chain: Arc<orcher_sdk_core::payload::codec::CodecChain>,
-    ) -> Self {
+    pub fn with_codec_chain(mut self, chain: Arc<crate::payload::codec::CodecChain>) -> Self {
         self.config.codec_chain = Some(chain);
         self.rebuilt()
     }

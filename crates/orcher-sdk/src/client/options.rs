@@ -38,7 +38,7 @@ pub struct ClientConfig {
     /// The engine stores what the chain produces and never reads it, so an
     /// encrypting chain keeps values out of the engine's database and
     /// dashboard. Workers must be given the same chain.
-    pub codec_chain: Option<Arc<orcher_sdk_core::payload::codec::CodecChain>>,
+    pub codec_chain: Option<Arc<crate::payload::codec::CodecChain>>,
 
     /// API key that authenticates with the server (default: None).
     ///
@@ -191,10 +191,7 @@ impl ClientConfig {
     }
 
     /// Set the codec chain for compression/encryption.
-    pub fn with_codec_chain(
-        mut self,
-        codec_chain: Arc<orcher_sdk_core::payload::codec::CodecChain>,
-    ) -> Self {
+    pub fn with_codec_chain(mut self, codec_chain: Arc<crate::payload::codec::CodecChain>) -> Self {
         self.codec_chain = Some(codec_chain);
         self
     }

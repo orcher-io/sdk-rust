@@ -373,7 +373,7 @@ impl WorkerBuilder {
     ///
     /// [`Client::with_encryption`]: crate::client::Client::with_encryption
     pub fn with_encryption(self, key: &[u8; 32]) -> Self {
-        use orcher_sdk_core::payload::codec::{CodecChain, EncryptionPayloadCodec};
+        use crate::payload::codec::{CodecChain, EncryptionPayloadCodec};
         self.with_codec_chain(Arc::new(
             CodecChain::new().with_codec(EncryptionPayloadCodec::new(key)),
         ))
@@ -384,7 +384,7 @@ impl WorkerBuilder {
     ///
     /// Replaces any codec chain already configured.
     pub fn with_gzip_compression(self) -> Self {
-        use orcher_sdk_core::payload::codec::{CodecChain, GzipPayloadCodec};
+        use crate::payload::codec::{CodecChain, GzipPayloadCodec};
         self.with_codec_chain(Arc::new(
             CodecChain::new().with_codec(GzipPayloadCodec::default()),
         ))
@@ -392,10 +392,7 @@ impl WorkerBuilder {
 
     /// Applies `chain` to every payload this worker sends and removes it
     /// from every payload it receives. It must be the chain its clients use.
-    pub fn with_codec_chain(
-        mut self,
-        chain: Arc<orcher_sdk_core::payload::codec::CodecChain>,
-    ) -> Self {
+    pub fn with_codec_chain(mut self, chain: Arc<crate::payload::codec::CodecChain>) -> Self {
         self.config.codec_chain = Some(chain);
         self
     }

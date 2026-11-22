@@ -66,6 +66,46 @@ use std::collections::HashMap;
 
 pub use orcher_sdk_core::payload::Payload;
 
+/// The codecs a client and a worker apply to every payload: gzip
+/// compression, AES-256-GCM encryption, and a chain of the two.
+///
+/// [`Client::with_encryption`] and [`WorkerBuilder::with_encryption`] cover
+/// one unnamed key. Build a chain here to name the key, which is what makes
+/// rotating it possible later, to keep reading with keys that have been
+/// rotated out, or to compress before encrypting:
+///
+/// ```rust
+/// use std::sync::Arc;
+/// use orcher_sdk::payload::codec::{CodecChain, EncryptionPayloadCodec, GzipPayloadCodec};
+///
+/// # let (current_key, last_years_key) = ([1u8; 32], [2u8; 32]);
+/// let encryption = EncryptionPayloadCodec::new(&current_key)
+///     .with_key_id("2026")
+///     // Still reads what was written with the key before it.
+///     .with_decryption_key("2025", &last_years_key);
+///
+/// // Applied in order when sending: compress, then encrypt.
+/// let chain = Arc::new(
+///     CodecChain::new()
+///         .with_codec(GzipPayloadCodec::default())
+///         .with_codec(encryption),
+/// );
+/// # let _ = chain;
+/// ```
+///
+/// Give the same chain to [`Client::with_codec_chain`] and
+/// [`WorkerBuilder::with_codec_chain`].
+///
+/// [`Client::with_encryption`]: crate::Client::with_encryption
+/// [`Client::with_codec_chain`]: crate::Client::with_codec_chain
+/// [`WorkerBuilder::with_encryption`]: crate::WorkerBuilder::with_encryption
+/// [`WorkerBuilder::with_codec_chain`]: crate::WorkerBuilder::with_codec_chain
+pub mod codec {
+    pub use orcher_sdk_core::payload::codec::{
+        CodecChain, EncryptionPayloadCodec, GzipPayloadCodec,
+    };
+}
+
 /// A type that can be encoded to and decoded from a [`Payload`].
 ///
 /// Every type that implements serde's `Serialize` and `Deserialize` gets this trait
