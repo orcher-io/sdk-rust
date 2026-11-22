@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.18.0](https://github.com/orcher-io/sdk-rust/compare/v0.17.2...v0.18.0) (2026-11-22)
+
+
+### ⚠ BREAKING CHANGES
+
+* `RuntimeConfig.codec_chain` is removed. Set the chain with `WorkerBuilder::with_encryption`, `with_gzip_compression` or `with_codec_chain`.
+
+### Features
+
+* encrypt every payload, not only the workflow input ([#119](https://github.com/orcher-io/sdk-rust/issues/119)) ([17d5d26](https://github.com/orcher-io/sdk-rust/commit/17d5d2645fd18e52f9fc0a07ce3516c0d781de7e))
+* export the payload codecs from orcher_sdk::payload::codec ([#121](https://github.com/orcher-io/sdk-rust/issues/121)) ([326225a](https://github.com/orcher-io/sdk-rust/commit/326225a124f34776ddc538905361d493fb6e5f9e))
+
+
+### Documentation
+
+* link the documentation site from the README ([#116](https://github.com/orcher-io/sdk-rust/issues/116)) ([bdd9710](https://github.com/orcher-io/sdk-rust/commit/bdd9710afccd8e04a9c9d3a7964cf411062c9705))
+
 ## [0.17.2](https://github.com/orcher-io/sdk-rust/compare/v0.17.1...v0.17.2) (2026-11-18)
 
 
