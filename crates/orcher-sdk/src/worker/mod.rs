@@ -214,11 +214,11 @@ pub struct WorkerConfig {
     /// Obtain a key by registering a service with the orchestrator.
     pub api_key: Option<String>,
 
-    /// Codec chain that decodes compressed or encrypted payloads (optional).
+    /// Codec chain applied to every payload the worker sends to the engine
+    /// and removed from every payload it receives (optional).
     ///
-    /// When set, workflow and task inputs are decoded with it before they reach
-    /// handlers. It must match the codec chain of the client that started the
-    /// workflow.
+    /// It must match the codec chain of the clients that start and call the
+    /// worker's workflows.
     pub codec_chain: Option<Arc<orcher_sdk_core::payload::codec::CodecChain>>,
 
     /// The code release this worker is running (optional).
@@ -491,6 +491,9 @@ impl Worker {
         }
         if let Some(tls) = self.core_tls() {
             config = config.with_tls(tls);
+        }
+        if let Some(chain) = &c.codec_chain {
+            config.connection = config.connection.with_payload_seal(chain.clone().into());
         }
         config
     }

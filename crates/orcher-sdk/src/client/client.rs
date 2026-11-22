@@ -6,7 +6,6 @@ use orcher_sdk_core::client::{
     ActorClient, ConnectOptions, Connection, NamespaceClient, StartWorkflowOpts,
     WorkflowClient as CoreClient,
 };
-use orcher_sdk_core::payload::codec::PayloadCodec;
 use orcher_sdk_core::payload::converter::{
     BinaryPayloadConverter, DataConverter, JsonPayloadConverter,
 };
@@ -202,30 +201,76 @@ impl Client {
     // Configuration
     // ============================================================================
 
-    /// Compresses workflow inputs and outputs with gzip.
+    /// Compresses every payload this client sends with gzip, and
+    /// decompresses every payload it receives.
     ///
-    /// Replaces any codec chain already configured.
-    pub fn with_gzip_compression(mut self) -> Self {
+    /// Replaces any codec chain already configured. Workers must be given
+    /// the same setting ([`WorkerBuilder::with_gzip_compression`]).
+    ///
+    /// [`WorkerBuilder::with_gzip_compression`]: crate::worker::WorkerBuilder::with_gzip_compression
+    pub fn with_gzip_compression(self) -> Self {
         use orcher_sdk_core::payload::codec::{CodecChain, GzipPayloadCodec};
 
-        let chain = CodecChain::new().with_codec(GzipPayloadCodec::default());
-
-        self.config.codec_chain = Some(Arc::new(chain));
-        self
+        self.with_codec_chain(Arc::new(
+            CodecChain::new().with_codec(GzipPayloadCodec::default()),
+        ))
     }
 
-    /// Encrypts workflow inputs and outputs with AES-256-GCM.
+    /// Encrypts every payload this client sends with AES-256-GCM, and
+    /// decrypts every payload it receives: workflow inputs and results,
+    /// event payloads, query and update arguments and answers, actor
+    /// operations.
     ///
-    /// Replaces any codec chain already configured. The server decrypts
-    /// payloads and stores plain JSON, so this protects data in transit only;
-    /// it is not end-to-end encryption.
-    pub fn with_encryption(mut self, key: &[u8; 32]) -> Self {
+    /// The engine never holds the key. It stores the ciphertext and returns
+    /// it unchanged, so the values cannot be read in its database or its
+    /// dashboard, or searched. Workers must be given the same key
+    /// ([`WorkerBuilder::with_encryption`]); a worker without it cannot run
+    /// what this client starts.
+    ///
+    /// Names, ids, task queues, labels, annotations and error messages are
+    /// not payloads and are not encrypted.
+    ///
+    /// Replaces any codec chain already configured. To name the key, or to
+    /// keep reading with a key that has been rotated out, build an
+    /// [`EncryptionPayloadCodec`] and pass it in a chain to
+    /// [`Client::with_codec_chain`].
+    ///
+    /// [`WorkerBuilder::with_encryption`]: crate::worker::WorkerBuilder::with_encryption
+    /// [`EncryptionPayloadCodec`]: orcher_sdk_core::payload::codec::EncryptionPayloadCodec
+    pub fn with_encryption(self, key: &[u8; 32]) -> Self {
         use orcher_sdk_core::payload::codec::{CodecChain, EncryptionPayloadCodec};
 
-        let chain = CodecChain::new().with_codec(EncryptionPayloadCodec::new(key));
+        self.with_codec_chain(Arc::new(
+            CodecChain::new().with_codec(EncryptionPayloadCodec::new(key)),
+        ))
+    }
 
-        self.config.codec_chain = Some(Arc::new(chain));
-        self
+    /// Applies `chain` to every payload this client sends and removes it
+    /// from every payload it receives. Workers must be given the same chain.
+    ///
+    /// The clients are rebuilt on a new lazy connection that carries the
+    /// chain, so it applies from the next call on. Clones taken before this
+    /// call keep the chain they had.
+    pub fn with_codec_chain(
+        mut self,
+        chain: Arc<orcher_sdk_core::payload::codec::CodecChain>,
+    ) -> Self {
+        self.config.codec_chain = Some(chain);
+        self.rebuilt()
+    }
+
+    /// This client on a new connection made as its configuration now says.
+    fn rebuilt(self) -> Self {
+        let data_converter = self.data_converter.clone();
+        // The address and TLS settings were accepted when this client was
+        // made, so the same connection can be made again.
+        let mut rebuilt = match Self::from_config(self.config.clone()) {
+            Ok(rebuilt) => rebuilt,
+            Err(_) => return self,
+        };
+        // Keep a converter chosen after connecting (use_binary_serialization).
+        rebuilt.data_converter = data_converter;
+        rebuilt
     }
 
     /// Has no effect: TLS belongs to the connection, which is already built.
@@ -247,16 +292,7 @@ impl Client {
     /// Clones taken before this call keep their old credentials.
     pub fn with_api_key(mut self, key: impl Into<String>) -> Self {
         self.config.api_key = Some(key.into());
-        let data_converter = self.data_converter.clone();
-        // The address and TLS settings were accepted when this client was
-        // made, so the same connection with a key can be made too.
-        let mut rebuilt = match Self::from_config(self.config.clone()) {
-            Ok(rebuilt) => rebuilt,
-            Err(_) => return self,
-        };
-        // Keep a converter chosen after connecting (use_binary_serialization).
-        rebuilt.data_converter = data_converter;
-        rebuilt
+        self.rebuilt()
     }
 
     /// The calls this client has made so far, by method: its workflow,
@@ -344,28 +380,26 @@ impl Client {
         let client = self.core_client.as_ref().clone().with_namespace(&namespace);
 
         let input_data = if self.config.use_payload_format {
-            let mut payload = self.data_converter.to_payload(&input).map_err(|e| {
+            let payload = self.data_converter.to_payload(&input).map_err(|e| {
                 Error::Client(crate::error::ClientError::RequestFailed(format!(
                     "Failed to serialize input to Payload: {}",
                     e
                 )))
             })?;
 
-            if let Some(codec_chain) = &self.config.codec_chain {
-                payload = codec_chain.encode(&payload).map_err(|e| {
+            if self.config.codec_chain.is_some() && payload.is_json() {
+                // The chain is applied as the call goes out, and what it
+                // produces says what it is. The engine does not unwrap that,
+                // so the JSON goes in as the worker is to read it.
+                payload.data
+            } else {
+                serde_json::to_vec(&payload).map_err(|e| {
                     Error::Client(crate::error::ClientError::RequestFailed(format!(
-                        "Failed to encode Payload with codec chain: {}",
+                        "Failed to serialize Payload envelope: {}",
                         e
                     )))
-                })?;
+                })?
             }
-
-            serde_json::to_vec(&payload).map_err(|e| {
-                Error::Client(crate::error::ClientError::RequestFailed(format!(
-                    "Failed to serialize Payload envelope: {}",
-                    e
-                )))
-            })?
         } else {
             // Plain JSON, without an envelope.
             serde_json::to_vec(&input).map_err(|e| {
@@ -765,6 +799,9 @@ fn connect_options(config: &ClientConfig) -> ConnectOptions {
     }
     if let Some(ref tls) = config.tls {
         options = options.with_tls(crate::tls::to_core(tls));
+    }
+    if let Some(ref chain) = config.codec_chain {
+        options = options.with_payload_seal(chain.clone().into());
     }
     options
 }
